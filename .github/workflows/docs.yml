@@ -44,17 +44,20 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
-      name: cloudflare-pages
+      name: cloudflare-workers
       url: https://docs.verityclient.com
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: mdbook-site
-          path: book
+          path: docs/book
 
-      - name: Deploy to Cloudflare Pages
+      - name: Deploy to Cloudflare Workers (Static Assets)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy book --project-name=verity-docs --branch=main
+          workingDirectory: docs
+          command: deploy
