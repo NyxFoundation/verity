@@ -1,0 +1,17 @@
+[book]
+title = "Verity Documentation"
+description = "Documentation for Verity — the Provable Consensus Client."
+authors = ["Nyx Foundation"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/NyxFoundation/verity"
+edit-url-template = "https://github.com/NyxFoundation/verity/edit/main/docs/{path}"
+site-url = "/"
+
+[output.html.fold]
+enable = true
+level = 1
