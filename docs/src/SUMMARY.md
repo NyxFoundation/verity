@@ -2,6 +2,10 @@
 
 [Introduction](./introduction.md)
 
+# Design Philosophy
+
+- [Design Philosophy](./design-philosophy.md)
+
 # Getting Started
 
 - [Overview](./getting-started/overview.md)
