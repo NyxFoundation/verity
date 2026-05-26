@@ -1,6 +1,0 @@
-[package]
-name = "verity-p2p"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
