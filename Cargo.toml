@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "crates/verity-types",
+    "crates/verity-consensus-sys",
+    "crates/verity-chain",
+    "crates/verity-crypto",
+    "crates/verity-db",
+    "crates/verity-p2p",
+    "crates/verity-validator",
+    "crates/verity-rpc",
+    "crates/verity-metrics",
+    "crates/verity",
+]
+resolver = "2"

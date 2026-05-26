@@ -3,32 +3,32 @@
 > Status: pre-implementation. This document captures the **architectural intent** derived
 > from the [Design Philosophy](docs/src/design-philosophy.md). No Lean or Rust source exists yet.
 
-Verity is a *provable* consensus client: a verified Lean 4 core wrapped in a Rust runtime.
+Verity is a *provable* consensus client: the verified Lean 4 **Verity Consensus** implementation wrapped in a Rust runtime.
 That two-language split makes Verity structurally different from single-language clients, so its
-first-class architectural axis is **the verification boundary** — what is inside the proven core
+first-class architectural axis is **the verification boundary** — what is inside the proven consensus implementation
 and what is outside it. Everything else, including the concurrency model, follows from that axis.
 
-The architecture is organized into three concentric zones, drawn from the proven core outward.
+The architecture is organized into three concentric zones, drawn from the proven consensus implementation outward.
 
 ## Zones
 
-- **Zone A — Proven core (Lean 4, pure).** Pure, total functions only — no hidden state, clocks,
+- **Zone A — Verity Consensus (Lean 4, pure).** Pure, total functions only — no hidden state, clocks,
   locks, or scheduling. This is the surface that Lean proofs defend. Compiled via Lean's C backend
   into a static library and exposed to Rust over a C ABI (no Aeneas).
   Deliberately **minimal**: only the state transition and the fork-choice transition functions.
 
 - **Zone B — Trusted shell (Rust, panic-free).** Manufactures clean, typed, **already-verified**
-  inputs for the core, owns the consensus state and fork-choice view as a single writer, and threads
-  immutable values through the core. Proofs do not reach here, so it is held to the language-level
+  inputs for Verity Consensus, owns the consensus state and fork-choice view as a single writer, and threads
+  immutable values through Verity Consensus. Proofs do not reach here, so it is held to the language-level
   bar instead: memory-safe, strongly typed, and panic-free. SSZ / `hash_tree_root` and signature
-  verification live here, so the core receives precomputed roots and verified signatures rather than
+  verification live here, so Verity Consensus receives precomputed roots and verified signatures rather than
   recomputing or trusting them itself.
 
 - **Zone C — Edge / IO (Rust, concurrent).** The only place where concurrency and the outside world
   live: networking, the slot clock, validator duties, RPC, metrics, and node orchestration. Bounded
   queues provide backpressure. The choice of concurrency primitive (actor model vs. async tasks) is a
   later, Zone-C-internal decision — it is **not** an architectural concern, because the consensus
-  state has a single owner in Zone B and the core is invoked sequentially regardless.
+  state has a single owner in Zone B and Verity Consensus is invoked sequentially regardless.
 
 ## Component diagram
 
@@ -53,7 +53,7 @@ flowchart TB
         FFI["FFI bindings layer"]
     end
 
-    subgraph A["Zone A · Proven core — Lean 4, pure"]
+    subgraph A["Zone A · Verity Consensus — Lean 4, pure"]
         direction LR
         STF["State transition<br/>process_slots · process_block"]
         FC["Fork choice<br/>on_block · on_vote · get_head"]
@@ -76,8 +76,8 @@ flowchart TB
 ## Inbound block — crossing the boundary
 
 The boundary crossing over time, for a block arriving from a peer. Decoding, root computation, and
-signature verification all complete in Zone B *before* the core is touched, so each FFI call into the
-proven core receives only clean, typed, verified values.
+signature verification all complete in Zone B *before* Verity Consensus is touched, so each FFI call into
+Verity Consensus receives only clean, typed, verified values.
 
 ```mermaid
 sequenceDiagram
@@ -85,7 +85,7 @@ sequenceDiagram
     participant N as Network (C)
     participant K as Codec + Crypto (B)
     participant S as Store (B)
-    participant L as Lean core (A)
+    participant L as Verity Consensus (A)
     participant D as DB (B)
     P->>N: gossip block (bytes)
     N->>K: SSZ decode + hash_tree_root
@@ -113,11 +113,12 @@ upstream Lean library name per Rust's `-sys` convention.
 - `verity-types` — consensus container definitions (Block, State, Vote, …) and constants. SSZ
   encoding / `hash_tree_root` is derived from an external SSZ library, not reimplemented.
   Foundational; depended on by every other crate.
-- `<leancore>-sys` — raw FFI bindings to the proven Lean core, which is built and proven in a
+- `verity-consensus-sys` — raw FFI bindings to Verity Consensus, which is built and proven in a
   separate repository and consumed here as a static library. Confines all `unsafe`. Named after the
-  upstream library.
-- `verity-chain` — the single writer that owns the consensus state, the fork-choice store, and
-  persistence. The only caller of the proven core; wraps `<leancore>-sys` behind a safe API.
+  upstream Lean library (`VerityConsensus`).
+- `verity-chain` — the single writer that owns the consensus state and the fork-choice store, and
+  coordinates the `State` and `Store` aggregates under one consistency boundary. The only caller of
+  Verity Consensus; wraps `verity-consensus-sys` behind a safe API. Reads and writes through `verity-db`.
 - `verity-validator` — validator duties (production only): block and vote production, signing, and
   aggregation.
 - `verity` (binary) — the executable validators run: orchestrator, slot clock, wiring, backpressure.
@@ -126,12 +127,14 @@ upstream Lean library name per Rust's `-sys` convention.
 
 - `verity-p2p` — gossip and req/resp over libp2p.
 - `verity-crypto` — adapter over leanMultisig (XMSS verify / sign / aggregate).
+- `verity-db` — persistence (Repository): blocks, states, and the finalized anchor, over an
+  embedded key-value store. Keeps the storage concern out of the single-writer aggregate coordinator.
 - `verity-rpc` — HTTP API surface.
 - `verity-metrics` — implementation of the leanMetrics contract.
 
-Zone mapping: **A** = the Lean core (separate repo, not a Cargo crate); **B** = `<leancore>-sys`,
-`verity-types`, `verity-chain`, `verity-crypto`; **C** = `verity-p2p`, `verity-validator`,
-`verity-rpc`, `verity-metrics`, `verity` (binary).
+Zone mapping: **A** = Verity Consensus (separate Lean repo, not a Cargo crate); **B** = `verity-consensus-sys`,
+`verity-types`, `verity-chain`, `verity-crypto`, `verity-db`; **C** = `verity-p2p`,
+`verity-validator`, `verity-rpc`, `verity-metrics`, `verity` (binary).
 
 ```mermaid
 flowchart TB
@@ -145,11 +148,12 @@ flowchart TB
     subgraph ZB["Zone B · Trusted shell"]
         CHAIN["verity-chain"]
         CRYPTO["verity-crypto"]
+        DB["verity-db"]
         TYPES["verity-types"]
-        SYS["&lt;leancore&gt;-sys"]
+        SYS["verity-consensus-sys"]
     end
-    subgraph ZA["Zone A · Proven core"]
-        LEAN["Lean core<br/>(separate repo)"]
+    subgraph ZA["Zone A · Verity Consensus"]
+        LEAN["Verity Consensus<br/>(Lean repo)"]
     end
     BIN --> VAL
     BIN --> RPC
@@ -163,15 +167,16 @@ flowchart TB
     P2P --> CHAIN
     CHAIN --> SYS
     SYS ==> LEAN
+    CHAIN --> DB
     CHAIN --> TYPES
     CRYPTO --> TYPES
+    DB --> TYPES
 ```
 
 > **Open for discussion.** The granularity and responsibility split of `verity-chain` and
 > `verity-validator` are not settled. Examples still in play: whether proposer selection lives in the
-> proven core (Zone A) or is computed Rust-side; whether duty scheduling, signing, and aggregation
-> should be separate crates rather than folded into `verity-validator`; and whether persistence
-> should split out of `verity-chain`.
+> Verity Consensus (Zone A) or is computed Rust-side; and whether duty scheduling, signing, and
+> aggregation should be separate crates rather than folded into `verity-validator`.
 
 ## Notes
 
