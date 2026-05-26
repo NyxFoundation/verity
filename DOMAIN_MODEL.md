@@ -19,6 +19,10 @@ ubiquitous language; the table also records *where* that model is realized. The 
 property — one no single-language client has to reason about — is that **a context's model can
 straddle the verification boundary**: **Fork Choice** is proven as pure decision functions in
 Zone A, yet its mutable `Store` and single-writer ownership are realized in Zone B. The
+**Zone realization** column is a *current snapshot*, not a fixed assignment — capabilities migrate
+across the A↔B boundary as the verification frontier moves (see
+[Zone migration](ARCHITECTURE.md#zone-migration)), and the State Transition and Serialization rows are
+expected to move in opposite directions. The
 *tactical* per-zone view stays in [Mapping to verification zones](#mapping-to-verification-zones)
 below; this section is the *strategic* frame above it.
 
@@ -39,7 +43,11 @@ below; this section is the *strategic* frame above it.
 > shared model between State Transition and Fork Choice, realized as `verity-types`; changing
 > it requires coordination across both consensus-critical contexts. `verity-types` plays a dual role — it
 > *is* the shared model (the container value-object definitions) and it hosts the Serialization
-> concern (SSZ behavior derived over those types via the external library).
+> concern (SSZ behavior derived over those types via the external library). These two roles separate
+> cleanly: the container **shapes** are the shared model and stay in `verity-types` regardless of zone,
+> whereas the Serialization **behavior** (encode / decode / `hash_tree_root`) is a capability whose
+> implementation can migrate to Zone A without touching those shapes — which is why a Lean-verified SSZ
+> would not perturb the shared model.
 
 ## Context map
 
@@ -54,11 +62,13 @@ pattern names *how* each relationship is governed.
 | **external SSZ library** | Serialization | **ACL / adapter** |
 
 Internally, Serialization and Signature & Aggregation are **suppliers** that hand verified,
-typed inputs — roots and already-verified signatures — to the consensus-critical contexts; `verity-chain` is
-the **single-writer customer** that assembles them and is the sole caller of Zone A. Persistence
-is factored out as a **Repository** (`verity-db`) that `verity-chain` reads and writes through,
-keeping storage out of the aggregate coordinator. This matches the strictly inward C → B → A
-dependency invariant in [Architecture](ARCHITECTURE.md).
+typed inputs — roots and already-verified signatures — to the consensus-critical contexts; each
+satisfies a capability contract whose implementation may be native-Rust (Zone B) or FFI-into-Lean
+(Zone A). `verity-chain` is the **single-writer customer** that assembles them and is the sole caller of
+Zone A. Persistence is factored out as a **Repository** (`verity-db`) that `verity-chain` reads and
+writes through, keeping storage out of the aggregate coordinator. This matches the inward dependency
+invariant (calls flow toward higher assurance; Zone A never calls outward) in
+[Architecture](ARCHITECTURE.md).
 
 ```mermaid
 flowchart LR
@@ -297,10 +307,11 @@ This domain model lines up with the [Architecture](ARCHITECTURE.md) zones:
 
 - **Zone A (Verity Consensus, Lean):** the `State` aggregate and the state-transition service —
   pure, total functions that the proofs defend.
-- **Zone B (trusted shell, Rust):** the `Store` aggregate as single writer; SSZ
-  `hash_tree_root` and signature verification, so Verity Consensus receives precomputed roots and
-  already-verified signatures; and persistence as a Repository (`verity-db`) the single writer
-  reads and writes through.
+- **Zone B (trusted shell, Rust):** the `Store` aggregate as single writer; the Serialization and
+  Signature & Aggregation capabilities, *today* realized here as native-Rust implementations, so Verity
+  Consensus receives precomputed roots and already-verified signatures — a placement, not a contract
+  (were SSZ verified in Lean it would compute those roots in Zone A); and persistence as a Repository
+  (`verity-db`) the single writer reads and writes through.
 - **Zone C (edge / IO, Rust):** delivers `SignedBlock` and `SignedAggregatedAttestation`
   messages and the slot clock that produces interval ticks.
 

@@ -36,7 +36,10 @@ Ethlambda's `ethlambda-lean-ffi` is a narrow FFI crate. In the
 Lean implementation; without it, Rust uses the native implementation.
 
 Verity's `verity-consensus-sys` should be broader and more explicit. It should
-be the only raw ABI boundary for Verity Consensus.
+be the only raw ABI boundary for Verity Consensus. It is the **swappable backend
+behind the capability contracts**: its export set is exactly whatever Zone A
+currently hosts, and is expected to expand or contract as the verification
+boundary moves (see [Zone migration](ARCHITECTURE.md#zone-migration)).
 
 Responsibilities:
 
@@ -83,7 +86,11 @@ verity-chain:
 
 `verity-chain` should not reimplement the state transition. If a Rust fallback
 exists, it should implement the same Verity Consensus boundary for testing,
-conformance, or development, not grow as a parallel ad hoc path.
+conformance, or development, not grow as a parallel ad hoc path. That "same
+boundary" is precisely the `StateTransition` capability contract: a native-Rust
+implementation of it *is* the Zone-B placement of the STF, so a development
+fallback and an eventual A → B migration are the same mechanism, not two (see
+[Zone migration](ARCHITECTURE.md#zone-migration)).
 
 > Open: this section assumes the STF lives in Lean. The Lean Ethereum roadmap
 > points toward ZK-proving the consensus STF, which pulls the STF toward a
@@ -118,7 +125,9 @@ The important distinction is ownership versus decision:
 - Lean decides the consensus-critical transition from immutable inputs.
 
 This keeps the proof surface pure while avoiding a large mutable database-backed
-Store inside Lean.
+Store inside Lean. Fork choice is therefore the worked example of a capability
+*split* across the boundary — a decision function in Zone A over a `Store` owned
+in Zone B (see [Zone migration](ARCHITECTURE.md#zone-migration)).
 
 ## 4. Chain Orchestration Boundary
 
@@ -186,6 +195,11 @@ Sections 1 and 2 assume the consensus state transition lives in Verity Consensus
 (Lean 4) behind `verity-consensus-sys`. That assumption is recorded here as **open,
 not settled**. No decision is changed in this memo — this section only captures the
 tension and the trigger for revisiting it.
+
+The architecture is built to *withstand* this move regardless of how it resolves:
+relocating the STF is a re-binding of the `StateTransition` capability contract from
+an FFI-into-Lean implementation to a native / zkVM one, not a redesign. This is the
+worked A → B example in [Zone migration](ARCHITECTURE.md#zone-migration).
 
 ### What surfaced it
 

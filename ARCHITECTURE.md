@@ -8,21 +8,30 @@ That two-language split makes Verity structurally different from single-language
 first-class architectural axis is **the verification boundary** — what is inside the proven consensus implementation
 and what is outside it. Everything else, including the concurrency model, follows from that axis.
 
-The architecture is organized into three concentric zones, drawn from the proven consensus implementation outward.
+The architecture is organized into three concentric zones, drawn from the proven consensus
+implementation outward. A zone is defined by the **guarantee level** it holds code to — proven-pure,
+trusted-and-panic-free, or concurrent-IO — *not* by the specific components that happen to occupy it
+today. Which component sits in which zone is a **current snapshot**, expected to change as the
+verification frontier moves; see [Zone migration](#zone-migration).
 
 ## Zones
 
-- **Zone A — Verity Consensus (Lean 4, pure).** Pure, total functions only — no hidden state, clocks,
-  locks, or scheduling. This is the surface that Lean proofs defend. Compiled via Lean's C backend
-  into a static library and exposed to Rust over a C ABI (no Aeneas).
-  Deliberately **minimal**: only the state transition and the fork-choice transition functions.
+- **Zone A — Verity Consensus (Lean 4, pure).** The proven-pure zone: pure, total functions only —
+  no hidden state, clocks, locks, or scheduling. This is the surface that Lean proofs defend. Compiled
+  via Lean's C backend into a static library and exposed to Rust over a C ABI (no Aeneas). Its current
+  occupants are deliberately **minimal** — only the state transition and the fork-choice transition
+  functions — but that export set is a snapshot, not a definition: it contracts if a function leaves for
+  a zkVM artifact, and grows if a function (e.g. `hash_tree_root`) is verified in Lean and pulled in.
 
-- **Zone B — Trusted shell (Rust, panic-free).** Manufactures clean, typed, **already-verified**
-  inputs for Verity Consensus, owns the consensus state and fork-choice view as a single writer, and threads
-  immutable values through Verity Consensus. Proofs do not reach here, so it is held to the language-level
-  bar instead: memory-safe, strongly typed, and panic-free. SSZ / `hash_tree_root` and signature
-  verification live here, so Verity Consensus receives precomputed roots and verified signatures rather than
-  recomputing or trusting them itself.
+- **Zone B — Trusted shell (Rust, panic-free).** The trusted, panic-free zone. Manufactures clean,
+  typed, **already-verified** inputs for Verity Consensus, owns the consensus state and fork-choice view
+  as a single writer, and threads immutable values through Verity Consensus. Proofs do not reach here, so
+  it is held to the language-level bar instead: memory-safe, strongly typed, and panic-free. *Today*, SSZ
+  / `hash_tree_root` and signature verification are realized here as native-Rust implementations of their
+  [capability contracts](#capability-contracts), so Verity Consensus receives precomputed roots and
+  verified signatures rather than recomputing or trusting them itself. That is a placement, not a
+  contract: were a Lean-verified serialization to satisfy the same contract across the FFI seam, Zone A
+  would compute those roots itself and Zone B's consumers would not change.
 
 - **Zone C — Edge / IO (Rust, concurrent).** The only place where concurrency and the outside world
   live: networking, the slot clock, validator duties, RPC, metrics, and node orchestration. Bounded
@@ -102,20 +111,28 @@ sequenceDiagram
 
 ## Crate layout
 
-The Rust runtime is a Cargo workspace. Crates map onto the zones, and **dependencies flow strictly
-inward, C → B → A** — the one-directional invariant that makes the verification boundary enforced by
-the compiler rather than by discipline. Names follow the existing `verity-*` convention
+The Rust runtime is a Cargo workspace. Crates map onto the zones, and **calls and dependencies flow
+inward, from higher-effect / lower-assurance toward lower-effect / higher-assurance — Zone A never calls
+outward.** Today that ordering reads `C → B → A` over the current crate snapshot, and the compiler
+enforces it rather than discipline. The invariant is stated over *guarantee levels*, not crate
+identities, so it survives migration: if `hash_tree_root` moves into Zone A, `verity-types` (Zone B)
+calls inward to A for it — still `B → A`, still legal; if the state transition leaves Zone A, A's export
+set shrinks but nothing starts calling outward. Names follow the existing `verity-*` convention
 (`verity-crypto`, `verity-metrics`); the sole exception is the FFI bindings crate, which follows its
 upstream Lean library name per Rust's `-sys` convention.
 
 **Crates Verity must build itself**
 
-- `verity-types` — consensus container definitions (Block, State, Vote, …) and constants. SSZ
-  encoding / `hash_tree_root` is derived from an external SSZ library, not reimplemented.
+- `verity-types` — consensus container definitions (Block, State, Vote, …) and constants. The
+  Serialization capability (SSZ encode / decode, `hash_tree_root`) is *currently* satisfied by an
+  external SSZ library behind an adapter in Zone B; the contract (typed value ↔ bytes / root) is stable
+  whether that implementation is the external Rust library or a Lean implementation reached over FFI.
   Foundational; depended on by every other crate.
 - `verity-consensus-sys` — raw FFI bindings to Verity Consensus, which is built and proven in a
   separate repository and consumed here as a static library. Confines all `unsafe`. Named after the
-  upstream Lean library (`VerityConsensus`).
+  upstream Lean library (`VerityConsensus`). It is the swappable backend behind the
+  [capability contracts](#capability-contracts): its exported function set is exactly *whatever Zone A
+  currently hosts*, and is expected to expand or contract as the frontier moves.
 - `verity-chain` — the single writer that owns the consensus state and the fork-choice store, and
   coordinates the `State` and `Store` aggregates under one consistency boundary. The only caller of
   Verity Consensus; wraps `verity-consensus-sys` behind a safe API. Reads and writes through `verity-db`.
@@ -173,10 +190,73 @@ flowchart TB
     DB --> TYPES
 ```
 
+### Capability contracts
+
+The A↔B boundary is expressed not as a fixed list of FFI functions but as a small set of **capability
+contracts** — Rust-side interfaces (traits), one per consensus capability that could be realized on
+either side of the proof boundary:
+
+- `StateTransition` — `state_transition(pre_state, verified_block) -> Result<post_state>`
+- `ForkChoiceDecision` — the pure decision: `fork_choice_decision(view) -> head / safe_target / updated view`
+- `Serialization` / `HashTreeRoot` — `hash_tree_root(value) -> root`, encode / decode
+- `SignatureVerification` — verify aggregate (Type-1 / Type-2) proofs
+
+Each contract admits two implementations: a **native-Rust** implementation (the capability lives in
+Zone B) or an **FFI-into-Lean** implementation provided by `verity-consensus-sys` (the capability lives
+in Zone A). Consumers such as `verity-chain` depend only on the contract and never learn whether it is
+Lean-backed. Which side hosts a capability is therefore the combination of: (a) which implementation is
+bound — a wiring decision in the `verity` binary, constrained by what is actually proven; (b) where the
+proof obligation sits; and (c) whether that capability's functions appear in the `verity-consensus-sys`
+export set.
+
+The contracts must be defined **inner to both their consumers and their implementations** — otherwise
+`verity-consensus-sys` implementing a contract defined in `verity-chain` would force a `sys → chain`
+edge and break the inward invariant. The recommended home is a thin contract crate (e.g.
+`verity-consensus-api`) holding only the trait definitions — the minimal expression of a movable
+boundary; folding them into `verity-types` is the alternative but mixes container *shape* with
+capability *behavior*. The final crate placement is an implementation-time decision; what matters
+architecturally is that the boundary is a contract, not a hardcoded call site.
+
 > **Open for discussion.** The granularity and responsibility split of `verity-chain` and
 > `verity-validator` are not settled. Examples still in play: whether proposer selection lives in the
 > Verity Consensus (Zone A) or is computed Rust-side; and whether duty scheduling, signing, and
 > aggregation should be separate crates rather than folded into `verity-validator`.
+
+## Zone migration
+
+Because a zone is a guarantee level and placement is a snapshot, components are expected to cross the
+A↔B boundary over the life of the project — the [verification boundary moves](docs/src/design-philosophy.md).
+The [capability contracts](#capability-contracts) are what make this affordable: a migration is a
+**re-binding plus a move of the proof obligation**, not a redesign.
+
+**Cost model — what a migration touches, and what it must not.** A migration may change:
+
+- which implementation is bound behind the capability contract (native-Rust ↔ FFI-into-Lean);
+- where the proof obligation sits (a Lean proof vs. a language-level / external-library guarantee);
+- the `verity-consensus-sys` export set (it grows or shrinks);
+- which crate the implementation lives in.
+
+A migration must **not** change:
+
+- consumer code (`verity-chain`, `verity-validator`) — it depends on the contract, not the placement;
+- consensus container **shapes** (the `verity-types` shared model) — shape is separable from the
+  serialization *behavior* that may move (see [Domain Model](DOMAIN_MODEL.md));
+- the zone **definitions** (the guarantee levels);
+- the inward invariant (calls still flow toward higher assurance; Zone A still never calls outward).
+
+**Anticipated migrations.** Two are foreseen, in opposite directions, alongside two partial placements
+already in the design:
+
+| Capability | Today | Anticipated move | Trigger | Effect |
+|---|---|---|---|---|
+| State transition | Zone A | A → B | An L\* "real-time CL proofs" spec for the consensus STF materializes upstream (see [Ethlambda notes](memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification)) | Zone A export set shrinks; FFI surface contracts; the `StateTransition` contract is bound to a zkVM-friendly (Rust / leanVM) implementation |
+| SSZ / `hash_tree_root` | Zone B | B → A | A Lean-verified merkleization becomes available | Zone A computes its own roots; "Verity Consensus receives precomputed roots" no longer holds; `verity-types` calls inward to A for the `Serialization` contract |
+| Fork choice | A (decision) + B (`Store`) | — | — | The worked example of a capability split across the boundary: a pure decision in Zone A over a mutable `Store` owned in Zone B |
+| Proposer selection | Undecided (A or B) | — | — | Open (see the note above): a Zone A decision function or computed Rust-side |
+
+The STF row is **not a decision to move it** — the working position is that the STF stays in Verity
+Consensus (Lean 4). It is recorded so the design is shown to *withstand* the move if the trigger fires;
+the full tension is in [Ethlambda notes](memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification).
 
 ## Notes
 
