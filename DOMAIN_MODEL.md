@@ -18,26 +18,26 @@ The consensus domain decomposes into the bounded contexts below. Each owns one m
 ubiquitous language; the table also records *where* that model is realized. The notable
 property — one no single-language client has to reason about — is that **a context's model can
 straddle the verification boundary**: **Fork Choice** is proven as pure decision functions in
-Zone A, yet its mutable `Store` and single-writer ownership are realized in Zone B. The
-**Zone realization** column is a *current snapshot*, not a fixed assignment — capabilities migrate
-across the A↔B boundary as the verification frontier moves (see
-[Zone migration](ARCHITECTURE.md#zone-migration)), and the State Transition and Serialization rows are
+Verified Core, yet its mutable `Store` and single-writer ownership are realized in Runtime Shell. The
+**Realized in** column is a *current snapshot*, not a fixed assignment — capabilities migrate
+across the Verified Core ↔ Runtime Shell boundary as the verification frontier moves (see
+[boundary migration](ARCHITECTURE.md#boundary-migration)), and the State Transition and Serialization rows are
 expected to move in opposite directions. The
 *tactical* per-zone view stays in [Mapping to verification zones](#mapping-to-verification-zones)
 below; this section is the *strategic* frame above it.
 
-| Context | Kind | Model owns | Zone realization | Crate |
+| Context | Kind | Model owns | Realized in | Crate |
 |---|---|---|---|---|
-| **State Transition** | Consensus-critical | `State` aggregate + `SignedBlock` processing; justification / finalization invariants | Zone A (pure fns) | Verity Consensus (separate Lean repo) |
-| **Fork Choice** | Consensus-critical | `Store` aggregate, LMD GHOST, head / safe_target, payload `new → known` | Zone A pure decision fns **+** Zone B single-writer store | Verity Consensus + `verity-chain` |
-| **Signature & Aggregation** | Supporting | signatures, Type-1 / Type-2 proofs, verify / aggregate | Zone B | `verity-crypto` (ACL → leanMultisig) |
-| **Serialization** | Supporting | SSZ encode / decode, `hash_tree_root`, merkleization | Zone B | `verity-types` (+ external SSZ lib) |
-| **Validator Duties** | Supporting | proposer / attester duties, production, signing, aggregation scheduling | Zone C | `verity-validator` |
-| **Networking** | Generic | gossip topics, req / resp, peers | Zone C | `verity-p2p` |
-| **Persistence** | Generic | block / state store, finalized anchor; Repository over an embedded KV store | Zone B | `verity-db` |
-| **Node Orchestration** | Generic | lifecycle, slot clock, backpressure | Zone C | `verity` (bin) |
-| **API** | Generic | HTTP / RPC surface | Zone C | `verity-rpc` |
-| **Telemetry** | Generic | metric contract | Zone C | `verity-metrics` (Conformist → leanMetrics) |
+| **State Transition** | Consensus-critical | `State` aggregate + `SignedBlock` processing; justification / finalization invariants | Verified Core (pure fns) | Verity Consensus (separate Lean repo) |
+| **Fork Choice** | Consensus-critical | `Store` aggregate, LMD GHOST, head / safe_target, payload `new → known` | Verified Core pure decision fns **+** Runtime Shell single-writer store | Verity Consensus + `verity-chain` |
+| **Signature & Aggregation** | Supporting | signatures, Type-1 / Type-2 proofs, verify / aggregate | Runtime Shell | `verity-crypto` (ACL → leanMultisig) |
+| **Serialization** | Supporting | SSZ encode / decode, `hash_tree_root`, merkleization | Runtime Shell | `verity-types` (+ external SSZ lib) |
+| **Validator Duties** | Supporting | proposer / attester duties, production, signing, aggregation scheduling | I/O Edge | `verity-validator` |
+| **Networking** | Generic | gossip topics, req / resp, peers | I/O Edge | `verity-p2p` |
+| **Persistence** | Generic | block / state store, finalized anchor; Repository over an embedded KV store | Runtime Shell | `verity-db` |
+| **Node Orchestration** | Generic | lifecycle, slot clock, backpressure | I/O Edge | `verity` (bin) |
+| **API** | Generic | HTTP / RPC surface | I/O Edge | `verity-rpc` |
+| **Telemetry** | Generic | metric contract | I/O Edge | `verity-metrics` (Conformist → leanMetrics) |
 
 > **Shared Model.** `Slot`, `Checkpoint`, `Validator`, `Config`, and all SSZ containers form a
 > shared model between State Transition and Fork Choice, realized as `verity-types`; changing
@@ -46,7 +46,7 @@ below; this section is the *strategic* frame above it.
 > concern (SSZ behavior derived over those types via the external library). These two roles separate
 > cleanly: the container **shapes** are the shared model and stay in `verity-types` regardless of zone,
 > whereas the Serialization **behavior** (encode / decode / `hash_tree_root`) is a capability whose
-> implementation can migrate to Zone A without touching those shapes — which is why a Lean-verified SSZ
+> implementation can migrate to Verified Core without touching those shapes — which is why a Lean-verified SSZ
 > would not perturb the shared model.
 
 ## Context map
@@ -63,11 +63,11 @@ pattern names *how* each relationship is governed.
 
 Internally, Serialization and Signature & Aggregation are **suppliers** that hand verified,
 typed inputs — roots and already-verified signatures — to the consensus-critical contexts; each
-satisfies a capability contract whose implementation may be native-Rust (Zone B) or FFI-into-Lean
-(Zone A). `verity-chain` is the **single-writer customer** that assembles them and is the sole caller of
-Zone A. Persistence is factored out as a **Repository** (`verity-db`) that `verity-chain` reads and
+satisfies a capability contract whose implementation may be native-Rust (Runtime Shell) or FFI-into-Lean
+(Verified Core). `verity-chain` is the **single-writer customer** that assembles them and is the sole caller of
+Verified Core. Persistence is factored out as a **Repository** (`verity-db`) that `verity-chain` reads and
 writes through, keeping storage out of the aggregate coordinator. This matches the inward dependency
-invariant (calls flow toward higher assurance; Zone A never calls outward) in
+invariant (calls flow toward higher assurance; Verified Core never calls outward) in
 [Architecture](ARCHITECTURE.md).
 
 ```mermaid
@@ -78,16 +78,16 @@ flowchart LR
         METR["leanMetrics"]
         SSZ["SSZ library"]
     end
-    subgraph consensusD["Consensus-critical domain · Zone A"]
+    subgraph consensusD["Consensus-critical domain · Verified Core"]
         ST["State Transition"]
         FC["Fork Choice"]
     end
-    subgraph supp["Supporting · Zone B"]
+    subgraph supp["Supporting · Runtime Shell"]
         SIG["Signature & Aggregation"]
         SER["Serialization"]
     end
     SK["Shared model — verity-types<br/>Slot · Checkpoint · Validator · containers"]
-    TEL["Telemetry · Zone C"]
+    TEL["Telemetry · I/O Edge"]
     SPEC -->|"Conformist (shape) / Partnership (correctness)"| ST
     SPEC --> FC
     MULTI -->|ACL| SIG
@@ -120,11 +120,11 @@ Key constants (`subspecs/chain/config.py`): `SECONDS_PER_SLOT=4`, `INTERVALS_PER
 
 The domain has three aggregate roots with distinct lifecycles and verification placement:
 
-| Aggregate root | Nature | Verification zone |
+| Aggregate root | Nature | Realized in |
 |---|---|---|
-| **`State`** | The consensus state. Hashed (`state_root`); evolved only by the pure state transition. | Zone A (Verity Consensus) operates on it |
-| **`SignedBlock`** | A proposal: a block plus one aggregated proof over all its signatures. | Crosses Zone C → B → A |
-| **`Store`** | A node's local fork-choice view. *Not* hashed; mutable working set. | Zone B (single writer) |
+| **`State`** | The consensus state. Hashed (`state_root`); evolved only by the pure state transition. | Verified Core (Verity Consensus) operates on it |
+| **`SignedBlock`** | A proposal: a block plus one aggregated proof over all its signatures. | Crosses I/O Edge → Runtime Shell → Verified Core |
+| **`Store`** | A node's local fork-choice view. *Not* hashed; mutable working set. | Runtime Shell (single writer) |
 
 The only **Entity** is `Validator` (identity = registry index). Everything else is a **Value
 Object** — defined by its attributes and immutable, consistent with the spec's SSZ containers.
@@ -305,14 +305,14 @@ stateDiagram-v2
 
 This domain model lines up with the [Architecture](ARCHITECTURE.md) zones:
 
-- **Zone A (Verity Consensus, Lean):** the `State` aggregate and the state-transition service —
+- **Verified Core (Verity Consensus, Lean):** the `State` aggregate and the state-transition service —
   pure, total functions that the proofs defend.
-- **Zone B (trusted shell, Rust):** the `Store` aggregate as single writer; the Serialization and
+- **Runtime Shell (trusted shell, Rust):** the `Store` aggregate as single writer; the Serialization and
   Signature & Aggregation capabilities, *today* realized here as native-Rust implementations, so Verity
   Consensus receives precomputed roots and already-verified signatures — a placement, not a contract
-  (were SSZ verified in Lean it would compute those roots in Zone A); and persistence as a Repository
+  (were SSZ verified in Lean it would compute those roots in Verified Core); and persistence as a Repository
   (`verity-db`) the single writer reads and writes through.
-- **Zone C (edge / IO, Rust):** delivers `SignedBlock` and `SignedAggregatedAttestation`
+- **I/O Edge (edge / IO, Rust):** delivers `SignedBlock` and `SignedAggregatedAttestation`
   messages and the slot clock that produces interval ticks.
 
 ## Ubiquitous language

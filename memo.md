@@ -37,9 +37,9 @@ Lean implementation; without it, Rust uses the native implementation.
 
 Verity's `verity-consensus-sys` should be broader and more explicit. It should
 be the only raw ABI boundary for Verity Consensus. It is the **swappable backend
-behind the capability contracts**: its export set is exactly whatever Zone A
+behind the capability contracts**: its export set is exactly whatever Verified Core
 currently hosts, and is expected to expand or contract as the verification
-boundary moves (see [Zone migration](ARCHITECTURE.md#zone-migration)).
+boundary moves (see [boundary migration](ARCHITECTURE.md#boundary-migration)).
 
 Responsibilities:
 
@@ -88,9 +88,9 @@ verity-chain:
 exists, it should implement the same Verity Consensus boundary for testing,
 conformance, or development, not grow as a parallel ad hoc path. That "same
 boundary" is precisely the `StateTransition` capability contract: a native-Rust
-implementation of it *is* the Zone-B placement of the STF, so a development
-fallback and an eventual A → B migration are the same mechanism, not two (see
-[Zone migration](ARCHITECTURE.md#zone-migration)).
+implementation of it *is* the Runtime-Shell placement of the STF, so a development
+fallback and an eventual Verified Core → Runtime Shell migration are the same mechanism, not two (see
+[boundary migration](ARCHITECTURE.md#boundary-migration)).
 
 > Open: this section assumes the STF lives in Lean. The Lean Ethereum roadmap
 > points toward ZK-proving the consensus STF, which pulls the STF toward a
@@ -126,8 +126,8 @@ The important distinction is ownership versus decision:
 
 This keeps the proof surface pure while avoiding a large mutable database-backed
 Store inside Lean. Fork choice is therefore the worked example of a capability
-*split* across the boundary — a decision function in Zone A over a `Store` owned
-in Zone B (see [Zone migration](ARCHITECTURE.md#zone-migration)).
+*split* across the boundary — a decision function in Verified Core over a `Store` owned
+in Runtime Shell (see [boundary migration](ARCHITECTURE.md#boundary-migration)).
 
 ## 4. Chain Orchestration Boundary
 
@@ -199,7 +199,7 @@ tension and the trigger for revisiting it.
 The architecture is built to *withstand* this move regardless of how it resolves:
 relocating the STF is a re-binding of the `StateTransition` capability contract from
 an FFI-into-Lean implementation to a native / zkVM one, not a redesign. This is the
-worked A → B example in [Zone migration](ARCHITECTURE.md#zone-migration).
+worked Verified Core → Runtime Shell example in [boundary migration](ARCHITECTURE.md#boundary-migration).
 
 ### What surfaced it
 
