@@ -18,3 +18,4 @@
 # Reference
 
 - [Architecture](./reference/architecture.md)
+- [Data Representation Across Zones](./reference/data-representation.md)
