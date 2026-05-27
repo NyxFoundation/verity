@@ -18,6 +18,7 @@ Learn more at [verityclient.com](https://verityclient.com).
 - https://hive.leanroadmap.org/
 - https://observatory.leanroadmap.org/
 - https://leanroadmap.org/
+- https://strawmap.org/
 
 ## License
 
