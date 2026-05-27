@@ -10,7 +10,6 @@ exclude = [
     "^https://localhost",
 ]
 
-# Don't verify mailto: addresses.
-exclude_mail = true
+# mailto: addresses are excluded by default (include_mail = false).
 
 max_retries = 2
