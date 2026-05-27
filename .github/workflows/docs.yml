@@ -17,6 +17,27 @@ permissions:
   deployments: write
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v22
+        with:
+          # SUMMARY.md is mdBook's TOC — multiple H1 part-titles are by design.
+          globs: |
+            docs/src/**/*.md
+            !docs/src/SUMMARY.md
+
+      - name: Check internal links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          # Offline: verify relative/anchor links only — deterministic on PRs.
+          # External links are checked on a schedule by the Quality workflow.
+          args: "--offline --no-progress docs/src"
+          fail: true
+
   build:
     runs-on: ubuntu-latest
     defaults:

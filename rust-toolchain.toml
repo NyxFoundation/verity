@@ -1,0 +1,6 @@
+# Pin the exact stable toolchain, matching the project's "pin the exact version" philosophy
+# (cf. mdBook 0.4.40). Bump deliberately; CI installs whatever is pinned here.
+[toolchain]
+channel = "1.94.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

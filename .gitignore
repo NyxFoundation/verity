@@ -1,0 +1,11 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Lean (future Verified Core integration)
+.lake/
+**/*.olean
+/build/
+
+# OS / editor cruft
+.DS_Store

@@ -1,0 +1,42 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly full (online) link check — Mondays 06:00 UTC.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  typos:
+    # Spell-check on every push/PR; skip the scheduled run (that one is for link checking).
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Spell check
+        uses: crate-ci/typos@v1.45.2
+
+  link-check:
+    # Full external link check on a schedule (and on demand) — kept off PRs to avoid
+    # flaky external rate-limits blocking merges. PR-time link checking is the offline
+    # check in the Docs workflow.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: "--no-progress docs/src README.md ARCHITECTURE.md DOMAIN_MODEL.md"
+          fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
