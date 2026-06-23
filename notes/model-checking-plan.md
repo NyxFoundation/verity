@@ -8,20 +8,25 @@
 
 ## The core claim
 
-Verity's verification path is **Lean 4 + Aeneas**: translate Rust into a pure Lean
-functional model, then prove correctness deductively. That deductive proof is the
-ceiling for the *functional correctness* of the proven core, and nothing here displaces
-it. Model checking is adopted as a **complement**, never a replacement — it earns its
-place in exactly three situations the deductive proof leaves open:
+Verity's verification path is a **Lean 4 deductive proof of the Verified Core**: the
+consensus logic is written as pure, total Lean functions and proven correct, then
+compiled via Lean's C backend into a static library and consumed by the Rust runtime over
+a C ABI (see `ARCHITECTURE.md`). That deductive proof is the ceiling for the *functional
+correctness* of the proven core, and nothing here displaces it. Model checking is adopted
+as a **complement**, never a replacement — it earns its place in exactly three situations
+the deductive proof leaves open:
 
-- **Zones Aeneas structurally cannot reach.** Aeneas models *safe, sequential* Rust
-  only. It does not model `unsafe`, interior mutability, **concurrency**, trait objects,
-  or I/O. Everything Verity must run that lives outside that subset is, by construction,
-  outside the Lean guarantee — and that is precisely where a different technique has to
-  carry the assurance.
-- **The proof's own assumptions, checked on the real Rust.** A Lean proof reasons about
-  the *model* Aeneas extracted. Whether the compiled Rust actually upholds the
-  panic-freedom and arithmetic bounds the proof leans on is a separate, checkable claim.
+- **Zones the deductive proof structurally cannot reach.** The proof reasons only about
+  the pure, total, *sequential* Lean core. It says nothing about `unsafe`, interior
+  mutability, **concurrency**, trait objects, I/O, or the FFI seam. Everything Verity must
+  run that lives outside that core — the whole Rust runtime that wraps it — is, by
+  construction, outside the Lean guarantee, and that is precisely where a different
+  technique has to carry the assurance.
+- **The Rust-side preconditions the proof depends on.** The proof discharges correctness
+  *given* clean, typed, in-range inputs; the Runtime Shell and Boundary that manufacture
+  those inputs are unproven Rust. Whether that Rust is actually panic-free and
+  range-correct is a separate, checkable claim — independent of the proof, not a re-check
+  of it.
 - **The boundary code**, where promotion/lowering and range checks live — bounded,
   input-driven logic that a bounded checker fits naturally and cheaply.
 
@@ -31,17 +36,21 @@ multi-client devnet interop. Adopting model checking is therefore novel here, an
 a direct expression of Verity's **"proof over test"** stance — the floor those clients
 stand on is the floor Verity builds above.
 
-## The three zones, and what checks each
+## The zones, and what checks each
 
-The architecture is organized around a **moving verification boundary** with three
-zones (see `docs/src/reference/data-representation.md`). Each zone is owned by a
-different primary technique; model checking plays a specific, bounded role in each.
+The architecture is organized around a **moving verification boundary** (see
+`docs/src/reference/data-representation.md`): the proven core, the boundary, and the
+edges. Per `ARCHITECTURE.md` the edges split by guarantee into the panic-free **Runtime
+Shell** and the concurrent **I/O Edge** — a distinction that matters here, because
+concurrency checking applies only to the latter. Each zone is owned by a different primary
+technique; model checking plays a specific, bounded role in each.
 
 | Zone | Primary owner | Model-checking role |
 |---|---|---|
-| **Proven Core** (state transition, fork choice) | Lean 4 + Aeneas (deductive) | Automated panic / overflow checks on the compiled Rust, as defense-in-depth on the proof's assumptions |
+| **Proven Core** (state transition, fork choice) | Lean 4 (deductive proof) | None inside the core — it is Lean, owned by the proof. Kani instead checks the Rust FFI wrapper that feeds it (see Boundary) |
 | **Boundary** (promote ↔ lower, range & well-formedness checks, SSZ) | — (no single owner yet) | Bounded model checking + property testing: round-trip, no-panic-on-any-input, range enforcement |
-| **Edge** (Runtime Shell: networking, storage, scheduling, RPC) | Ordinary high-quality Rust | Concurrency model checking + dynamic UB detection — the zone Aeneas cannot model at all |
+| **Runtime Shell** (storage, DB, SSZ, crypto, FFI bindings — Rust, panic-free) | Ordinary high-quality Rust | Dynamic UB detection (Miri) on `unsafe` / FFI / crypto bindings |
+| **I/O Edge** (networking, slot clock, validator duties, RPC, metrics, orchestration — Rust, concurrent) | Ordinary high-quality Rust | Concurrency model checking (Loom / Shuttle) — the only concurrent zone, which the deductive proof does not reach |
 
 ## Tool-to-zone mapping
 
@@ -53,9 +62,10 @@ is the decision.
   arithmetic overflow/underflow, and memory-safety faults on the *real* Rust (via MIR),
   for all inputs up to a bound. This is the headline adoption. It serves two beliefs at
   once: **"Panic-freedom as a proof contract"** and **"Arithmetic that mirrors proven
-  invariants"** — and because it operates on the compiled Rust rather than the extracted
-  Lean model, it is an *independent* check on the compiler + Aeneas trust chain. Its
-  natural home is the **Boundary**: promote/lower conversions and SSZ are exactly the
+  invariants"**. Its domain is the **Rust-side boundary and FFI-wrapper code** — the
+  unproven Rust that surrounds the Lean core — not the Lean core itself, which Kani cannot
+  reach (and it does *not* validate the Lean C backend or the static library it emits).
+  Its natural home is the **Boundary**: promote/lower conversions and SSZ are exactly the
   bounded, input-driven code where a no-panic-on-any-byte-sequence and a
   `lower ∘ promote = id` round-trip property are cheap to state and decide.
 
@@ -68,24 +78,26 @@ is the decision.
   the gap between them stays visible.
 
 - **Loom** (exhaustive, small interleaving spaces) and **Shuttle** (randomized,
-  scales to large concurrent subsystems). Concurrency model checkers for the **Edge**.
-  This is the zone Aeneas cannot touch, and it is non-empty *by design*: the belief
-  **"Pure, deterministic Verity Consensus"** deliberately pushes concurrency and I/O to
-  the edges so the core stays provable. That same decision concentrates all the
-  interleaving, ordering, and data-race risk into the Edge — so the Edge is exactly
-  where interleaving exploration earns its keep. Use Loom where the interleaving space
-  is small enough to explore exhaustively; reach for Shuttle when it is not.
+  scales to large concurrent subsystems). Concurrency model checkers for the **I/O Edge**,
+  the only zone where concurrency and the outside world live. This is a zone the deductive
+  proof cannot reach, and it is non-empty *by design*: the belief **"Pure, deterministic
+  Verity Consensus"** deliberately pushes concurrency and I/O to the edge so the core stays
+  provable. That same decision concentrates all the interleaving, ordering, and data-race
+  risk into the I/O Edge — so it is exactly where interleaving exploration earns its keep.
+  Use Loom where the interleaving space is small enough to explore exhaustively; reach for
+  Shuttle when it is not.
 
-- **Miri** (dynamic undefined-behavior detector). For any `unsafe`, FFI, or
-  cryptographic-binding code that necessarily falls outside Aeneas's safe-subset
-  guarantee. Catches aliasing violations (Stacked/Tree Borrows), data races, and
-  unaligned/out-of-bounds access on exercised paths.
+- **Miri** (dynamic undefined-behavior detector). For the `unsafe`, FFI, and
+  cryptographic-binding code in the Runtime Shell — code that necessarily falls outside
+  the proven pure core. Catches aliasing violations (Stacked/Tree Borrows), data races,
+  and unaligned/out-of-bounds access on exercised paths.
 
-- **Not adopted: Creusot, Verus, Prusti.** These are deductive verifiers that *overlap*
-  with Aeneas rather than complement it. Splitting the deductive effort across two
-  verification stacks would dilute it and double the trust surface. Verity commits to
-  one deductive path (Lean/Aeneas) and uses model checking only where it adds something
-  the deductive path cannot.
+- **Not adopted: Creusot, Verus, Prusti.** These are deductive verifiers for *Rust*.
+  Adopting one would mean standing up a *second*, Rust-side deductive stack for the
+  Runtime Shell / Boundary alongside the Lean proof of the core. Verity deliberately keeps
+  a single deductive stack — **Lean 4** — and does not add a second one unless that
+  strategy changes; model checking complements the Lean path rather than duplicating
+  deductive effort.
 
 ## Graduated assurance along the moving boundary
 
@@ -117,6 +129,11 @@ Stating what these tools do *not* give is as important as stating what they do.
   run is evidence, not a proof of race-freedom.
 - **Miri is dynamic.** It only finds undefined behavior on paths that tests actually
   exercise; unexercised `unsafe` is unchecked.
+- **The Lean-to-artifact pipeline is unchecked by any tool here.** The Lean proof covers
+  the Lean functional model; the Lean C backend, the generated C, the static library,
+  linking, and the artifact's functional equivalence to the proof are outside every tool
+  in this memo. The C ABI seam between the Rust runtime and the proven core is trusted,
+  not verified.
 - **Toolchain reality.** Kani ships its own pinned toolchain and its official CI action
   targets Linux/x86_64; Miri requires a nightly toolchain. These constrain *where* the
   checks run, not *whether* they are worth running.
@@ -125,10 +142,10 @@ Stating what these tools do *not* give is as important as stating what they do.
 
 | Belief (design philosophy) | Technique that carries it |
 |---|---|
-| Proof over test | Lean/Aeneas (ceiling); model checking as the complement above the test floor |
-| Panic-freedom as a proof contract | Kani (panic-freedom on real Rust) |
-| Arithmetic that mirrors proven invariants | Kani (overflow/underflow on real Rust) |
-| Pure, deterministic Verity Consensus | Loom / Shuttle guard the Edge that purity creates |
+| Proof over test | Lean 4 (ceiling); model checking as the complement above the test floor |
+| Panic-freedom as a proof contract | Kani (panic-freedom on the Rust-side boundary/FFI wrapper) |
+| Arithmetic that mirrors proven invariants | Kani (overflow/underflow on the Rust-side boundary/FFI wrapper) |
+| Pure, deterministic Verity Consensus | Loom / Shuttle guard the I/O Edge that purity creates |
 | Conformance through shared evidence | proptest + bolero, one harness / many engines, leanSpec vectors |
 | The verification boundary is first-class and moves | Graduated assurance: none → Kani → Lean |
-| Trust chain from spec to artifact | Kani as independent check on compiler + Aeneas; Miri on `unsafe`/FFI |
+| Trust chain from spec to artifact | Kani on the Rust-side boundary/FFI wrapper; Miri on `unsafe`/FFI (the Lean-to-artifact pipeline stays trusted, not verified) |
