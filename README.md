@@ -29,6 +29,11 @@ Verity makes a different bet — that the implementation should be *proven* to m
 - https://leanroadmap.org/
 - https://strawmap.org/
 
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for local setup — Verity uses
+[pre-commit](https://pre-commit.com/) to run lint locally before it reaches CI.
+
 ## License
 
 [MIT](./LICENSE)

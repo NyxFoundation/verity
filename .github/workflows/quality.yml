@@ -17,14 +17,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  typos:
-    # Spell-check on every push/PR; skip the scheduled run (that one is for link checking).
+  pre-commit:
+    # Enforcement gate for the local pre-commit hooks: runs the same .pre-commit-config.yaml
+    # so PRs from contributors who skip the hooks (--no-verify, or never ran `pre-commit
+    # install`) are still linted. Skip the scheduled run (that one is for link checking).
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Spell check
-        uses: crate-ci/typos@v1.45.2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      # SKIP=fmt,clippy: this lightweight job has no Rust toolchain — rust.yml runs those
+      # where the cache lives. pre-commit/action caches the hook environments.
+      - uses: pre-commit/action@v3.0.1
+        env:
+          SKIP: fmt,clippy
 
   link-check:
     # Full external link check on a schedule (and on demand) — kept off PRs to avoid
