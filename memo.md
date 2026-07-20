@@ -208,8 +208,11 @@ worked Verified Core → Runtime Shell example in [boundary migration](ARCHITECT
   reason: *"ZK proving the STF is in the roadmap, and moving to Lean4 would get in
   the way of that."* That PR targeted a 3SF consensus function — the same surface
   Verity places inside Verity Consensus.
-- The Lean Ethereum roadmap's L* phase — the `lstar` fork Verity targets — lists
-  "real-time CL proofs": SNARK-proving the consensus state transition itself.
+- The Lean Ethereum roadmap points toward SNARK-proving consensus components. As of
+  2026-07 the public tracker's zkVM track covers PQ signature aggregation
+  (pq-devnet-4/5 block-level aggregation proofs); SNARK-proving the STF itself has no
+  published spec or roadmap phase — the direction is attested by statements like the
+  one above, not by a roadmap item.
 
 ### Why it is not a conflict today
 
@@ -247,3 +250,10 @@ worked Verified Core → Runtime Shell example in [boundary migration](ARCHITECT
   - a zkVM-native STF (Rust / leanVM zkDSL) with Lean 4 proving properties only
     (the ethlambda shape), accepting the loss of "verified running client matches
     spec".
+
+  An active prototype of the first reconciliation exists:
+  [NyxFoundation/verifiable-stf](https://github.com/NyxFoundation/verifiable-stf)
+  interprets the Lean 4 IR of the Lean-written STF on the host and verifies each trace
+  step in a RISC Zero guest — keeping Lean as the verified source of truth while a zkVM
+  proves *executions* of it. If that scales, the artifact/language constraint above
+  dissolves rather than forcing a side.

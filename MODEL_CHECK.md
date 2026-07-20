@@ -101,6 +101,30 @@ is the decision.
   strategy changes; model checking complements the Lean path rather than duplicating
   deductive effort.
 
+## The proposition catalog supplies the properties
+
+The properties the tools above check are not invented ad hoc. The
+[formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec) proposition catalog
+(`docs/lean4-proof-propositions.md`) proves spec-level propositions about the Lean model
+across eight domains, and only part of that model is compiled into the shipped artifact
+(see `docs/src/concepts/formal-verification.md`). The rest — the **proof-only** domains,
+whose production implementations are Rust — hand each proposition to this strategy as a
+named implementation obligation:
+
+| Catalog domain | Proposition examples | Rust owner (zone) | Obligation carried by |
+|---|---|---|---|
+| VAL-1..5 | unique proposer; no double-vote; XMSS window never rewinds | `verity-validator` (I/O Edge) | property tests (bolero); VAL-5 is slashing-critical |
+| NET-1..2 | req/resp and payload bounds | `verity-p2p` (I/O Edge) | Kani + bolero on the bound checks |
+| STOR-1..2 | parent presence; batch atomicity | `verity-db` (Runtime Shell) | property tests + Miri; atomicity against the embedded KV's transactions |
+| SYNC-1..2 | FSM closure; gossip gating | `verity` bin orchestrator (I/O Edge) | Loom / Shuttle on the concurrent FSM |
+
+The boundary invariants work the same way in the other direction: the core's theorems are
+proved relative to named predicates (`Store.WellFormed`, `AnchorWF`/`Reachable`,
+`ValidatorRegistry.WellFormed`), so the Runtime Shell code that mutates the store owes
+their preservation — those predicates are the primary Kani harness targets at the boundary.
+This is "Conformance through shared evidence" in a second, stronger form: the same
+proposition, proved in Lean about the model and checked in Rust about the implementation.
+
 ## Graduated assurance along the moving boundary
 
 The verification boundary is designed to **move**: a component may be pulled into the
