@@ -23,12 +23,12 @@ the deductive proof leaves open:
   construction, outside the Lean guarantee, and that is precisely where a different
   technique has to carry the assurance.
 - **The Rust-side preconditions the proof depends on.** The proof discharges correctness
-  *given* clean, typed, in-range inputs; the Runtime Shell and Boundary that manufacture
-  those inputs are unproven Rust. Whether that Rust is actually panic-free and
+  *given* clean, typed, in-range inputs; the Runtime Shell code that manufactures
+  those inputs is unproven Rust. Whether that Rust is actually panic-free and
   range-correct is a separate, checkable claim — independent of the proof, not a re-check
   of it.
-- **The boundary code**, where promotion/lowering and range checks live — bounded,
-  input-driven logic that a bounded checker fits naturally and cheaply.
+- **The boundary code in the Runtime Shell**, where promotion/lowering and range checks
+  live — bounded, input-driven logic that a bounded checker fits naturally and cheaply.
 
 A note on the ecosystem: neither `ream` nor `ethlambda`, the reference Lean Consensus
 Rust clients, use model checkers today. Both rely on leanSpec test vectors plus live
@@ -38,18 +38,19 @@ stand on is the floor Verity builds above.
 
 ## The zones, and what checks each
 
-The architecture is organized around a **moving verification boundary** (see
-`docs/src/reference/data-representation.md`): the proven core, the boundary, and the
-edges. Per `ARCHITECTURE.md` the edges split by guarantee into the panic-free **Runtime
-Shell** and the concurrent **I/O Edge** — a distinction that matters here, because
-concurrency checking applies only to the latter. Each zone is owned by a different primary
-technique; model checking plays a specific, bounded role in each.
+The architecture has exactly **three zones**, defined by guarantee level in
+`ARCHITECTURE.md`: Verified Core, Runtime Shell, and I/O Edge. The **verification
+boundary** is the moving seam between Verified Core and Runtime Shell — a line, not a
+zone of its own (see `docs/src/reference/data-representation.md`). The Rust that
+services that seam — promote ↔ lower conversions, range and well-formedness checks,
+SSZ, the FFI wrapper — is **boundary code**, and it lives in the Runtime Shell. Each
+zone is owned by a different primary technique; model checking plays a specific,
+bounded role in each.
 
 | Zone | Primary owner | Model-checking role |
 |---|---|---|
-| **Proven Core** (state transition, fork choice) | Lean 4 (deductive proof) | None inside the core — it is Lean, owned by the proof. Kani instead checks the Rust FFI wrapper that feeds it (see Boundary) |
-| **Boundary** (promote ↔ lower, range & well-formedness checks, SSZ) | — (no single owner yet) | Bounded model checking + property testing: round-trip, no-panic-on-any-input, range enforcement |
-| **Runtime Shell** (storage, DB, SSZ, crypto, FFI bindings — Rust, panic-free) | Ordinary high-quality Rust | Dynamic UB detection (Miri) on `unsafe` / FFI / crypto bindings |
+| **Verified Core** (state transition, fork choice — Lean 4, pure) | Lean 4 (deductive proof) | None inside the core — it is Lean, owned by the proof. Kani instead checks the Runtime Shell boundary code that feeds it |
+| **Runtime Shell** (boundary code, storage, DB, SSZ, crypto, FFI bindings — Rust, panic-free) | Ordinary high-quality Rust | On boundary code: bounded model checking (Kani) + property testing — round-trip, no-panic-on-any-input, range enforcement. On `unsafe` / FFI / crypto bindings: dynamic UB detection (Miri) |
 | **I/O Edge** (networking, slot clock, validator duties, RPC, metrics, orchestration — Rust, concurrent) | Ordinary high-quality Rust | Concurrency model checking (Loom / Shuttle) — the only concurrent zone, which the deductive proof does not reach |
 
 ## Tool-to-zone mapping
@@ -65,9 +66,10 @@ is the decision.
   invariants"**. Its domain is the **Rust-side boundary and FFI-wrapper code** — the
   unproven Rust that surrounds the Lean core — not the Lean core itself, which Kani cannot
   reach (and it does *not* validate the Lean C backend or the static library it emits).
-  Its natural home is the **Boundary**: promote/lower conversions and SSZ are exactly the
-  bounded, input-driven code where a no-panic-on-any-byte-sequence and a
-  `lower ∘ promote = id` round-trip property are cheap to state and decide.
+  Its natural home is the **boundary code in the Runtime Shell**: promote/lower
+  conversions and SSZ are exactly the bounded, input-driven code where a
+  no-panic-on-any-byte-sequence and a `lower ∘ promote = id` round-trip property are
+  cheap to state and decide.
 
 - **proptest + bolero** (property testing / fuzzing front-ends). Provide the *unbounded*
   counterpart to Kani's bounded checks. The reason bolero specifically matters: a single
@@ -94,7 +96,7 @@ is the decision.
 
 - **Not adopted: Creusot, Verus, Prusti.** These are deductive verifiers for *Rust*.
   Adopting one would mean standing up a *second*, Rust-side deductive stack for the
-  Runtime Shell / Boundary alongside the Lean proof of the core. Verity deliberately keeps
+  Runtime Shell alongside the Lean proof of the core. Verity deliberately keeps
   a single deductive stack — **Lean 4** — and does not add a second one unless that
   strategy changes; model checking complements the Lean path rather than duplicating
   deductive effort.
