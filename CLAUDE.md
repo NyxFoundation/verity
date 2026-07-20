@@ -6,23 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Verity is a formally verified Ethereum consensus client to be written in **Lean 4**, by Nyx Foundation. The project is **pre-implementation**: there is no Lean or Rust source yet. The only working component today is the **mdBook documentation site** under `docs/`. Most pages in `docs/src/` are intentional placeholders that list "Planned topics" — treat them as a content roadmap, not finished docs.
 
-The intended architecture (per the docs and README references) targets the [Lean Consensus specification](https://github.com/leanEthereum/leanSpec) and the [lean roadmap](https://leanroadmap.org/), including post-quantum signatures, with Lean proofs intended to integrate with a Rust runtime via Aeneas. None of this is implemented yet — verify against actual code before treating any of it as present.
+The intended architecture (per the docs and README references) targets the [Lean Consensus specification](https://github.com/leanEthereum/leanSpec) and the [lean roadmap](https://leanroadmap.org/), including post-quantum signatures, with the verified Lean core compiled via Lean's C backend into a static library and consumed by the Rust runtime over a C ABI (no Aeneas). None of this is implemented yet — verify against actual code before treating any of it as present.
 
 ## Documentation site (`docs/`)
 
 The docs are an [mdBook](https://rust-lang.github.io/mdBook/). All commands run from the `docs/` directory.
 
 ```bash
-# CI pins this exact version — match it locally to avoid drift
-cargo install mdbook --version 0.4.40   # or: cargo binstall / OS package
+# CI pins these exact versions — match them locally to avoid drift.
+# mdbook-mermaid 0.16.2 is the newest release compatible with mdBook 0.4.40
+# (0.17.0 targets the mdBook 0.5 JSON protocol and fails to parse).
+cargo install mdbook --version 0.4.40
+cargo install --locked mdbook-mermaid --version 0.16.2
 
-cd docs
+cd docs           # preprocessors use paths relative to docs/ — always build from here
 mdbook build    # outputs to docs/book/ (gitignored)
 mdbook serve     # live-reload preview at http://localhost:3000
 ```
 
 - `docs/book.toml` — mdBook config (title, theme `navy`, GitHub edit links pointing at `NyxFoundation/verity`).
 - `docs/src/SUMMARY.md` — the table of contents. **Every page must be registered here** or mdBook will not render it.
+- `docs/preprocessors/strip-frontmatter.py` — mdBook preprocessor (needs `python3` on PATH) that strips the required YAML frontmatter before rendering, so it never shows on the published site.
+- `docs/mermaid.min.js`, `docs/mermaid-init.js` — vendored mdbook-mermaid assets; regenerate with `mdbook-mermaid install .` when bumping mdbook-mermaid.
 - `docs/wrangler.toml` — serves the built `book/` as Cloudflare Workers static assets (`verity-docs`).
 
 ### Editing docs frontmatter

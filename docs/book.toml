@@ -11,7 +11,17 @@ preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/NyxFoundation/verity"
 edit-url-template = "https://github.com/NyxFoundation/verity/edit/main/docs/{path}"
 site-url = "/"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.html.fold]
 enable = true
 level = 1
+
+[preprocessor.strip-frontmatter]
+# Strips the YAML frontmatter (title / last_updated / tags) that repo
+# convention requires in every docs/ Markdown file; mdBook would otherwise
+# render it as visible text. Requires python3; run mdbook from docs/.
+command = "python3 preprocessors/strip-frontmatter.py"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
