@@ -4,8 +4,12 @@
 > realize. The single source of truth is **leanSpec** (the Python reference implementation);
 > Verity's Rust/Lean types must match it exactly. Read alongside [Architecture](ARCHITECTURE.md).
 >
-> Grounded in `leanEthereum/leanSpec` `main` @ `37f3ebc3225afc661ccda1d02494ce9ab16815e2`
-> (`src/lean_spec/forks/lstar/` — the lstar fork, devnet-4/5 in flight).
+> Grounded in `leanEthereum/leanSpec` `main` @ `57d4339929e4bb8e87a190ea2838408cb9057d82`
+> (2026-07-04; `src/lean_spec/spec/forks/lstar/` — the lstar fork, devnet-4/5 in flight).
+> The Lean 4 formal model of this ground truth is
+> [formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec); see
+> [Formal Verification](docs/src/concepts/formal-verification.md) for how its proposition
+> catalog maps onto the zones.
 
 The domain is the **Lean Ethereum consensus protocol**: a set of validators that vote on a
 chain of blocks, with two-stage justification/finalization (3SF) deciding what is irreversible.
@@ -61,6 +65,12 @@ pattern names *how* each relationship is governed.
 | **leanMetrics** | Telemetry | **Conformist** (exact metric contract) |
 | **external SSZ library** | Serialization | **ACL / adapter** |
 
+The leanSpec relationship is mediated by
+[formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec): Conformist shape-tracking is
+realized as a per-file transcription of the Python spec into Lean 4, and the Partnership on
+correctness already operates — proving VAL-2 exposed an unenforced dual-key invariant upstream,
+reported and fixed as leanEthereum/leanSpec#1184.
+
 Internally, Serialization and Signature & Aggregation are **suppliers** that hand verified,
 typed inputs — roots and already-verified signatures — to the consensus-critical contexts; each
 satisfies a capability contract whose implementation may be native-Rust (Runtime Shell) or FFI-into-Lean
@@ -110,11 +120,11 @@ The model's correctness depends on these rules. They are the domain's "business 
 | **Checkpoints only move forward** — replace only on strictly higher slot | `Checkpoint.advance_to` |
 | **Finalized history is never reverted** | fork choice over `latest_finalized` |
 | **A slot is *justifiable* iff** distance δ from finalized is ≤5, a perfect square, or a pronic number (x²+x) | `Slot.is_justifiable_after` (3SF-mini) |
-| **`JustificationValidators` cap = `HISTORICAL_ROOTS_LIMIT × VALIDATOR_REGISTRY_LIMIT`** — changes merkle depth, hence the state root | `state/types.py` |
+| **`JustificationValidators` cap = `HISTORICAL_ROOTS_LIMIT × VALIDATOR_REGISTRY_LIMIT`** — changes merkle depth, hence the state root | `containers/state.py` |
 
-Key constants (`subspecs/chain/config.py`): `SECONDS_PER_SLOT=4`, `INTERVALS_PER_SLOT=5`,
+Key constants (`spec/forks/lstar/config.py`): `SECONDS_PER_SLOT=4`, `INTERVALS_PER_SLOT=5`,
 `JUSTIFICATION_LOOKBACK_SLOTS=3`, `HISTORICAL_ROOTS_LIMIT=2^18` (≈12.1 days),
-`MAX_ATTESTATIONS_DATA=8`, `ATTESTATION_COMMITTEE_COUNT=1`.
+`VALIDATOR_REGISTRY_LIMIT=2^12`, `MAX_ATTESTATIONS_DATA=8`, `ATTESTATION_COMMITTEE_COUNT=1`.
 
 ## Aggregates at a glance
 

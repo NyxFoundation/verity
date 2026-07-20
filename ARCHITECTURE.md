@@ -17,8 +17,11 @@ verification frontier moves; see [boundary migration](#boundary-migration).
 ## Zones
 
 - **Verified Core — Verity Consensus (Lean 4, pure).** The proven-pure zone: pure, total functions only —
-  no hidden state, clocks, locks, or scheduling. This is the surface that Lean proofs defend. Compiled
-  via Lean's C backend into a static library and exposed to Rust over a C ABI (no Aeneas). Its current
+  no hidden state, clocks, locks, or scheduling. This is the surface that Lean proofs defend. Its
+  source is the [formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec) Lean 4 model,
+  compiled via Lean's C backend into a static library and exposed to Rust over a C ABI (no Aeneas) —
+  see [Formal Verification](docs/src/concepts/formal-verification.md) for the one-model, two-roles
+  split between compiled-and-exported functions and proof-only propositions. Its current
   occupants are deliberately **minimal** — only the state transition and the fork-choice transition
   functions — but that export set is a snapshot, not a definition: it contracts if a function leaves for
   a zkVM artifact, and grows if a function (e.g. `hash_tree_root`) is verified in Lean and pulled in.
@@ -128,9 +131,12 @@ upstream Lean library name per Rust's `-sys` convention.
   external SSZ library behind an adapter in Runtime Shell; the contract (typed value ↔ bytes / root) is stable
   whether that implementation is the external Rust library or a Lean implementation reached over FFI.
   Foundational; depended on by every other crate.
-- `verity-consensus-sys` — raw FFI bindings to Verity Consensus, which is built and proven in a
-  separate repository and consumed here as a static library. Confines all `unsafe`. Named after the
-  upstream Lean library (`VerityConsensus`). It is the swappable backend behind the
+- `verity-consensus-sys` — raw FFI bindings to Verity Consensus, which is built and proven in
+  [formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec) and consumed here as a static
+  library: Verity Consensus is the compiled, exported subset of that repository's Lean model — the
+  intended mechanism is a dedicated export target (`VerityConsensus`) holding the `@[export]`
+  wrappers over the model. Confines all `unsafe`. Named after that export target. It is the
+  swappable backend behind the
   [capability contracts](#capability-contracts): its exported function set is exactly *whatever Verified Core
   currently hosts*, and is expected to expand or contract as the frontier moves.
 - `verity-chain` — the single writer that owns the consensus state and the fork-choice store, and
@@ -149,7 +155,7 @@ upstream Lean library name per Rust's `-sys` convention.
 - `verity-rpc` — HTTP API surface.
 - `verity-metrics` — implementation of the leanMetrics contract.
 
-Layer mapping: **Verified Core** = Verity Consensus (separate Lean repo, not a Cargo crate); **Runtime Shell** = `verity-consensus-sys`,
+Layer mapping: **Verified Core** = Verity Consensus (the compiled export subset of formal-leanSpec, not a Cargo crate); **Runtime Shell** = `verity-consensus-sys`,
 `verity-types`, `verity-chain`, `verity-crypto`, `verity-db`; **I/O Edge** = `verity-p2p`,
 `verity-validator`, `verity-rpc`, `verity-metrics`, `verity` (binary).
 
@@ -209,6 +215,14 @@ bound — a wiring decision in the `verity` binary, constrained by what is actua
 proof obligation sits; and (c) whether that capability's functions appear in the `verity-consensus-sys`
 export set.
 
+The contracts' "already-verified inputs" clause has concrete, named content: formal-leanSpec's
+theorems are proved relative to explicit well-formedness predicates — `Store.WellFormed` for the
+fork-choice store, `AnchorWF` (discharged by `Reachable`) for the state, and
+`ValidatorRegistry.WellFormed` for validator keys. Maintaining those predicates across every mutation
+is Runtime Shell's half of the contract: Verified Core's theorems speak only about inputs that satisfy
+them, so the single writer must preserve them, and the boundary harnesses target exactly them (see the
+[Model-Checking Strategy](MODEL_CHECK.md)).
+
 The contracts must be defined **inner to both their consumers and their implementations** — otherwise
 `verity-consensus-sys` implementing a contract defined in `verity-chain` would force a `sys → chain`
 edge and break the inward invariant. The recommended home is a thin contract crate (e.g.
@@ -249,7 +263,7 @@ already in the design:
 
 | Capability | Today | Anticipated move | Trigger | Effect |
 |---|---|---|---|---|
-| State transition | Verified Core | Verified Core → Runtime Shell | An L\* "real-time CL proofs" spec for the consensus STF materializes upstream (see [Ethlambda notes](memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification)) | Verified Core export set shrinks; FFI surface contracts; the `StateTransition` contract is bound to a zkVM-friendly (Rust / leanVM) implementation |
+| State transition | Verified Core | Verified Core → Runtime Shell | An upstream spec for SNARK-proving the consensus STF materializes (none published as of 2026-07; see [Ethlambda notes](memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification)) | Verified Core export set shrinks; FFI surface contracts; the `StateTransition` contract is bound to a zkVM-friendly (Rust / leanVM) implementation |
 | SSZ / `hash_tree_root` | Runtime Shell | Runtime Shell → Verified Core | A Lean-verified merkleization becomes available | Verified Core computes its own roots; "Verity Consensus receives precomputed roots" no longer holds; `verity-types` calls inward to Verified Core for the `Serialization` contract |
 | Fork choice | Verified Core (decision) + Runtime Shell (`Store`) | — | — | The worked example of a capability split across the boundary: a pure decision in Verified Core over a mutable `Store` owned in Runtime Shell |
 | Proposer selection | Undecided (Verified Core or Runtime Shell) | — | — | Open (see the note above): a Verified Core decision function or computed Rust-side |
@@ -260,6 +274,8 @@ the full tension is in [Ethlambda notes](memo.md#open-question-unresolved-zk-pro
 
 ## Notes
 
+- What "proven" means — the artifact chain, the proposition catalog, and the trust base — is defined
+  in [Formal Verification](docs/src/concepts/formal-verification.md).
 - Function names in the diagrams (`process_block`, `on_block`, `get_head`, …) are indicative and will
   be reconciled with [leanSpec](https://github.com/leanEthereum/leanSpec) (lstar HEAD) when
   implementation begins.
