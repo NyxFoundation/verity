@@ -1,10 +1,17 @@
-# Model-Checking Adoption Strategy
+# Verification Tooling Adoption Strategy
 
 > Internal planning memo — not part of the published mdBook. Strategy level only:
-> it decides *which* model-checking techniques apply *where*, and *why*. It does not
+> it decides *which* verification techniques apply *where*, and *why*. It does not
 > prescribe CI configuration, `cargo` invocations, or crate layout. Verity is
 > pre-implementation; this memo is meant to settle the strategy before the first Rust
 > crate exists, so the architecture is built to be model-checkable from day one.
+>
+> "Model checking" is the headline, but not everything below is a model checker. The
+> adopted tools span a spectrum — deductive proof, bounded model checking, exhaustive
+> and randomized concurrency exploration, property testing/fuzzing, and dynamic
+> UB detection. Calling them all "model checking" would overstate the weaker ones, so
+> this memo classifies each by **assurance strength** (how it explores state) and by
+> **zone** (where it applies). Those are the two axes the whole strategy hangs on.
 
 ## The core claim
 
@@ -35,6 +42,50 @@ Rust clients, use model checkers today. Both rely on leanSpec test vectors plus 
 multi-client devnet interop. Adopting model checking is therefore novel here, and it is
 a direct expression of Verity's **"proof over test"** stance — the floor those clients
 stand on is the floor Verity builds above.
+
+## Two axes: assurance strength × zone
+
+The tools are not one kind of thing. Before mapping them, separate them by **what they
+actually do to the state space** — this is the vertical axis, ordered strongest to
+weakest. "Model checker" applies to only three rows; the rest are testing or dynamic
+analysis, and saying so is the point.
+
+| # | Technique class | Is it model checking? | Guarantee it gives | Tool |
+|---|---|---|---|---|
+| 1 | **Deductive proof** (unbounded) | No — it's proof | Correct for *all* inputs, forever | Lean 4 |
+| 2 | **Bounded model checking** | **Yes** | Exhaustive up to a size bound; sound below it | Kani |
+| 3 | **Exhaustive concurrency MC** | **Yes** | All interleavings in a small space | Loom |
+| 4 | **Randomized concurrency exploration** | Model-checker-shaped, unsound | Samples interleavings; a pass is evidence, not proof | Shuttle |
+| 5 | **Property testing / fuzzing** | No — it's testing | Random/guided inputs; finds counterexamples, proves nothing | proptest, bolero |
+| 6 | **Dynamic UB detection** | No — it's a runtime sanitizer | UB only on paths actually executed | Miri |
+
+Strength drops monotonically down the table: 1 proves, 2–3 exhaust a bounded space, 4
+samples a space, 5 samples inputs, 6 watches one run. Each zone gets the strongest row
+its nature allows — a pure sequential core can reach row 1; a concurrent I/O subsystem
+tops out at rows 3–4.
+
+The horizontal axis is the **zone** (per `ARCHITECTURE.md`): Verified Core, the
+boundary code that services the moving seam (physically in the Runtime Shell), the rest
+of the Runtime Shell, and the I/O Edge. Crossing the two axes gives the whole plan on
+one grid — a cell is filled only where that technique is both *applicable* and *the
+strongest available* for that zone:
+
+| Assurance strength ↓ / Zone → | Verified Core (pure, sequential) | Boundary code (promote/lower, SSZ, FFI wrapper) | Runtime Shell (`unsafe`/FFI/crypto) | I/O Edge (concurrent) |
+|---|---|---|---|---|
+| **1. Deductive proof** — Lean 4 | ✅ **Lean 4** (owner) | ⬆ target once promoted | — | — |
+| **2. Bounded MC** — Kani | — | ✅ **Kani** (panic-free, overflow, `lower∘promote=id`) | — | — |
+| **3. Exhaustive concurrency MC** — Loom | — | — | — | ✅ **Loom** (small interleaving spaces) |
+| **4. Randomized exploration** — Shuttle | — | — | — | ✅ **Shuttle** (spaces too large for Loom) |
+| **5. Property test / fuzz** — proptest + bolero | — | ✅ unbounded counterpart to Kani | — | ✅ VAL-* invariants, req/resp bounds |
+| **6. Dynamic UB** — Miri | — | — | ✅ **Miri** (aliasing, races, OOB) | — |
+
+Reading the grid: the Verified Core is the only zone that reaches row 1, and nothing
+weaker is applied inside it. The boundary code is the busiest column — Kani (row 2) and
+bolero (row 5) both apply, because bounded exhaustiveness and unbounded sampling are
+complementary there. The I/O Edge cannot go above row 3 by construction (it is
+concurrent and impure), which is exactly why purity was pushed out of the core. Miri
+(row 6) is the *only* technique for the Runtime Shell's `unsafe`/FFI/crypto, so a weak
+guarantee there is a deliberate, acknowledged floor — see Honest limits.
 
 ## The zones, and what checks each
 
