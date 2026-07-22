@@ -254,6 +254,41 @@ architecturally is that the boundary is a contract, not a hardcoded call site.
 > **Open for discussion.** Whether duty scheduling, signing, and aggregation should be
 > separate crates rather than folded into `verity-validator` once the workspace split happens.
 
+### The FFI seam — marshalling cost and verification
+
+When a contract is bound FFI-into-Lean, every call marshals its inputs across the C ABI: the
+Rust value is **promoted** into the Lean object representation on the way in and the result
+**lowered** back on the way out. For `StateTransition` and `ForkChoiceDecision` that means the
+full state or fork-choice view crosses the seam per call. This layer deserves explicit
+attention, because it is the weakest trusted link in the whole chain: the Lean theorems stop
+at Lean values, so a conversion bug (a transposed field, an endianness slip, a truncated
+list) makes the proven function compute *correctly on the wrong input* — and no proof, on
+either side, can see it.
+
+Two obligations follow:
+
+- **Verification.** The promote/lower code is boundary code in the Runtime Shell and is the
+  primary target of the boundary harnesses (round-trip properties, no-panic-on-any-input,
+  range enforcement — see [MODEL_CHECK.md](MODEL_CHECK.md)). Cross-language behavioral
+  equivalence is additionally evidenced by shared leanSpec vectors run on both sides;
+  [verifiable-stf](https://github.com/NyxFoundation/verifiable-stf) demonstrates the
+  strongest form of that evidence — the compiled-Lean and compiled-Rust STF produce
+  **byte-identical outputs** on the same inputs.
+- **Measurement.** Adopting a Lean implementation behind a contract is gated on measured
+  cost, not assumed cost. Two data sets exist today:
+  - [leanSSZ](https://github.com/NyxFoundation/leanSSZ)'s C ABI PoC (Rust-caller round-trip
+    and `hash_tree_root` match): STF+HTR 27.5 ms at V=4096, within budget; per-op on a
+    ~526 KB state, serialize 33 ms / `hash_tree_root` 58 ms / deserialize 54 ms
+    (list-based codec, uncached merkleization).
+  - verifiable-stf's compiled-Lean vs compiled-Rust STF comparison (RISC-V zkVM cycles, a
+    proxy for relative native cost): 26.1 M vs 12.5 M cycles at N=10 and 35.3 M vs 14.4 M at
+    N=100 — the Lean runtime's one-time `Init` accounts for ~15 M of the Lean side, so the
+    steady-state Lean overhead is roughly **1.4× Rust** once initialization is amortized
+    across a long-lived process.
+
+  These numbers are inputs to the migration triggers below: a capability moves into the
+  Verified Core only when its measured seam cost fits the slot-time budget.
+
 ## Boundary migration
 
 Because a zone is a guarantee level and placement is a snapshot, components are expected to cross the
