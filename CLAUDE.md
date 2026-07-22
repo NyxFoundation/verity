@@ -8,6 +8,26 @@ Verity is a formally verified Ethereum consensus client to be written in **Lean 
 
 The intended architecture (per the docs and README references) targets the [Lean Consensus specification](https://github.com/leanEthereum/leanSpec) and the [lean roadmap](https://leanroadmap.org/), including post-quantum signatures, with the verified Lean core compiled via Lean's C backend into a static library and consumed by the Rust runtime over a C ABI (no Aeneas). The Lean side already exists: [NyxFoundation/formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec) holds the Lean 4 model and its proposition catalog, and Verity Consensus is defined as that model's compiled, exported subset (see `docs/src/concepts/formal-verification.md`). The Rust runtime is not implemented yet — verify against actual code before treating any of it as present.
 
+This repository is a **monorepo**, not a docs-only repo: the Rust implementation will live here alongside `docs/`.
+
+## Implementation decisions (2026-07-22, pre-scaffold)
+
+Owner-ratified ground rules for the first Rust code. Do not re-open these without an explicit owner conversation.
+
+- **Strategy**: Rust-first. Everything runs in Rust initially; Lean-compiled logic is adopted per-logic later (stable / proved / measured-within-budget first; STF and fork choice last, as they track a volatile upstream spec).
+- **Goal**: a full node from the start (networking included), not a fixtures-passing library. leanSpec fixture conformance is still the CI backbone.
+- **Crates**: start with a single `verity-consensus` crate (no chain/validator split). Proposer selection lives chain-side as a pure function next to STF/fork choice. Shared types stay a module until a second crate exists.
+- **Dependencies**:
+  - XMSS: [`leansig`](https://github.com/leanEthereum/leanSig) as a git dependency, **rev-pinned** (not branch-tracked).
+  - SSZ: `libssz` 0.2.2 (lambdaclass). [NyxFoundation/leanSSZ](https://github.com/NyxFoundation/leanSSZ) (proven Lean SSZ, C ABI PoC complete) is deliberately NOT adopted initially — it is the future Lean-adoption candidate for SSZ.
+  - Networking: upstream `rust-libp2p` (QUIC, gossipsub, reqresp). Fork only if a concrete need materializes, as lambdaclass did for ethlambda.
+- **Differential testing**: consume leanSpec's release asset `fixtures-prod-scheme.tar.gz` in CI, pinned to a commit and bumped manually. Use [leansig-test-keys](https://github.com/leanEthereum/leansig-test-keys) pre-generated keys for fast tests.
+- **Toolchain**: Rust edition 2024, resolver 3, latest stable pinned via `rust-toolchain.toml` (external floor: leanSig requires ≥1.87; no nightly needed).
+- **License**: MIT (Nyx Foundation copyright).
+- **Devnet**: always track the latest devnet generation; never hardcode a generation in docs or code comments.
+- **Verification harness**: NOT wired in from day one (no bolero/proptest in the initial scaffold or CI); introduced later per `MODEL_CHECK.md`'s tool-to-zone mapping.
+- Known caveat: leanSig internally depends on `ethereum_ssz`, so two SSZ implementations coexist transitively — harmless, but mind type conversions at the signature boundary.
+
 ## Documentation site (`docs/`)
 
 The docs are an [mdBook](https://rust-lang.github.io/mdBook/). All commands run from the `docs/` directory.
