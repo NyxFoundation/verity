@@ -100,6 +100,20 @@ What must be trusted for the claim to hold — listed so no link stays implicit:
 - **The Lean 4 kernel** that checks the proofs.
 - **The transcription.** formal-leanSpec is a hand transcription of a Python spec; its
   fidelity is evidenced (per-file source tracing, review, shared vectors), not proven.
+- **The predicate mirrors.** The well-formedness predicates the theorems assume
+  (`Store.WellFormed`, `AnchorWF`, `ValidatorRegistry.WellFormed`) are Lean definitions;
+  for the Runtime Shell to maintain them — and for the boundary harnesses to target them —
+  they must be hand-transcribed into Rust. That is a **second transcription** of the same
+  kind as formal-leanSpec itself, and it is held to the same discipline: each Rust mirror
+  cites the Lean definition it mirrors, and shared vectors exercise both sides. A drifted
+  mirror silently voids the boundary checks, which is why this link is listed rather than
+  assumed.
+- **The Lean runtime's abort path.** The compiled artifact embeds the Lean runtime, which
+  can abort the process on allocation failure. This is an *availability* residue, classed
+  with a Rust-side OOM abort — the panic-freedom claim asserts that no path returns an
+  incorrect consensus value, not that a linked runtime can never abort (see the
+  [error model](../reference/architecture.md#capability-contracts)). Exported functions are
+  total, so no other runtime-panic path exists inside the export set.
 - **The artifact pipeline.** Lean's C backend, the generated C, the C compiler and linker,
   and the runtime the artifact embeds. No tool in the project checks that the static
   library computes the proven functions.

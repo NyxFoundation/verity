@@ -246,6 +246,27 @@ bound — a wiring decision in the `verity` binary, constrained by what is actua
 proof obligation sits; and (c) whether that capability's functions appear in the `verity-consensus-sys`
 export set.
 
+**Error model.** Failure is part of the contract, in two strictly separated layers:
+
+- **Protocol rejection** (an invalid block) is a *value*. In the Lean model it is a pure
+  `Except`-style result; in the contract it is the `Err` arm of the shared `Result`. The error
+  type is a plain enum (`ProcessingError`), defined **in the contract crate** alongside the
+  traits, so the native-Rust and FFI-into-Lean implementations return the same type and a
+  migration leaves the error path untouched. At the C ABI the FFI implementation uses the
+  conventional shape — an `int32` status code plus an out-parameter for the result — with the
+  status codes in one-to-one correspondence with the Lean model's rejection reasons; that
+  correspondence table is kept next to the Lean definition it mirrors, and the code→enum
+  conversion is confined to `verity-consensus-sys`. Rejection reasons are a small closed set
+  (the Runtime Shell delivers already-verified inputs, so FFI-level rejection is rare by
+  design), which is why a code enum suffices and no structured error payload crosses the ABI.
+- **Runtime failure** (Lean runtime allocation failure) is *not* a value and is not modeled in
+  the contract. The Lean runtime can abort the process on allocation failure, and Verity
+  designs on the assumption that this cannot be hooked. Such an abort is classed with a
+  Rust-side OOM abort: an availability failure, not a safety failure. The panic-freedom claim
+  is precise on this point — it asserts that **no code path returns an incorrect consensus
+  value**, not that a linked runtime can never abort; the residual abort condition is listed in
+  the [trust base](../concepts/formal-verification.md#the-trust-base).
+
 The contracts' "already-verified inputs" clause has concrete, named content: formal-leanSpec's
 theorems are proved relative to explicit well-formedness predicates — `Store.WellFormed` for the
 fork-choice store, `AnchorWF` (discharged by `Reachable`) for the state, and
