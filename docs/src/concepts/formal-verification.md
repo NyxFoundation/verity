@@ -1,6 +1,6 @@
 ---
 title: Formal Verification
-last_updated: 2026-07-20
+last_updated: 2026-07-22
 tags:
   - formal-verification
   - lean4
@@ -44,9 +44,12 @@ and the distinction *is* the verification boundary:
 - **Proof-only.** The rest of the catalog — validator duties, networking bounds, storage
   atomicity, the sync FSM — is proven about the model, but the production implementation of
   those concerns is Rust, in the Runtime Shell and I/O Edge. There the theorem is a
-  **design-basis guarantee**: it fixes what the Rust must uphold, and the model-checking
-  toolchain (Kani, proptest/bolero, Loom, Miri) carries that obligation onto the
-  implementation.
+  **design-basis guarantee**: it fixes what the Rust must uphold. The model-checking
+  toolchain (Kani, proptest/bolero, Loom, Miri) is what will carry that obligation onto the
+  implementation — it is phased in per the
+  [model-checking strategy](https://github.com/NyxFoundation/verity/blob/main/MODEL_CHECK.md),
+  not wired in from day one, so until a harness targets a given proposition, that
+  proposition constrains the design but says nothing yet about the running Rust.
 
 Which function sits on which side is a snapshot, not a definition — the same
 movable-boundary discipline as the [architecture](../reference/architecture.md#boundary-migration):
