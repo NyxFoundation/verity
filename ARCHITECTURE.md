@@ -14,6 +14,15 @@ trusted-and-panic-free, or concurrent-IO — *not* by the specific components th
 today. Which component sits in which zone is a **current snapshot**, expected to change as the
 verification frontier moves; see [boundary migration](#boundary-migration).
 
+> **Day-one snapshot — Rust-first.** Implementation starts Rust-first (kickoff decision,
+> 2026-07-22): at kickoff **every capability contract is bound to its native-Rust
+> implementation**, the `verity-consensus-sys` export set is empty, and no FFI call is made.
+> Lean-compiled logic is adopted per capability later — stable, proved, and
+> measured-within-budget first; the state transition and fork choice last, because they track
+> a volatile upstream spec. The zone diagrams and the inbound-block sequence below therefore
+> show the **target** state, with Verity Consensus occupying the Verified Core; on day one the
+> same functions run as native Rust in the Runtime Shell, behind the same contracts.
+
 ## Zones
 
 - **Verified Core — Verity Consensus (Lean 4, pure).** The proven-pure zone: pure, total functions only —
@@ -113,6 +122,12 @@ sequenceDiagram
 ```
 
 ## Crate layout
+
+This layout is the **target** shape, not the day-one scaffold. Implementation starts with a
+single `verity-consensus` crate (kickoff decision, 2026-07-22): the zone boundaries below
+begin as module boundaries inside that crate, holding the same inward invariant, and split
+into separate crates only when a second crate earns its existence. The workspace description
+that follows is what that split grows into.
 
 The Rust runtime is a Cargo workspace. Crates map onto the zones, and **calls and dependencies flow
 inward, from higher-effect / lower-assurance toward lower-effect / higher-assurance — Verified Core never calls
@@ -231,10 +246,13 @@ boundary; folding them into `verity-types` is the alternative but mixes containe
 capability *behavior*. The final crate placement is an implementation-time decision; what matters
 architecturally is that the boundary is a contract, not a hardcoded call site.
 
-> **Open for discussion.** The granularity and responsibility split of `verity-chain` and
-> `verity-validator` are not settled. Examples still in play: whether proposer selection lives in the
-> Verity Consensus (Verified Core) or is computed Rust-side; and whether duty scheduling, signing, and
-> aggregation should be separate crates rather than folded into `verity-validator`.
+> **Settled (kickoff decision, 2026-07-22).** Proposer selection lives chain-side — a pure
+> function next to the state transition and fork choice, not a `verity-validator` concern.
+> Like everything else it starts as native Rust, and its pure-function shape keeps it a
+> candidate for later adoption into the Verified Core.
+>
+> **Open for discussion.** Whether duty scheduling, signing, and aggregation should be
+> separate crates rather than folded into `verity-validator` once the workspace split happens.
 
 ## Boundary migration
 
@@ -266,7 +284,7 @@ already in the design:
 | State transition | Verified Core | Verified Core → Runtime Shell | An upstream spec for SNARK-proving the consensus STF materializes (none published as of 2026-07; see [Ethlambda notes](memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification)) | Verified Core export set shrinks; FFI surface contracts; the `StateTransition` contract is bound to a zkVM-friendly (Rust / leanVM) implementation |
 | SSZ / `hash_tree_root` | Runtime Shell | Runtime Shell → Verified Core | A Lean-verified merkleization becomes available | Verified Core computes its own roots; "Verity Consensus receives precomputed roots" no longer holds; `verity-types` calls inward to Verified Core for the `Serialization` contract |
 | Fork choice | Verified Core (decision) + Runtime Shell (`Store`) | — | — | The worked example of a capability split across the boundary: a pure decision in Verified Core over a mutable `Store` owned in Runtime Shell |
-| Proposer selection | Undecided (Verified Core or Runtime Shell) | — | — | Open (see the note above): a Verified Core decision function or computed Rust-side |
+| Proposer selection | Runtime Shell (pure function, chain-side) | Runtime Shell → Verified Core (candidate) | Verified in Lean and pulled into the export set | Same pattern as SSZ: a pure decision whose shape is already what the core requires |
 
 The STF row is **not a decision to move it** — the working position is that the STF stays in Verity
 Consensus (Lean 4). It is recorded so the design is shown to *withstand* the move if the trigger fires;
