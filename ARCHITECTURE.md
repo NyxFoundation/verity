@@ -289,6 +289,28 @@ Two obligations follow:
   These numbers are inputs to the migration triggers below: a capability moves into the
   Verified Core only when its measured seam cost fits the slot-time budget.
 
+**Interchange shape — a conditional design, not an adoption decision.** Nothing here decides
+*whether* any capability is bound to Lean — that remains gated per capability (stable, proved,
+measured-within-budget). What is fixed now is only the **shape** the seam takes *if* a binding
+happens, so that a future adoption is a re-binding rather than a redesign:
+
+- **Long-lived values stay resident.** The consensus state and fork-choice view do not round-trip
+  per call. The Rust side holds an opaque handle to a Lean-resident value
+  (`process_block(state_handle, block) -> new_state_handle`), which fits Lean's immutable,
+  reference-counted values and eliminates the per-call state marshalling cost entirely. The
+  single-writer discipline makes ownership simple: the store is the only holder. Persistence and
+  crash recovery are defined by SSZ export/import at the DB, not by the handle.
+- **Inputs cross as SSZ bytes, decoded by the callee.** Per-call inputs (blocks, votes) are
+  passed in their SSZ wire form and decoded on the Lean side. This deliberately avoids
+  constructing Lean objects field-by-field from Rust (`lean_alloc_ctor`-style), which would
+  couple the shell to the Lean object layout and concentrate `unsafe` exactly where a
+  conversion bug is least detectable. Bytes-as-interchange means the conversion is the
+  consensus-critical wire format itself — already fixture-tested on both sides — and, if the
+  Lean side ever ships a proven decoder, the Lean half of the seam becomes proven code.
+
+Field-by-field construction is not banned outright; it is the last resort, admitted only where
+measurement shows the byte path cannot fit the budget.
+
 ## Boundary migration
 
 Because a zone is a guarantee level and placement is a snapshot, components are expected to cross the
