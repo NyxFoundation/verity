@@ -1,0 +1,15 @@
+# typos spell-check configuration. https://github.com/crate-ci/typos
+# Add intentional terms that look like typos to [default.extend-words] as they surface.
+
+[files]
+extend-exclude = [
+    "docs/book/",
+    "Cargo.lock",
+    # Vendored mdbook-mermaid assets (minified; regenerated on mdbook-mermaid bumps).
+    "docs/mermaid.min.js",
+    "docs/mermaid-init.js",
+]
+
+[default.extend-words]
+# "ser" — serialization abbreviation (mermaid node IDs, serde ser/de), not a typo of "set".
+ser = "ser"

@@ -1,0 +1,13 @@
+[package]
+name = "verity-consensus"
+description = "The Verity consensus client — single starting crate per the 2026-07-22 kickoff decision (CI canary stub — replace with the real implementation)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true

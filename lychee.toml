@@ -1,0 +1,15 @@
+# lychee link-checker configuration. https://github.com/lycheeverse/lychee
+# Auto-loaded from the working directory; applies to both the offline (Docs PR) and
+# the online (weekly Quality) checks.
+
+# Tolerate rate-limiting / auth-walled responses that are not broken links.
+accept = ["200", "206", "429"]
+
+exclude = [
+    "^http://localhost",
+    "^https://localhost",
+]
+
+# mailto: addresses are excluded by default (include_mail = false).
+
+max_retries = 2

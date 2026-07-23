@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+repository = "https://github.com/NyxFoundation/verity"
+authors = ["Nyx Foundation"]
+
+# Lints are defined once here and inherited by every crate via `[lints] workspace = true`.
+# `unsafe_code` is denied workspace-wide; per ARCHITECTURE.md the only crate allowed to opt back
+# in is `verity-consensus-sys` (the FFI boundary), which will override this locally when it lands.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
