@@ -14,11 +14,23 @@ trusted-and-panic-free, or concurrent-IO — *not* by the specific components th
 today. Which component sits in which zone is a **current snapshot**, expected to change as the
 verification frontier moves; see [boundary migration](#boundary-migration).
 
+> **Day-one snapshot — Rust-first.** Implementation starts Rust-first (kickoff decision,
+> 2026-07-22): at kickoff **every capability contract is bound to its native-Rust
+> implementation**, the `verity-consensus-sys` export set is empty, and no FFI call is made.
+> Lean-compiled logic is adopted per capability later — stable, proved, and
+> measured-within-budget first; the state transition and fork choice last, because they track
+> a volatile upstream spec. The zone diagrams and the inbound-block sequence below therefore
+> show the **target** state, with Verity Consensus occupying the Verified Core; on day one the
+> same functions run as native Rust in the Runtime Shell, behind the same contracts.
+
 ## Zones
 
 - **Verified Core — Verity Consensus (Lean 4, pure).** The proven-pure zone: pure, total functions only —
-  no hidden state, clocks, locks, or scheduling. This is the surface that Lean proofs defend. Compiled
-  via Lean's C backend into a static library and exposed to Rust over a C ABI (no Aeneas). Its current
+  no hidden state, clocks, locks, or scheduling. This is the surface that Lean proofs defend. Its
+  source is the [formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec) Lean 4 model,
+  compiled via Lean's C backend into a static library and exposed to Rust over a C ABI (no Aeneas) —
+  see [Formal Verification](docs/src/concepts/formal-verification.md) for the one-model, two-roles
+  split between compiled-and-exported functions and proof-only propositions. Its current
   occupants are deliberately **minimal** — only the state transition and the fork-choice transition
   functions — but that export set is a snapshot, not a definition: it contracts if a function leaves for
   a zkVM artifact, and grows if a function (e.g. `hash_tree_root`) is verified in Lean and pulled in.
@@ -111,6 +123,12 @@ sequenceDiagram
 
 ## Crate layout
 
+This layout is the **target** shape, not the day-one scaffold. Implementation starts with a
+single `verity-consensus` crate (kickoff decision, 2026-07-22): the zone boundaries below
+begin as module boundaries inside that crate, holding the same inward invariant, and split
+into separate crates only when a second crate earns its existence. The workspace description
+that follows is what that split grows into.
+
 The Rust runtime is a Cargo workspace. Crates map onto the zones, and **calls and dependencies flow
 inward, from higher-effect / lower-assurance toward lower-effect / higher-assurance — Verified Core never calls
 outward.** Today that ordering reads `I/O Edge → Runtime Shell → Verified Core` over the current crate snapshot, and the compiler
@@ -128,9 +146,12 @@ upstream Lean library name per Rust's `-sys` convention.
   external SSZ library behind an adapter in Runtime Shell; the contract (typed value ↔ bytes / root) is stable
   whether that implementation is the external Rust library or a Lean implementation reached over FFI.
   Foundational; depended on by every other crate.
-- `verity-consensus-sys` — raw FFI bindings to Verity Consensus, which is built and proven in a
-  separate repository and consumed here as a static library. Confines all `unsafe`. Named after the
-  upstream Lean library (`VerityConsensus`). It is the swappable backend behind the
+- `verity-consensus-sys` — raw FFI bindings to Verity Consensus, which is built and proven in
+  [formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec) and consumed here as a static
+  library: Verity Consensus is the compiled, exported subset of that repository's Lean model — the
+  intended mechanism is a dedicated export target (`VerityConsensus`) holding the `@[export]`
+  wrappers over the model. Confines all `unsafe`. Named after that export target. It is the
+  swappable backend behind the
   [capability contracts](#capability-contracts): its exported function set is exactly *whatever Verified Core
   currently hosts*, and is expected to expand or contract as the frontier moves.
 - `verity-chain` — the single writer that owns the consensus state and the fork-choice store, and
@@ -149,7 +170,7 @@ upstream Lean library name per Rust's `-sys` convention.
 - `verity-rpc` — HTTP API surface.
 - `verity-metrics` — implementation of the leanMetrics contract.
 
-Layer mapping: **Verified Core** = Verity Consensus (separate Lean repo, not a Cargo crate); **Runtime Shell** = `verity-consensus-sys`,
+Layer mapping: **Verified Core** = Verity Consensus (the compiled export subset of formal-leanSpec, not a Cargo crate); **Runtime Shell** = `verity-consensus-sys`,
 `verity-types`, `verity-chain`, `verity-crypto`, `verity-db`; **I/O Edge** = `verity-p2p`,
 `verity-validator`, `verity-rpc`, `verity-metrics`, `verity` (binary).
 
@@ -209,6 +230,35 @@ bound — a wiring decision in the `verity` binary, constrained by what is actua
 proof obligation sits; and (c) whether that capability's functions appear in the `verity-consensus-sys`
 export set.
 
+**Error model.** Failure is part of the contract, in two strictly separated layers:
+
+- **Protocol rejection** (an invalid block) is a *value*. In the Lean model it is a pure
+  `Except`-style result; in the contract it is the `Err` arm of the shared `Result`. The error
+  type is a plain enum (`ProcessingError`), defined **in the contract crate** alongside the
+  traits, so the native-Rust and FFI-into-Lean implementations return the same type and a
+  migration leaves the error path untouched. At the C ABI the FFI implementation uses the
+  conventional shape — an `int32` status code plus an out-parameter for the result — with the
+  status codes in one-to-one correspondence with the Lean model's rejection reasons; that
+  correspondence table is kept next to the Lean definition it mirrors, and the code→enum
+  conversion is confined to `verity-consensus-sys`. Rejection reasons are a small closed set
+  (the Runtime Shell delivers already-verified inputs, so FFI-level rejection is rare by
+  design), which is why a code enum suffices and no structured error payload crosses the ABI.
+- **Runtime failure** (Lean runtime allocation failure) is *not* a value and is not modeled in
+  the contract. The Lean runtime can abort the process on allocation failure, and Verity
+  designs on the assumption that this cannot be hooked. Such an abort is classed with a
+  Rust-side OOM abort: an availability failure, not a safety failure. The panic-freedom claim
+  is precise on this point — it asserts that **no code path returns an incorrect consensus
+  value**, not that a linked runtime can never abort; the residual abort condition is listed in
+  the [trust base](docs/src/concepts/formal-verification.md).
+
+The contracts' "already-verified inputs" clause has concrete, named content: formal-leanSpec's
+theorems are proved relative to explicit well-formedness predicates — `Store.WellFormed` for the
+fork-choice store, `AnchorWF` (discharged by `Reachable`) for the state, and
+`ValidatorRegistry.WellFormed` for validator keys. Maintaining those predicates across every mutation
+is Runtime Shell's half of the contract: Verified Core's theorems speak only about inputs that satisfy
+them, so the single writer must preserve them, and the boundary harnesses target exactly them (see the
+[Model-Checking Strategy](MODEL_CHECK.md)).
+
 The contracts must be defined **inner to both their consumers and their implementations** — otherwise
 `verity-consensus-sys` implementing a contract defined in `verity-chain` would force a `sys → chain`
 edge and break the inward invariant. The recommended home is a thin contract crate (e.g.
@@ -217,10 +267,70 @@ boundary; folding them into `verity-types` is the alternative but mixes containe
 capability *behavior*. The final crate placement is an implementation-time decision; what matters
 architecturally is that the boundary is a contract, not a hardcoded call site.
 
-> **Open for discussion.** The granularity and responsibility split of `verity-chain` and
-> `verity-validator` are not settled. Examples still in play: whether proposer selection lives in the
-> Verity Consensus (Verified Core) or is computed Rust-side; and whether duty scheduling, signing, and
-> aggregation should be separate crates rather than folded into `verity-validator`.
+> **Settled (kickoff decision, 2026-07-22).** Proposer selection lives chain-side — a pure
+> function next to the state transition and fork choice, not a `verity-validator` concern.
+> Like everything else it starts as native Rust, and its pure-function shape keeps it a
+> candidate for later adoption into the Verified Core.
+>
+> **Open for discussion.** Whether duty scheduling, signing, and aggregation should be
+> separate crates rather than folded into `verity-validator` once the workspace split happens.
+
+### The FFI seam — marshalling cost and verification
+
+When a contract is bound FFI-into-Lean, every call marshals its inputs across the C ABI: the
+Rust value is **promoted** into the Lean object representation on the way in and the result
+**lowered** back on the way out. For `StateTransition` and `ForkChoiceDecision` that means the
+full state or fork-choice view crosses the seam per call. This layer deserves explicit
+attention, because it is the weakest trusted link in the whole chain: the Lean theorems stop
+at Lean values, so a conversion bug (a transposed field, an endianness slip, a truncated
+list) makes the proven function compute *correctly on the wrong input* — and no proof, on
+either side, can see it.
+
+Two obligations follow:
+
+- **Verification.** The promote/lower code is boundary code in the Runtime Shell and is the
+  primary target of the boundary harnesses (round-trip properties, no-panic-on-any-input,
+  range enforcement — see [MODEL_CHECK.md](MODEL_CHECK.md)). Cross-language behavioral
+  equivalence is additionally evidenced by shared leanSpec vectors run on both sides;
+  [verifiable-stf](https://github.com/NyxFoundation/verifiable-stf) demonstrates the
+  strongest form of that evidence — the compiled-Lean and compiled-Rust STF produce
+  **byte-identical outputs** on the same inputs.
+- **Measurement.** Adopting a Lean implementation behind a contract is gated on measured
+  cost, not assumed cost. Two data sets exist today:
+  - [leanSSZ](https://github.com/NyxFoundation/leanSSZ)'s C ABI PoC (Rust-caller round-trip
+    and `hash_tree_root` match): STF+HTR 27.5 ms at V=4096, within budget; per-op on a
+    ~526 KB state, serialize 33 ms / `hash_tree_root` 58 ms / deserialize 54 ms
+    (list-based codec, uncached merkleization).
+  - verifiable-stf's compiled-Lean vs compiled-Rust STF comparison (RISC-V zkVM cycles, a
+    proxy for relative native cost): 26.1 M vs 12.5 M cycles at N=10 and 35.3 M vs 14.4 M at
+    N=100 — the Lean runtime's one-time `Init` accounts for ~15 M of the Lean side, so the
+    steady-state Lean overhead is roughly **1.4× Rust** once initialization is amortized
+    across a long-lived process.
+
+  These numbers are inputs to the migration triggers below: a capability moves into the
+  Verified Core only when its measured seam cost fits the slot-time budget.
+
+**Interchange shape — a conditional design, not an adoption decision.** Nothing here decides
+*whether* any capability is bound to Lean — that remains gated per capability (stable, proved,
+measured-within-budget). What is fixed now is only the **shape** the seam takes *if* a binding
+happens, so that a future adoption is a re-binding rather than a redesign:
+
+- **Long-lived values stay resident.** The consensus state and fork-choice view do not round-trip
+  per call. The Rust side holds an opaque handle to a Lean-resident value
+  (`process_block(state_handle, block) -> new_state_handle`), which fits Lean's immutable,
+  reference-counted values and eliminates the per-call state marshalling cost entirely. The
+  single-writer discipline makes ownership simple: the store is the only holder. Persistence and
+  crash recovery are defined by SSZ export/import at the DB, not by the handle.
+- **Inputs cross as SSZ bytes, decoded by the callee.** Per-call inputs (blocks, votes) are
+  passed in their SSZ wire form and decoded on the Lean side. This deliberately avoids
+  constructing Lean objects field-by-field from Rust (`lean_alloc_ctor`-style), which would
+  couple the shell to the Lean object layout and concentrate `unsafe` exactly where a
+  conversion bug is least detectable. Bytes-as-interchange means the conversion is the
+  consensus-critical wire format itself — already fixture-tested on both sides — and, if the
+  Lean side ever ships a proven decoder, the Lean half of the seam becomes proven code.
+
+Field-by-field construction is not banned outright; it is the last resort, admitted only where
+measurement shows the byte path cannot fit the budget.
 
 ## Boundary migration
 
@@ -249,10 +359,10 @@ already in the design:
 
 | Capability | Today | Anticipated move | Trigger | Effect |
 |---|---|---|---|---|
-| State transition | Verified Core | Verified Core → Runtime Shell | An L\* "real-time CL proofs" spec for the consensus STF materializes upstream (see [Ethlambda notes](memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification)) | Verified Core export set shrinks; FFI surface contracts; the `StateTransition` contract is bound to a zkVM-friendly (Rust / leanVM) implementation |
+| State transition | Verified Core | Verified Core → Runtime Shell | An upstream spec for SNARK-proving the consensus STF materializes (none published as of 2026-07; see [Ethlambda notes](memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification)) | Verified Core export set shrinks; FFI surface contracts; the `StateTransition` contract is bound to a zkVM-friendly (Rust / leanVM) implementation |
 | SSZ / `hash_tree_root` | Runtime Shell | Runtime Shell → Verified Core | A Lean-verified merkleization becomes available | Verified Core computes its own roots; "Verity Consensus receives precomputed roots" no longer holds; `verity-types` calls inward to Verified Core for the `Serialization` contract |
 | Fork choice | Verified Core (decision) + Runtime Shell (`Store`) | — | — | The worked example of a capability split across the boundary: a pure decision in Verified Core over a mutable `Store` owned in Runtime Shell |
-| Proposer selection | Undecided (Verified Core or Runtime Shell) | — | — | Open (see the note above): a Verified Core decision function or computed Rust-side |
+| Proposer selection | Runtime Shell (pure function, chain-side) | Runtime Shell → Verified Core (candidate) | Verified in Lean and pulled into the export set | Same pattern as SSZ: a pure decision whose shape is already what the core requires |
 
 The STF row is **not a decision to move it** — the working position is that the STF stays in Verity
 Consensus (Lean 4). It is recorded so the design is shown to *withstand* the move if the trigger fires;
@@ -260,6 +370,8 @@ the full tension is in [Ethlambda notes](memo.md#open-question-unresolved-zk-pro
 
 ## Notes
 
+- What "proven" means — the artifact chain, the proposition catalog, and the trust base — is defined
+  in [Formal Verification](docs/src/concepts/formal-verification.md).
 - Function names in the diagrams (`process_block`, `on_block`, `get_head`, …) are indicative and will
   be reconciled with [leanSpec](https://github.com/leanEthereum/leanSpec) (lstar HEAD) when
   implementation begins.
