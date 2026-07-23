@@ -1,9 +1,13 @@
-//! `verity-types` — foundational consensus container definitions and constants.
+//! `verity-consensus` — the single starting crate of the Verity consensus client.
+//!
+//! Per the 2026-07-22 kickoff decision, implementation begins in this one crate: shared
+//! types, STF, fork choice, and proposer selection live here as modules, and the
+//! ARCHITECTURE.md workspace layout is what this crate later splits into once a second
+//! crate earns its existence.
 //!
 //! **CI canary stub.** This crate currently holds only a placeholder so the Rust quality gate
-//! (`cargo fmt` / `clippy` / `test` / `build`) has real code to run against before implementation
-//! begins. Replace this with the actual container definitions (`Block`, `State`, `Vote`, …) and
-//! constants when implementation starts.
+//! (`cargo fmt` / `clippy` / `test` / `build`) has real code to run against before
+//! implementation begins.
 
 /// Returns the crate's semantic version string, as recorded in `Cargo.toml`.
 ///
