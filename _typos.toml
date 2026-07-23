@@ -5,6 +5,9 @@
 extend-exclude = [
     "docs/book/",
     "Cargo.lock",
+    # Vendored mdbook-mermaid assets (minified; regenerated on mdbook-mermaid bumps).
+    "docs/mermaid.min.js",
+    "docs/mermaid-init.js",
 ]
 
 [default.extend-words]
