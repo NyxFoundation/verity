@@ -18,3 +18,60 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Every external dependency is declared once here and inherited by members with
+# `workspace = true`, so a version appears in exactly one place in the tree.
+[workspace.dependencies]
+
+# --- Post-quantum signatures ---------------------------------------------------------------
+# XMSS sign / verify per validator. Rev-pinned rather than branch-tracked (kickoff decision,
+# 2026-07-22): a branch head can move under us between CI runs and a lockfile alone would not
+# make that visible in review.
+#
+# The rev is the head of leanSig's `devnet4` branch, not of `main`. The two have diverged, and
+# `devnet4` is what both other Rust lean clients run against (ream and ethlambda each track that
+# branch). Bump this by re-reading what those clients track, not by following `main`.
+#
+# `version` is redundant for resolution — the rev already determines the code — but a git
+# dependency without one is a wildcard requirement, which `deny.toml` bans.
+#
+# Pinning this rev is necessary but NOT sufficient. leanSig itself depends on Plonky3 with neither
+# rev nor branch, so a fresh resolve floats it to that repository's HEAD, which no longer compiles
+# against leanSig. Plonky3 is therefore pinned in Cargo.lock (`cargo update p3-field --precise`) —
+# it cannot be pinned here, because cargo drops a `[patch]` whose version cannot satisfy Plonky3's
+# own intra-workspace requirements. A bare `cargo update` refloats it and breaks the build; see
+# CLAUDE.md for the full trap.
+leansig = { git = "https://github.com/leanEthereum/leanSig", rev = "15cbdd43ec8525aa43fea2f42cafc5ed366084ae", version = "0.1.0" }
+
+# --- SSZ -----------------------------------------------------------------------------------
+# lambdaclass' implementation. NyxFoundation/leanSSZ (proven in Lean, C ABI PoC complete) is the
+# future Lean-adoption candidate and is deliberately not adopted yet.
+#
+# Note leansig depends on `ethereum_ssz` internally, so two SSZ implementations coexist
+# transitively. Harmless, but conversions at the signature boundary are explicit, not free.
+libssz = "0.2.2"
+libssz-derive = "0.2.2"
+libssz-merkle = "0.2.2"
+libssz-types = "0.2.2"
+
+# --- Networking ----------------------------------------------------------------------------
+# Upstream rust-libp2p, unforked. `default-features = false` keeps the transport set to what the
+# lean network actually uses: QUIC for transport, gossipsub for broadcast, request-response for
+# the ReqResp protocols. `macros` is the `NetworkBehaviour` derive; `identify` and `ping` are the
+# baseline peer-management protocols.
+libp2p = { version = "0.56", default-features = false, features = [
+    "quic",
+    "gossipsub",
+    "request-response",
+    "identify",
+    "ping",
+    "macros",
+    "tokio",
+    "noise",
+    "yamux",
+    "secp256k1",
+] }
+
+# --- Storage -------------------------------------------------------------------------------
+# See ARCHITECTURE.md "Storage engine and retention" for why an LSM engine and not a B-tree one.
+rocksdb = "0.24"
