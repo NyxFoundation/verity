@@ -17,18 +17,12 @@ permissions:
   deployments: write
 
 jobs:
-  lint:
+  links:
+    # Markdown lint moved to the consolidated `pre-commit` job in quality.yml.
+    # This job keeps the offline (deterministic) internal-link check.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Lint Markdown
-        uses: DavidAnson/markdownlint-cli2-action@v22
-        with:
-          # SUMMARY.md is mdBook's TOC — multiple H1 part-titles are by design.
-          globs: |
-            docs/src/**/*.md
-            !docs/src/SUMMARY.md
 
       - name: Check internal links
         uses: lycheeverse/lychee-action@v2
