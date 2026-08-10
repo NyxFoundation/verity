@@ -18,9 +18,14 @@ Owner-ratified ground rules for the first Rust code. Do not re-open these withou
 - **Goal**: a full node from the start (networking included), not a fixtures-passing library. leanSpec fixture conformance is still the CI backbone.
 - **Crates**: start with a single `verity-consensus` crate (no chain/validator split). Proposer selection lives chain-side as a pure function next to STF/fork choice. Shared types stay a module until a second crate exists.
 - **Dependencies**:
-  - XMSS: [`leansig`](https://github.com/leanEthereum/leanSig) as a git dependency, **rev-pinned** (not branch-tracked).
+  - XMSS: [`leansig`](https://github.com/leanEthereum/leanSig) as a git dependency, **rev-pinned** (not branch-tracked), for per-validator sign / verify. Aggregation and aggregate-proof verification come from [`leanMultisig`](https://github.com/leanEthereum/leanMultisig) — both sit behind `verity-crypto`'s one capability contract, so a doc naming only one of them is incomplete, not contradictory.
   - SSZ: `libssz` 0.2.2 (lambdaclass). [NyxFoundation/leanSSZ](https://github.com/NyxFoundation/leanSSZ) (proven Lean SSZ, C ABI PoC complete) is deliberately NOT adopted initially — it is the future Lean-adoption candidate for SSZ.
   - Networking: upstream `rust-libp2p` (QUIC, gossipsub, reqresp). Fork only if a concrete need materializes, as lambdaclass did for ethlambda.
+  - Storage: **RocksDB** behind a backend trait with an in-memory sibling implementation (ethlambda's `StorageBackend` split). Decided 2026-08-10 — see **Storage** below.
+- **Storage** (2026-08-10): aggregate proofs are persisted and pruned on a **21,600-slot (~1 day)** window, in their own table keyed `slot ‖ root` so pruning is a slot-ordered range delete. Two facts fix this:
+  - Measured from leanSpec's `fixtures-prod-scheme.tar.gz`: an aggregate block proof is 155–236 KB (median 190 KB) against ~100–800 B for everything else. At 4 s slots that is ~4.1 GB/day of proofs vs ~5 MB/day of blocks and states — the large-value, bulk-delete workload is what selects an LSM engine.
+  - leanSpec sets `MIN_SLOTS_FOR_BLOCK_REQUESTS = 3600` (4 hours) and a `BlocksByRange` responder MUST serve that window. One day is an operational choice 6× above that floor: it is how far a peer can fall behind and still catch up over P2P instead of needing a checkpoint. leanSpec's reference node meets the requirement in memory and persists no proofs at all; we persist so the guarantee survives a restart.
+  - Do not re-derive these numbers from the devnet-scheme fixtures in the leanSpec source tree — those are much smaller (XMSS signature 424 B there vs 2,536 B in the production scheme) and will mislead.
 - **Differential testing**: consume leanSpec's release asset `fixtures-prod-scheme.tar.gz` in CI, pinned to a commit and bumped manually. Use [leansig-test-keys](https://github.com/leanEthereum/leansig-test-keys) pre-generated keys for fast tests.
 - **Toolchain**: Rust edition 2024, resolver 3, latest stable pinned via `rust-toolchain.toml` (external floor: leanSig requires ≥1.87; no nightly needed).
 - **License**: MIT (Nyx Foundation copyright).

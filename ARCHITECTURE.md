@@ -164,9 +164,12 @@ upstream Lean library name per Rust's `-sys` convention.
 **Thin glue over existing libraries**
 
 - `verity-p2p` — gossip and req/resp over libp2p.
-- `verity-crypto` — adapter over leanMultisig (XMSS verify / sign / aggregate).
-- `verity-db` — persistence (Repository): blocks, states, and the finalized anchor, over an
-  embedded key-value store. Keeps the storage concern out of the single-writer aggregate coordinator.
+- `verity-crypto` — adapter over the two upstream signature libraries: [`leansig`](https://github.com/leanEthereum/leanSig)
+  for per-validator XMSS sign / verify, and [`leanMultisig`](https://github.com/leanEthereum/leanMultisig)
+  for aggregation and aggregate-proof verification. One capability contract, two suppliers behind it.
+- `verity-db` — persistence (Repository): blocks, states, aggregate proofs, and the finalized anchor.
+  Keeps the storage concern out of the single-writer aggregate coordinator. See
+  [Storage engine and retention](#storage-engine-and-retention).
 - `verity-rpc` — HTTP API surface.
 - `verity-metrics` — implementation of the leanMetrics contract.
 
@@ -210,6 +213,42 @@ flowchart TB
     CRYPTO --> TYPES
     DB --> TYPES
 ```
+
+### Storage engine and retention
+
+`verity-db` stores two workloads with opposite shapes, and the split drives every decision below.
+Sizes are measured from leanSpec's `fixtures-prod-scheme.tar.gz` release asset; at
+`SECONDS_PER_SLOT = 4` a day is 21,600 slots.
+
+| Workload | Value size | Volume | Lifetime |
+|---|---|---|---|
+| Blocks, states, indices, finalized anchor | ~100 B – 800 B | ~5 MB/day | permanent |
+| Aggregate proofs (`MultiMessageAggregate`) | 155–236 KB, median 190 KB | ~4.1 GB/day | pruned after ~1 day |
+
+**Engine: RocksDB.** The proof workload — six-figure-byte values written continuously and dropped
+en masse a day later — is what an LSM tree with range tombstones is built for, and the same choice
+is what ethlambda, zeam, and qlean-mini run (gean uses Pebble, the same family). The cost is a C++
+dependency in the runtime's build and trust surface; that cost is accepted for Runtime Shell, where
+the bar is memory-safe, panic-free Rust around a well-exercised store, not proof. It buys nothing in
+Verified Core and reaches nothing there.
+
+**Backend trait.** Storage sits behind a backend trait with an in-memory implementation alongside
+the RocksDB one, following ethlambda's `StorageBackend` split. Tests and ephemeral nodes run
+in-memory; the engine stays replaceable if the proof workload later moves out of the database.
+Anything that leaks one engine's semantics into the trait — range deletes above all — is documented
+at the trait, not assumed.
+
+**Proof retention: 21,600 slots (~1 day).** Proofs live in their own table keyed `slot ‖ root`, so
+pruning is a slot-ordered range delete rather than a scan. They are dropped only below
+`tip_slot − 21,600` and only when that cutoff is already finalized; non-finalized proofs are never
+touched. Blocks and states are never pruned by this path.
+
+The floor is not ours to choose: leanSpec sets `MIN_SLOTS_FOR_BLOCK_REQUESTS = 3600` (4 hours) and
+a responder **MUST** serve `BlocksByRange` over that window. Everything above it is an operational
+choice about how far behind a peer can fall and still catch up over P2P instead of needing a
+checkpoint. One day is that horizon — a node down overnight rejoins by range sync — at 6× the
+mandated floor. Note that leanSpec's own reference node satisfies the requirement in memory and
+persists no proofs at all; Verity persists them so the guarantee survives a restart.
 
 ### Capability contracts
 
