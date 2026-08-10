@@ -45,7 +45,7 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: "--no-progress docs/src README.md ARCHITECTURE.md DOMAIN_MODEL.md"
+          args: "--no-progress docs/src README.md ARCHITECTURE.md DOMAIN_MODEL.md STORAGE.md"
           fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

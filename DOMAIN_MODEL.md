@@ -38,7 +38,7 @@ below; this section is the *strategic* frame above it.
 | **Serialization** | Supporting | SSZ encode / decode, `hash_tree_root`, merkleization | Runtime Shell | `verity-types` (+ external SSZ lib) |
 | **Validator Duties** | Supporting | proposer / attester duties, production, signing, aggregation scheduling | I/O Edge | `verity-validator` |
 | **Networking** | Generic | gossip topics, req / resp, peers | I/O Edge | `verity-p2p` |
-| **Persistence** | Generic | block / state store, aggregate-proof store with a bounded retention window, finalized anchor; Repository over RocksDB behind a backend trait | Runtime Shell | `verity-db` |
+| **Persistence** | Generic | block / state store, aggregate-proof store with a bounded retention window, finalized anchor; Repository over RocksDB behind a backend trait ([schema](STORAGE.md)) | Runtime Shell | `verity-db` |
 | **Node Orchestration** | Generic | lifecycle, slot clock, backpressure | I/O Edge | `verity` (bin) |
 | **API** | Generic | HTTP / RPC surface | I/O Edge | `verity-rpc` |
 | **Telemetry** | Generic | metric contract | I/O Edge | `verity-metrics` (Conformist → leanMetrics) |
