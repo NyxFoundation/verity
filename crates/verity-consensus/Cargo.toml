@@ -9,5 +9,17 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+# The pinned dependency set, declared here so it is actually resolved, compiled, and written to
+# Cargo.lock — `[workspace.dependencies]` on its own locks nothing. Nothing consumes these yet;
+# they are wired in so CI proves the set builds together before implementation depends on it.
+[dependencies]
+leansig.workspace = true
+libssz.workspace = true
+libssz-derive.workspace = true
+libssz-merkle.workspace = true
+libssz-types.workspace = true
+libp2p.workspace = true
+rocksdb.workspace = true
+
 [lints]
 workspace = true

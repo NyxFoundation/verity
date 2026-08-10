@@ -4,6 +4,13 @@
 version = 2
 # RustSec advisories: vulnerabilities and unmaintained crates fail by default in version 2.
 yanked = "deny"
+ignore = [
+    # `paste` is archived and unmaintained. It is a proc macro with no runtime surface, reached
+    # only transitively by two independent paths we do not control: alloy-primitives (via
+    # ethereum_ssz, pulled in by leanSig) and netlink-packet-core (via libp2p-quic). There is no
+    # vulnerability, only the unmaintained status. Revisit when either path drops it.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 version = 2
@@ -16,8 +23,14 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
+    # foldhash, reached through hashbrown and alloy-primitives.
+    "Zlib",
 ]
 confidence-threshold = 0.9
+# leanSig declares no `license` field in its manifest, so cargo-deny emits a standing
+# `no-license-field` warning for it. The check still passes on the strength of the file scan, which
+# resolves its Apache-2.0 LICENSE above this threshold. That scan is what satisfies the check, so a
+# `[[licenses.clarify]]` entry for leanSig changes nothing — do not add one.
 
 [bans]
 multiple-versions = "warn"
@@ -26,3 +39,12 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# leanSig is not published to crates.io, so it is consumed as a rev-pinned git dependency.
+# Plonky3 arrives transitively through leanSig and is likewise unpublished. These entries only say
+# the hosts are sources we accept; the revisions are pinned elsewhere — leanSig's in Cargo.toml,
+# Plonky3's in Cargo.lock (see the leanSig comment in Cargo.toml for why it cannot live in either
+# manifest).
+allow-git = [
+    "https://github.com/leanEthereum/leanSig",
+    "https://github.com/Plonky3/Plonky3.git",
+]
