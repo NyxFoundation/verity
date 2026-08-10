@@ -13,3 +13,6 @@ extend-exclude = [
 [default.extend-words]
 # "ser" — serialization abbreviation (mermaid node IDs, serde ser/de), not a typo of "set".
 ser = "ser"
+# "symetric" — the real directory name in leanMultisig (`crates/backend/symetric`), misspelled
+# upstream. Correcting it in our docs would point readers at a path that does not exist.
+symetric = "symetric"
