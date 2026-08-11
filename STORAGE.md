@@ -71,13 +71,14 @@ That is why the state tables are split, and why a diff must not carry
 | `BlockRoots` | slot | canonical block root | never |
 | `StateSnapshots` | root | full `State` | never |
 | `StateDiffs` | root | `StateDiff` | never |
-| `StateRootIndex` | state_root | block root | with its block |
+| `StateRootIndex` | state_root | block root | never (tied to its block) |
 | `LiveChain` | slot ‖ root | parent_root | below finalized |
 | `Metadata` | string | SSZ scalars | never |
 
-`Metadata` holds the `Store`'s own persistent fields — `time`, `config`, `head`, `safe_target`,
-`latest_justified`, `latest_finalized`, `genesis_time` — plus a network fingerprint, so a data
-directory belonging to another network is refused at startup rather than silently resumed.
+`Metadata` holds the `Store`'s own persistent scalars — `time`, `config`, `head`, `safe_target`,
+`latest_justified`, `latest_finalized`. A network fingerprint is derived from `genesis_time` (a
+field of `config`), so a data directory belonging to another network is refused at startup rather
+than silently resumed.
 
 `LiveChain` is an index, not a copy: it lets fork choice build the `root → (slot, parent_root)`
 tree without deserializing a block. Presence in it is also what makes a block *visible* to fork
@@ -114,7 +115,7 @@ Everything else is omitted and recovered:
 
 | Omitted | Recovered from |
 |---|---|
-| `config`, `validators` | the snapshot — fixed at genesis, never mutated by the STF |
+| `config`, `validators` | the snapshot — fixed at genesis; under the current lstar STF neither is mutated after genesis |
 | `latest_block_header` | `Blocks` |
 | `historical_block_hashes` | regenerated from `base_root` plus the slot gap |
 
@@ -122,6 +123,11 @@ That last row is the one that makes the scheme work. Regeneration is checked rat
 an append whose hashes do not match the expected slot gap, or which is not zero-filled across
 skipped slots, is rejected where the diff is created, so a bad append cannot surface later as a
 corrupted reconstruction.
+
+The `config` and `validators` row is scoped to the current fork: the lstar STF mutates neither
+after genesis, so a snapshot carries the live set and a diff need not. A future fork that activates
+or slashes validators — as mainnet consensus does — would have to carry those mutations in the
+diff; that is the point to revisit if this scheme is reused.
 
 Reads resolve in three steps — an in-memory LRU of recent states, then a snapshot, then
 reconstruction by walking `base_root` back to the nearest snapshot and replaying forward. States
