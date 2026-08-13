@@ -1,6 +1,6 @@
 ---
 title: Verity Architecture
-last_updated: 2026-08-10
+last_updated: 2026-08-14
 tags:
   - architecture
   - verification-boundary
@@ -235,7 +235,9 @@ flowchart TB
 
 `verity-db` stores two workloads with opposite shapes, and the split drives every decision below.
 Sizes are measured from leanSpec's `fixtures-prod-scheme.tar.gz` release asset; at
-`SECONDS_PER_SLOT = 4` a day is 21,600 slots.
+`SECONDS_PER_SLOT = 4` a day is 21,600 slots. The table layout that follows from these decisions —
+keys, pruning rules, and the snapshot/diff scheme for state — is in
+[Storage Schema](https://github.com/NyxFoundation/verity/blob/main/STORAGE.md).
 
 | Workload | Value size | Volume | Lifetime |
 |---|---|---|---|
