@@ -1,166 +1,211 @@
 # Storage Schema
 
-What `verity-db` persists, how it is keyed, and what is deliberately kept in memory instead.
-[Architecture](ARCHITECTURE.md#storage-engine-and-retention) settles the engine (RocksDB behind a
-backend trait) and the aggregate-proof retention window; this document is the layout underneath
-those decisions.
+What `verity-db` persists, how it is keyed, which transitions commit together, and which short-lived
+aggregation inputs remain in memory. [Architecture](ARCHITECTURE.md#storage-engine-and-retention)
+settles the engine — RocksDB behind a backend trait — and this document fixes the repository layout
+underneath it.
 
-Every figure here is measured or derived from leanSpec, not estimated. The measurements come from
-the `fixtures-prod-scheme.tar.gz` release asset; the growth model comes from the state transition
-itself. At `SECONDS_PER_SLOT = 4` a day is 21,600 slots.
+The schema is a Runtime Shell concern, not a consensus object. Consensus values are nevertheless
+stored as their exact SSZ types, so a database row never invents an alternative encoding for a
+protocol container.
 
-## What is persisted, and what is not
+Every size below is measured or derived from leanSpec. Measurements use the
+`fixtures-prod-scheme.tar.gz` release asset; at `SECONDS_PER_SLOT = 4`, a day is 21,600 slots.
 
-leanSpec's fork-choice `Store` and the set a node actually writes to disk are not the same thing.
-The reference node's `Database` protocol (`src/lean_spec/node/storage/database.py`) persists a
-strict subset:
+## Workloads and backend contract
 
-| `Store` field | Persisted |
-|---|---|
-| `blocks: root → Block` (unsigned) | yes |
-| `states: root → State` | yes |
-| `head`, `safe_target`, `latest_justified`, `latest_finalized`, `time`, `config` | yes, as scalars |
-| `attestation_signatures` (raw XMSS, 2,536 B each) | **no** — memory only |
-| `latest_new_aggregated_payloads`, `latest_known_aggregated_payloads` | **no** — memory only |
+| Workload | Value size | Volume | Lifetime |
+|---|---:|---:|---|
+| Headers, bodies, snapshots/diffs, and indices | ~100 B – 800 B | ~5 MB/day | retained |
+| Aggregate block proofs (`MultiMessageAggregate`) | 155–236 KB, median 190 KB | ~4.1 GB/day before pruning | 21,600 slots |
 
-Verity follows that split, with one deliberate addition: aggregate **block** proofs are persisted,
-because a restart otherwise leaves the node unable to serve `BlocksByRange` until fresh blocks
-arrive. The attestation-level buffers stay in memory, bounded by entry count.
+The aggregate-proof workload selects RocksDB: its large, append-heavy values and bulk expiry fit an
+LSM tree with range tombstones. The backend trait has both RocksDB and in-memory implementations and
+exposes only byte operations:
 
-Blocks are stored **unsigned**. The proof is a separate row, so a block whose proof has been pruned
-still reads back as a block.
+- point reads;
+- lexicographically ordered half-open range reads;
+- atomic write batches spanning column families; and
+- half-open range deletes.
 
-## The size model
+The in-memory backend preserves RocksDB's lexicographic iteration order. It is used for tests and
+ephemeral nodes; no RocksDB-specific behavior is allowed to leak past the trait without being named
+in that contract.
 
-Two facts shape every table below.
+RocksDB's default column family is reserved. Verity uses one application column family per logical
+table so a range tombstone for proofs cannot reach another keyspace.
 
-**Aggregate proofs dominate write volume.** 155–236 KB each (median 190 KB) against ~100–800 B for
-everything else: ~4.1 GB/day of proofs versus ~5 MB/day of blocks.
+## Column families
 
-**State grows without bound, one slot at a time.** The 342–774 B seen in SSZ fixtures is not a
-steady-state size. `process_slots` appends to `historical_block_hashes` every slot and never trims
-it — it cannot, because the list is indexed by absolute slot:
+`root` and `state_root` are raw 32-byte SSZ roots. `slot_be` and `validator_index_be` are fixed
+8-byte unsigned big-endian integers, making lexicographic key order equal numeric order. A listed
+SSZ value must decode as exactly one canonical encoding; a decode or integrity failure is storage
+corruption, not an absent value.
 
-```python
-new_historical_block_hashes = (
-    state.historical_block_hashes + [parent_root] + [ZERO_HASH] * num_empty_slots
-)
-```
-
-The justification fields do not share this problem: `justified_slots` and `justifications_*` are
-indexed relative to the finalized boundary, so they stay bounded by the non-finalized window.
-
-State size is therefore `≈ 300 B + 32 B × slot`, capped only by `HISTORICAL_ROOTS_LIMIT = 2^18`:
-
-| Point on the chain | One state |
-|---|---|
-| slot 21,600 (one day) | ~691 KB |
-| slot 262,144 (~12.1 days, the SSZ limit) | ~8.4 MB |
-
-Writing a full state per block would cost ~7.5 GB over the first day alone (`Σ 32·s`) and grow
-quadratically — heavier than the proofs. Snapshots plus diffs bring the same data to ~10–15 MB/day.
-That is why the state tables are split, and why a diff must not carry
-`historical_block_hashes`.
-
-## Tables
-
-| Table | Key | Value | Pruned |
+| Column family | Key | Value | Retention / purpose |
 |---|---|---|---|
-| `Blocks` | root | `Block` (unsigned) | never |
-| `BlockProofs` | slot ‖ root | `MultiMessageAggregate` | below `tip − 21,600`, once finalized |
-| `BlockRoots` | slot | canonical block root | never |
-| `StateSnapshots` | root | full `State` | never |
-| `StateDiffs` | root | `StateDiff` | never |
-| `StateRootIndex` | state_root | block root | never (tied to its block) |
-| `LiveChain` | slot ‖ root | parent_root | below finalized |
-| `Metadata` | string | SSZ scalars | never |
+| `block_headers` | `block_root` | `SSZ(BlockHeader)` | Every processed block; retained |
+| `block_bodies` | `block_root` | `SSZ(BlockBody)` | Every processed block, including empty bodies; an anchor only when supplied |
+| `block_proofs` | `slot_be ‖ block_root` | `SSZ(MultiMessageAggregate)` | Proof-bearing blocks; range-pruned |
+| `state_snapshots` | `block_root` | `SSZ(State)` | Genesis/checkpoint anchors and periodic bases; retained |
+| `state_diffs` | `block_root` | `SSZ(StateDiff)` | One per processed non-anchor block; retained |
+| `canonical_blocks` | `slot_be` | `block_root` | Current canonical root at each non-empty slot |
+| `state_roots` | `state_root` | `block_root` | Reverse lookup for checkpoint sync and state-root queries |
+| `fork_choice_blocks` | `slot_be ‖ block_root` | `parent_root` | Processed fork-choice tree; retained |
+| `known_votes` | `validator_index_be` | `SSZ(AttestationData)` | Latest counted vote per validator |
+| `pending_votes` | `validator_index_be` | `SSZ(AttestationData)` | Latest not-yet-counted vote per validator |
+| `metadata` | fixed ASCII key | typed scalar or SSZ value | Database identity and current view pointers |
 
-`Metadata` holds the `Store`'s own persistent scalars — `time`, `config`, `head`, `safe_target`,
-`latest_justified`, `latest_finalized`. A network fingerprint is derived from `genesis_time` (a
-field of `config`), so a data directory belonging to another network is refused at startup rather
-than silently resumed.
+Blocks are stored unsigned: header and body are separate rows, while the signed envelope's aggregate
+proof is the `block_proofs` row. `MultiMessageAggregate` is persisted as the entire SSZ container,
+not merely its current `proof` field. A future container-field change therefore remains a schema
+migration problem rather than silently changing the meaning of stored bytes.
 
-`LiveChain` is an index, not a copy: it lets fork choice build the `root → (slot, parent_root)`
-tree without deserializing a block. Presence in it is also what makes a block *visible* to fork
-choice, which gives pending blocks a natural representation — a block waiting for its parent has
-its rows written, including the heavy proof, but no `LiveChain` entry until it is processed.
-
-`BlockRoots` maps the canonical chain only. A reorg rewrites the affected slot range by walking the
-old and new head back to their common ancestor, so the cost tracks the reorg depth rather than the
-chain length.
-
-### Key encoding
-
-- **Root-keyed** tables use the 32-byte root.
-- **Slot-prefixed** tables (`BlockProofs`, `LiveChain`) use an 8-byte **big-endian** slot followed
-  by the 32-byte root. Big-endian makes lexicographic order equal numeric slot order, which is what
-  turns pruning into a range delete instead of a scan. This is the same property that selected an
-  LSM engine.
-- **Slot-keyed** `BlockRoots` uses the 8-byte big-endian slot alone; the value already holds the root.
-
-One RocksDB column family per table. Beyond isolation, this is required for correctness of the
-proof pruning: a range delete must not be able to reach another table's keyspace.
+`canonical_blocks` is deliberately separate from the all-branch `fork_choice_blocks` index. When the
+head changes, the chain writer walks the old and new heads back to their common ancestor, deletes the
+slots leaving the canonical chain, and upserts the slots joining it. Processing a side branch can
+never overwrite the range-sync index.
 
 ## State storage: snapshots and diffs
 
-Writing a state does two things:
+The state grows with absolute slot. `process_slots` appends to `historical_block_hashes` every slot
+and the current lstar state does not trim it. The 342–774 B fixture states are therefore not a
+steady-state size: a state is approximately `300 B + 32 B × slot`, reaching about 691 KB at slot
+21,600 and 8.4 MB at the current `HISTORICAL_ROOTS_LIMIT = 2^18`. A full state per block would grow
+quadratically and cost roughly 7.5 GB over the first day alone.
 
-1. **Always** a `StateDiff` keyed by the block root, linked to its parent by `base_root`.
-2. **At anchors only** a full snapshot, when a block crosses a 1,024-slot boundary relative to its
-   parent (~68 minutes). This bounds any reconstruction to at most 1,024 diff applications.
+Verity writes a full snapshot at genesis and checkpoint-sync anchors, then at the first processed
+block whose edge from its parent crosses a 1,024-slot boundary:
 
-A diff carries only what cannot be recovered elsewhere: the target slot, the justified and
-finalized checkpoints, and the justification fields in full (bounded by the non-finalized window).
-Everything else is omitted and recovered:
+```text
+floor(parent_slot / 1024) < floor(block_slot / 1024)
+```
 
-| Omitted | Recovered from |
+Every processed branch follows this rule, so skipped slots do not lengthen replay beyond 1,023 diffs.
+All non-anchor processed blocks write a `StateDiff` whose SSZ field order is:
+
+```text
+base_block_root
+slot
+latest_justified
+latest_finalized
+justified_slots
+justifications_roots
+justifications_validators
+```
+
+The snapshot supplies `config` and the validator registry. The reconstructor derives the latest
+header and historical roots from persisted block data and the parent link. It validates the diff's
+parent against the child header and validates the reconstructed state's `hash_tree_root` against the
+child header's `state_root`. Snapshots and diffs are never pruned, keeping all processed state history
+reconstructible.
+
+## Metadata and identity
+
+`metadata` accepts only the following fixed keys:
+
+| Key | Value |
 |---|---|
-| `config`, `validators` | the snapshot — fixed at genesis; under the current lstar STF neither is mutated after genesis |
-| `latest_block_header` | `Blocks` |
-| `historical_block_hashes` | regenerated from `base_root` plus the slot gap |
+| `schema_version` | `SSZ(uint32)` repository schema version |
+| `chain_fingerprint` | Genesis state's `hash_tree_root` (`Bytes32`) |
+| `fork_version` | Canonical protocol fork-version scalar |
+| `ssz_schema_digest` | `Bytes32`: SHA-256 of the versioned stored-type manifest |
+| `head`, `safe_target` | `Bytes32` |
+| `latest_justified`, `latest_finalized` | `SSZ(Checkpoint)` |
+| `served_from_slot` | `SSZ(uint64)` |
+| `last_processed_interval` | `SSZ(Interval)` |
 
-That last row is the one that makes the scheme work. Regeneration is checked rather than trusted:
-an append whose hashes do not match the expected slot gap, or which is not zero-filled across
-skipped slots, is rejected where the diff is created, so a bad append cannot surface later as a
-corrupted reconstruction.
+The stored-type manifest has a fixed order: `BlockHeader`, `BlockBody`,
+`MultiMessageAggregate`, `State`, `StateDiff`, `Checkpoint`, and `AttestationData`. Its digest makes
+an SSZ-shape change explicit in review. The genesis state root fingerprints genesis time,
+configuration, and validator registry without introducing a second chain-identity format.
 
-The `config` and `validators` row is scoped to the current fork: the lstar STF mutates neither
-after genesis, so a snapshot carries the live set and a diff need not. A future fork that activates
-or slashes validators — as mainnet consensus does — would have to carry those mutations in the
-diff; that is the point to revisit if this scheme is reused.
+A populated database opens only when all identity values match the configured network and runtime
+schema. Mismatch, missing required rows, decode failure, or a root-integrity failure stops the node
+and preserves the directory for diagnosis. It is never treated as an empty database or overwritten
+automatically: an operator must select a new directory and explicitly checkpoint-sync again.
 
-Reads resolve in three steps — an in-memory LRU of recent states, then a snapshot, then
-reconstruction by walking `base_root` back to the nearest snapshot and replaying forward. States
-are content-addressed and immutable, so the cache never needs invalidation.
+## Writer, batches, and restart
 
-Snapshots and diffs are **never pruned**: the full state history stays reconstructible. The cost is
-a monotonically growing diff chain, accepted for the debugging and verification leverage it gives
-against a spec that is still moving.
+`verity-chain` — initially the chain module inside the single `verity-consensus` crate — owns the
+only write capability. P2P, RPC, validator duties, and maintenance submit requests to it rather than
+writing the backend directly. Read-only snapshot views may run concurrently.
 
-## Pruning
+A processed block commits in one cross-column-family `WriteBatch`:
 
-Only two paths delete anything.
+- header, body, and aggregate proof;
+- state diff and, at an anchor, full snapshot;
+- `state_roots` and `fork_choice_blocks` entries;
+- canonical-index changes; and
+- every metadata value affected by the transition.
 
-**Block proofs.** With `cutoff = tip_slot − 21,600`: if `cutoff` is at or below the finalized slot,
-delete every proof below `cutoff` in a single range delete; otherwise delete nothing. A non-finalized
-proof is never touched, and a chain that has stopped finalizing simply stops pruning. Blocks and
-states are untouched by this path — only the proof is removed, so history stays intact.
+Before exposing the batch, the writer checks that the header root is the block root, the body root
+matches the header, the computed state root matches the header, and the parent relationships agree.
+A network block whose parent or state is not yet available remains only in a bounded in-memory cache;
+it is not persisted and is reacquired after restart.
 
-The floor is fixed upstream: leanSpec sets `MIN_SLOTS_FOR_BLOCK_REQUESTS = 3600` (4 hours) and a
-`BlocksByRange` responder MUST serve that window. 21,600 slots is an operational choice 6× above it
-— see [Architecture](ARCHITECTURE.md#storage-engine-and-retention).
+Write-ahead logging is always enabled. Routine block imports and interval updates are atomic but do
+not fsync. Genesis/checkpoint anchors and commits that advance finalization fsync. An anchor batch
+contains its metadata, header/body when supplied, full snapshot, state-root reverse index, canonical
+index, and fork-choice entry, all or none.
 
-**`LiveChain`.** Pruned below the finalized slot, keeping the finalized block itself as the anchor
-for fork choice.
+### Fork-choice votes and time
 
-## In memory only
+Raw XMSS signatures and reusable proof pools are bounded in-memory inputs for aggregation and are
+discarded on restart. Fork-choice state is persisted in reduced form instead.
+
+For every participant in a verified aggregate, the vote stored in `pending_votes` or `known_votes`
+wins only if its attestation slot is newer than the old one, or on a slot tie its
+`AttestationData` root is lexicographically larger. This is the deterministic LMD reduction; it
+makes restart independent of proof-set insertion order.
+
+A valid block-external aggregate updates `pending_votes`. At interval 3 the writer computes and
+commits `safe_target`; at interval 4 it merges pending into `known_votes`, clears pending, and
+commits the recomputed head and head-derived finalized checkpoint. Each vote-table change, affected
+metadata, and `last_processed_interval` are one batch.
+
+`last_processed_interval` is necessary because wall-clock time alone cannot reveal which interval
+events completed before a crash. Restart validates the rows, reconstructs the fork-choice tree from
+`latest_justified.slot` onward with a range scan, recomputes head/safe-target/checkpoint metadata
+from the two vote maps, checks exact agreement with metadata, then replays ticks through the current
+wall-clock interval. Any disagreement fails closed.
+
+## Retention and range sync
+
+Only proofs and logically stale votes are deleted.
+
+**Block proofs.** Let `cutoff = tip_slot − 21,600`, saturating at zero. When
+`cutoff ≤ latest_finalized.slot`, maintenance deletes `[0, cutoff)` from `block_proofs` in one range
+tombstone. Otherwise it does nothing. This never removes a proof from the current non-finalized range.
+Headers, bodies, snapshots, diffs, state-root mappings, and fork-choice blocks are retained.
+
+**Votes.** The compact vote maps discard an entry only when current fork-choice rules declare it
+irrelevant: its head is at or below the finalized slot, or its head is not a descendant of the
+finalized block. Blocks themselves remain available even after their votes lose relevance.
+
+leanSpec sets `MIN_SLOTS_FOR_BLOCK_REQUESTS = 3600` (four hours), which a `BlocksByRange` responder
+must serve. The proof window is six times that floor, allowing a node down overnight to rejoin with
+range sync rather than a checkpoint.
+
+A checkpoint-sync node does not advertise range service until it has fetched and verified a
+proof-bearing canonical history covering the required recent window. `served_from_slot` records the
+first proved slot; requests below `max(current_slot − 3600, served_from_slot)` return
+`RESOURCE_UNAVAILABLE`. Inside that advertised window, a missing proof for a canonical non-anchor
+block is storage corruption, not an empty slot. Genesis and checkpoint-sync anchors without their
+original signed proof are omitted from `BlocksByRange`; no proof is synthesized.
+
+## Physical tuning
+
+`block_proofs` is uncompressed: aggregate proofs are high-entropy cryptographic blobs and gain
+little from compression. All other column families use LZ4. Cache size, memtable size, compaction
+parallelism, and related RocksDB settings are operational tunables set from production-fixture
+benchmarks, never consensus constants.
+
+## In-memory only
 
 | Held | Bound | Lost on restart |
 |---|---|---|
 | Raw gossip XMSS signatures awaiting aggregation | entry count | yes |
-| New (pending) aggregated payloads | entry count | yes |
-| Known (fork-choice-active) aggregated payloads | entry count | yes |
+| Reusable pending and known aggregate-proof pools | entry count | yes |
+| Pending blocks awaiting a parent or state | entry count | yes |
 | Reconstructed state cache | LRU | yes |
-
-None of these is needed to rebuild the chain: they are working set for the current and next few
-slots. leanSpec's reference node holds them the same way.

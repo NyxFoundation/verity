@@ -1,6 +1,6 @@
 ---
 title: Verity Architecture
-last_updated: 2026-08-10
+last_updated: 2026-08-14
 tags:
   - architecture
   - verification-boundary
