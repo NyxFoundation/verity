@@ -78,7 +78,19 @@ APIs [memo.md](memo.md) assigns to `verity-chain` (head, finalized checkpoint, s
 and the verification stage's key resolution. **The `watch`-published snapshot is the entire
 read path**: there is no query channel into the chain task; RPC, metrics, and validator duties
 answer reads from the snapshot they hold. The exact field layout is an implementation
-decision.
+decision. Three consequences are fixed alongside the contract:
+
+- **Retention bound.** The snapshot covers the *unfinalized* block tree plus the finalized
+  anchor — exactly what fork choice operates on, and the only states verification's registry
+  resolution can name. Anything older is `verity-db`'s job ([STORAGE.md](STORAGE.md) state
+  snapshots + diffs): an RPC query for a historical state is a database read, not a snapshot
+  miss.
+- **Publication cadence.** At most once per chain-task loop iteration, after an event's import
+  has fully completed — never mid-import, so no reader can observe a half-applied mutation.
+- **Distribution.** Every consumer receives its `watch::Receiver<Arc<ChainView>>` at
+  construction, before its task starts; the same receiver doubles as the startup readiness
+  signal ([Lifecycle](#lifecycle)). There is no separate registration or notification
+  mechanism.
 
 Why this form, against the two alternatives:
 
@@ -116,7 +128,9 @@ flowchart LR
 - **Placement.** Between the network task and the chain task, as its own stage — the
   `Codec + Crypto` participant in ARCHITECTURE.md's inbound-block sequence, made an execution
   unit. The network task performs topic validation and deduplication only: no decode, no
-  crypto, so network liveness (mesh maintenance, keep-alives) never waits on a proof.
+  crypto, so network liveness (mesh maintenance, keep-alives) never waits on a proof. It hands
+  raw bytes to the stage with `try_send` on the stage's bounded input channel — the single
+  drop point of the entire pipeline.
 - **Execution.** The stage runs decode, `hash_tree_root`, and XMSS / aggregate-proof
   verification on `tokio::task::spawn_blocking`. **No rayon pool, and no promotion path to
   one** — settled 2026-08-15 for design simplicity. (zeam demonstrates the rayon endpoint
@@ -136,13 +150,15 @@ flowchart LR
   verified; it waits in a bounded buffer inside the stage, keyed by parent root. The stage's
   loop selects over its input channel *and* the snapshot's `watch::changed()`; on an update it
   retries exactly the entries whose parent root became resolvable in the new snapshot. The
-  buffer is parked storage, not a send path: it never blocks, and it holds only items that
-  *cannot be verified yet* — an item that fails verification is dropped on the spot (peer
-  scoring for invalid input is deferred to the sync / peer-management design). Overflow evicts
-  in FIFO arrival order, and eviction is silent: nothing re-requests an evicted block — like a
-  gossip drop at the network edge it is peer-recoverable, and range sync closes the gap when
-  the chain notices the missing ancestry. The chain task never holds unverified values — the
-  invariant admits no exceptions.
+  buffer is parked storage, not a send path: it never blocks, and it holds only the one
+  *recoverable* failure — parent post-state not yet in view. Every definitive failure —
+  malformed SSZ, a root mismatch, an invalid signature or proof — drops the item on the spot,
+  counted in metrics (peer scoring for invalid input is deferred to the sync /
+  peer-management design). Overflow evicts count-bounded, in FIFO order of arrival into the
+  buffer, and eviction is silent: nothing re-requests an evicted block — like a gossip drop at
+  the network edge it is peer-recoverable, and range sync closes the gap when the chain
+  notices the missing ancestry. The chain task never holds unverified values — the invariant
+  admits no exceptions.
 - **Propagation is not gated.** Matching the spec reference and all four surveyed clients,
   gossipsub is configured without message validation gating (`validate_messages()` is not
   enabled); forwarding proceeds independently of verification.
@@ -173,15 +189,25 @@ verification stage.
   to the target one interval at a time and skips no interval's action, so delivering only the
   newest target loses nothing. The corresponding **requirement on the chain task**: on reading
   a new target it advances interval-by-interval to that target, executing every intermediate
-  interval's action — it must never process only the latest interval. The tick is not a timer
-  callback — it drives genuine store
-  mutations (ingest pending attestations at intervals 0 and 4, trigger aggregation at 2,
-  advance the safe target at 3), which is why it enters the single writer's inbox at all.
+  interval's action — it must never process only the latest interval. No new bookkeeping is
+  required for this: the node's current interval **is** `Store.time`, and the handler is the
+  spec's own `on_tick(store, target)` loop — advance while `store.time < target`. The
+  authoritative per-interval action map is leanSpec's `tick_interval`
+  (`src/lean_spec/spec/forks/lstar/timeline.py`); the actions named here — ingest pending
+  attestations at intervals 0 and 4, trigger aggregation at 2, advance the safe target at 3 —
+  are that map's content at `cce7955`, cited for orientation, not restated normatively.
+  Catch-up cost is not a liveness concern: interval actions are pool ingestion and pointer
+  updates, not STF work, so even a long stall replays cheaply. The tick is not a timer
+  callback — it drives genuine store mutations, which is why it enters the single writer's
+  inbox at all.
 - **② is never dropped** because its contents are the node's own duty products: no other peer
   holds them, range sync cannot recover them, and losing one is a missed duty. Its flow rate is
   structurally tiny (a handful of events per slot), so a small buffer with an awaiting sender
   costs nothing. Aggregate-proof *production* — seconds of zk proving — follows the ethlambda
-  pattern: the tick triggers it, a `spawn_blocking` worker computes it, and the finished
+  pattern with the wiring explicit: the interval-2 tick action in the chain task determines
+  that aggregation is due and hands the signature-pool snapshot to `verity-validator`'s
+  aggregation worker; the worker runs on `spawn_blocking`, and the chain task never awaits it
+  — the finished
   aggregate re-enters through ②.
 - **③ is the only place load is shed, and only pre-verification.** Backpressure runs backwards
   through the pipeline so that when the node falls behind, what gets dropped is raw bytes at
@@ -200,11 +226,14 @@ Startup runs the dependency arrows backwards. Open the database and validate its
 values ([STORAGE.md](STORAGE.md)); the chain task loads the finalized anchor, reconstructs
 `Store` and `State`, and publishes the **first `ChainView`** — that publication is the
 readiness signal every other component waits on; only then do the verification stage, network,
-validator-duty, and RPC tasks start. Shutdown inverts it: stop network intake first; discard
-the verification stage's in-flight and pending items (peer-recoverable, like any network-edge
-drop); drain ② completely (duty products are never dropped, in shutdown included); process
-what ③ already holds; persist; stop the chain task. Process-level orchestration — signal
-handling, restart policy — belongs to the `verity` binary and is out of scope here.
+validator-duty, and RPC tasks start. Shutdown inverts it, and "drained" has a concrete signal:
+each producer drops its sender when it stops, and a closed-and-empty channel returns `None` to
+the receiver — no side-channel bookkeeping. Stop network intake first; the verification stage
+discards its in-flight and pending items (peer-recoverable, like any network-edge drop) and
+drops its sender; ② is drained completely (duty products are never dropped, in shutdown
+included); the chain task consumes ② and ③ to `None`, persists, and stops. Process-level
+orchestration — signal handling, restart policy — belongs to the `verity` binary and is out of
+scope here.
 
 ## Deliberately deferred to implementation
 
@@ -213,9 +242,12 @@ Listed so they are not mistaken for omissions:
 - **Channel capacities** for ② and ③ and the **pending-buffer size** are configuration
   constants chosen and tuned at implementation time. The architectural commitments are only
   that every buffer is bounded and that each channel's full-queue *policy* is exactly as
-  specified above.
+  specified above. The sizing anchors are structural, not free: ② carries a handful of events
+  per slot (tens suffice); ③ and the pending buffer are sized against per-slot gossip volume
+  (order hundreds).
 - **Exact field layouts** of `ChainView` and the `Verified*` types — their contracts are fixed
-  above, their struct definitions are not.
+  above, their struct definitions are not — and internal data structures such as the pending
+  buffer's index.
 - **Peer scoring** in response to invalid (verification-failing) input — deferred to the sync
   / peer-management design, the next design area in sequence.
 
