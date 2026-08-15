@@ -146,19 +146,21 @@ flowchart LR
 - **State supply.** The stage resolves validator registries (parent / target post-state) from
   the `watch`-published `Arc<ChainView>` snapshot — the read side of Decision 1 is the supply
   line.
-- **Pending lives in the stage.** A block whose parent post-state is not yet in view cannot be
-  verified; it waits in a bounded buffer inside the stage, keyed by parent root. The stage's
-  loop selects over its input channel *and* the snapshot's `watch::changed()`; on an update it
-  retries exactly the entries whose parent root became resolvable in the new snapshot. The
+- **Pending lives in the stage.** An item whose required post-state is not yet in view — a
+  block's *parent*, an attestation's *target* — cannot be verified; both kinds wait in the
+  same bounded buffer inside the stage, keyed by the awaited block root, under the same
+  policy. The stage's loop selects over its input channel *and* the snapshot's
+  `watch::changed()`; on an update it retries exactly the entries whose awaited root became
+  resolvable in the new snapshot. The
   buffer is parked storage, not a send path: it never blocks, and it holds only the one
   *recoverable* failure — parent post-state not yet in view. Every definitive failure —
   malformed SSZ, a root mismatch, an invalid signature or proof — drops the item on the spot,
   counted in metrics (peer scoring for invalid input is deferred to the sync /
   peer-management design). Overflow evicts count-bounded, in FIFO order of arrival into the
-  buffer, and eviction is silent: nothing re-requests an evicted block — like a gossip drop at
-  the network edge it is peer-recoverable, and range sync closes the gap when the chain
-  notices the missing ancestry. The chain task never holds unverified values — the invariant
-  admits no exceptions.
+  buffer, and eviction is silent: nothing re-requests an evicted item. An evicted block is
+  peer-recoverable — range sync closes the gap when the chain notices the missing ancestry —
+  and an evicted attestation's vote re-arrives embedded in an aggregate or a block body. The
+  chain task never holds unverified values — the invariant admits no exceptions.
 - **Propagation is not gated.** Matching the spec reference and all four surveyed clients,
   gossipsub is configured without message validation gating (`validate_messages()` is not
   enabled); forwarding proceeds independently of verification.
@@ -222,16 +224,20 @@ verification stage.
 
 ## Lifecycle
 
-Startup runs the dependency arrows backwards. Open the database and validate its identity
-values ([STORAGE.md](STORAGE.md)); the chain task loads the finalized anchor, reconstructs
-`Store` and `State`, and publishes the **first `ChainView`** — that publication is the
-readiness signal every other component waits on; only then do the verification stage, network,
-validator-duty, and RPC tasks start. Shutdown inverts it, and "drained" has a concrete signal:
-each producer drops its sender when it stops, and a closed-and-empty channel returns `None` to
-the receiver — no side-channel bookkeeping. Stop network intake first; the verification stage
-discards its in-flight and pending items (peer-recoverable, like any network-edge drop) and
-drops its sender; ② is drained completely (duty products are never dropped, in shutdown
-included); the chain task consumes ② and ③ to `None`, persists, and stops. Process-level
+Startup runs the dependency arrows backwards. The `verity` binary — the owner of all wiring —
+opens the database, validates its identity values ([STORAGE.md](STORAGE.md)), and hands the
+chain task its handle; the chain task loads the finalized anchor and reconstructs `Store` and
+`State` (initial values, `Store.time` included, per leanSpec's store initialization), then
+publishes the **first `ChainView`** — that publication is the readiness signal every other
+component waits on; only then do the verification stage, network, validator-duty, and RPC
+tasks start. Shutdown inverts it, and **channel closure is the only
+signal** — there is no shutdown broadcast. The binary stops the producers at the edge; each
+stopped producer drops its sender; every downstream task exits when its inputs return `None`
+(a closed-and-empty channel), with no side-channel bookkeeping. Concretely: the network task
+stops and drops its sender; the verification stage, on `None` from its input, discards its
+in-flight and pending items (peer-recoverable, like any network-edge drop) and drops its own
+sender, closing ③; the validator tasks stop, closing ②; the chain task consumes ② and ③ to
+`None` — duty products are never dropped, in shutdown included — then persists and stops. Process-level
 orchestration — signal handling, restart policy — belongs to the `verity` binary and is out of
 scope here.
 
