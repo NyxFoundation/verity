@@ -69,6 +69,17 @@ reads leave as immutable snapshots — after each mutation the task publishes an
 `Arc<ChainView>` over a `watch` channel, and every consumer (validator duties, RPC, metrics,
 the verification stage) reads the snapshot current at its own read time.
 
+`ChainView` is an immutable value — a snapshot, not a live reference — so a reader can never
+observe a half-applied mutation and has no way to mutate shared state. What is fixed here is
+its **contract**, not its field list: it must carry (a) the current head and the latest
+justified / finalized checkpoints, and (b) enough of the block tree and post-states to resolve
+a validator registry by block root. Those two clauses serve its two consumer groups — the read
+APIs [memo.md](memo.md) assigns to `verity-chain` (head, finalized checkpoint, state views)
+and the verification stage's key resolution. **The `watch`-published snapshot is the entire
+read path**: there is no query channel into the chain task; RPC, metrics, and validator duties
+answer reads from the snapshot they hold. The exact field layout is an implementation
+decision.
+
 Why this form, against the two alternatives:
 
 - **Ownership deletes the property.** With the store owned by one task, single-writer stops
@@ -114,14 +125,24 @@ flowchart LR
   `VerifiedBlock` / `VerifiedAttestation` values whose constructors are private to the
   verification stage. An unverified value cannot reach the chain task, and therefore cannot
   reach the FFI: the spec's verify-before-STF ordering holds by construction, and the boundary
-  harnesses (Kani / bolero, per MODEL_CHECK.md) cut exactly at these constructors.
+  harnesses (Kani / bolero, per MODEL_CHECK.md) cut exactly at these constructors. A
+  `Verified*` value wraps the decoded, typed container together with the roots computed during
+  verification — ARCHITECTURE.md's "verified, typed block (+ roots)" — so the chain task
+  re-computes nothing; the exact fields are an implementation decision.
 - **State supply.** The stage resolves validator registries (parent / target post-state) from
   the `watch`-published `Arc<ChainView>` snapshot — the read side of Decision 1 is the supply
   line.
 - **Pending lives in the stage.** A block whose parent post-state is not yet in view cannot be
-  verified; it waits in a bounded buffer inside the stage, keyed by parent root, retried when
-  the `ChainView` updates, oldest-evicted on overflow. The chain task never holds unverified
-  values — the invariant admits no exceptions.
+  verified; it waits in a bounded buffer inside the stage, keyed by parent root. The stage's
+  loop selects over its input channel *and* the snapshot's `watch::changed()`; on an update it
+  retries exactly the entries whose parent root became resolvable in the new snapshot. The
+  buffer is parked storage, not a send path: it never blocks, and it holds only items that
+  *cannot be verified yet* — an item that fails verification is dropped on the spot (peer
+  scoring for invalid input is deferred to the sync / peer-management design). Overflow evicts
+  in FIFO arrival order, and eviction is silent: nothing re-requests an evicted block — like a
+  gossip drop at the network edge it is peer-recoverable, and range sync closes the gap when
+  the chain notices the missing ancestry. The chain task never holds unverified values — the
+  invariant admits no exceptions.
 - **Propagation is not gated.** Matching the spec reference and all four surveyed clients,
   gossipsub is configured without message validation gating (`validate_messages()` is not
   enabled); forwarding proceeds independently of verification.
@@ -142,11 +163,18 @@ The chain task's inbox is three independent channels, not one. The unit of separ
 | ② local | own proposed `SignedBlock`, own `SignedAttestation`, completed `SignedAggregatedAttestation` from the aggregation worker | small bounded `mpsc` | sender awaits — **never dropped** |
 | ③ network | `VerifiedBlock` / `VerifiedAttestation` / verified aggregates, from gossip and range-sync responses | bounded `mpsc` | sender (verification stage) awaits; backpressure propagates to the network edge, where raw gossip is dropped by `try_send` |
 
-The chain task reads all three in a `tokio::select!` with `biased` ordering ① → ② → ③.
+The chain task reads all three in a `tokio::select!` with `biased` ordering ① → ② → ③. The
+loop takes **one event per iteration** and re-enters the `select!`, so the priority order is
+re-evaluated after every event and no channel is ever drained in bulk. No fairness window is
+needed: every step is short by construction — the heavy work already happened upstream in the
+verification stage.
 
 - **① is sound as latest-only** because of the spec's own catch-up semantics: `on_tick` steps
   to the target one interval at a time and skips no interval's action, so delivering only the
-  newest target loses nothing. The tick is not a timer callback — it drives genuine store
+  newest target loses nothing. The corresponding **requirement on the chain task**: on reading
+  a new target it advances interval-by-interval to that target, executing every intermediate
+  interval's action — it must never process only the latest interval. The tick is not a timer
+  callback — it drives genuine store
   mutations (ingest pending attestations at intervals 0 and 4, trigger aggregation at 2,
   advance the safe target at 3), which is why it enters the single writer's inbox at all.
 - **② is never dropped** because its contents are the node's own duty products: no other peer
@@ -166,6 +194,31 @@ The chain task reads all three in a `tokio::select!` with `biased` ordering ① 
   clock, not the network — and the bias is the desired property stated directly: time and the
   node's own duties are processed ahead of any volume of gossip.
 
+## Lifecycle
+
+Startup runs the dependency arrows backwards. Open the database and validate its identity
+values ([STORAGE.md](STORAGE.md)); the chain task loads the finalized anchor, reconstructs
+`Store` and `State`, and publishes the **first `ChainView`** — that publication is the
+readiness signal every other component waits on; only then do the verification stage, network,
+validator-duty, and RPC tasks start. Shutdown inverts it: stop network intake first; discard
+the verification stage's in-flight and pending items (peer-recoverable, like any network-edge
+drop); drain ② completely (duty products are never dropped, in shutdown included); process
+what ③ already holds; persist; stop the chain task. Process-level orchestration — signal
+handling, restart policy — belongs to the `verity` binary and is out of scope here.
+
+## Deliberately deferred to implementation
+
+Listed so they are not mistaken for omissions:
+
+- **Channel capacities** for ② and ③ and the **pending-buffer size** are configuration
+  constants chosen and tuned at implementation time. The architectural commitments are only
+  that every buffer is bounded and that each channel's full-queue *policy* is exactly as
+  specified above.
+- **Exact field layouts** of `ChainView` and the `Verified*` types — their contracts are fixed
+  above, their struct definitions are not.
+- **Peer scoring** in response to invalid (verification-failing) input — deferred to the sync
+  / peer-management design, the next design area in sequence.
+
 ## Verification obligations introduced by this model
 
 What this document adds to the [MODEL_CHECK.md](MODEL_CHECK.md) map, concretely:
@@ -176,3 +229,7 @@ What this document adds to the [MODEL_CHECK.md](MODEL_CHECK.md) map, concretely:
   inbound event order, exercised end-to-end by the leanSpec fixture suite in CI.
 - **Kani / bolero targets:** the `Verified*` constructor boundary in the verification stage —
   no-panic-on-any-input for decode and proof verification, and rejection ⇒ no store effect.
+
+A panic that escapes despite these checks is not caught and continued: consistent with
+ARCHITECTURE.md's error model, it is classed as an availability failure and aborts the
+process — never a silently degraded consensus path.
