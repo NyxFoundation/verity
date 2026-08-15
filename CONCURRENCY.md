@@ -197,7 +197,10 @@ verification stage.
   authoritative per-interval action map is leanSpec's `tick_interval`
   (`src/lean_spec/spec/forks/lstar/timeline.py`); the actions named here — ingest pending
   attestations at intervals 0 and 4, trigger aggregation at 2, advance the safe target at 3 —
-  are that map's content at `cce7955`, cited for orientation, not restated normatively.
+  are that map's content at `cce7955`, cited for orientation. The map is **normative by
+  reference to leanSpec `main`**, deliberately not restated here: Verity tracks the moving
+  spec (repo policy), so the commit records what was read, not a frozen contract — the chain
+  task implements whatever `tick_interval` says at the tracked revision.
   Catch-up cost is not a liveness concern: interval actions are pool ingestion and pointer
   updates, not STF work, so even a long stall replays cheaply. The tick is not a timer
   callback — it drives genuine store mutations, which is why it enters the single writer's
@@ -205,11 +208,16 @@ verification stage.
 - **② is never dropped** because its contents are the node's own duty products: no other peer
   holds them, range sync cannot recover them, and losing one is a missed duty. Its flow rate is
   structurally tiny (a handful of events per slot), so a small buffer with an awaiting sender
-  costs nothing. Aggregate-proof *production* — seconds of zk proving — follows the ethlambda
-  pattern with the wiring explicit: the interval-2 tick action in the chain task determines
-  that aggregation is due and hands the signature-pool snapshot to `verity-validator`'s
-  aggregation worker; the worker runs on `spawn_blocking`, and the chain task never awaits it
-  — the finished
+  costs nothing. The production side of ② is fixed too: the validator-duty tasks are driven
+  by the **same slot clock** that feeds ① — one clock in the `verity` binary, two consumers —
+  and never by callbacks from the chain task. At its duty interval a validator task reads the
+  current `ChainView` snapshot (proposal head, attestation target), produces and signs, and
+  sends the product into ②; the chain task's sole involvement in production is the interval-2
+  aggregation handoff below. Aggregate-proof *production* — seconds of zk proving — follows
+  the ethlambda pattern with the wiring explicit: the interval-2 tick action in the chain task
+  determines that aggregation is due and hands the signature-pool snapshot to
+  `verity-validator`'s aggregation worker; the worker runs on `spawn_blocking`, and the chain
+  task never awaits it — the finished
   aggregate re-enters through ②.
 - **③ is the only place load is shed, and only pre-verification.** Backpressure runs backwards
   through the pipeline so that when the node falls behind, what gets dropped is raw bytes at
@@ -234,8 +242,10 @@ tasks start. Shutdown inverts it, and **channel closure is the only
 signal** — there is no shutdown broadcast. The binary stops the producers at the edge; each
 stopped producer drops its sender; every downstream task exits when its inputs return `None`
 (a closed-and-empty channel), with no side-channel bookkeeping. Concretely: the network task
-stops and drops its sender; the verification stage, on `None` from its input, discards its
-in-flight and pending items (peer-recoverable, like any network-edge drop) and drops its own
+stops and drops its sender; the verification stage, on `None` from its input, stops accepting
+work, lets verifications already running on `spawn_blocking` finish and **discards their
+results** (blocking work is uncancellable by nature — nothing waits on it), drops its pending
+buffer (peer-recoverable, like any network-edge drop), and drops its own
 sender, closing ③; the validator tasks stop, closing ②; the chain task consumes ② and ③ to
 `None` — duty products are never dropped, in shutdown included — then persists and stops. Process-level
 orchestration — signal handling, restart policy — belongs to the `verity` binary and is out of
