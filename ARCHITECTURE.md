@@ -47,9 +47,11 @@ verification frontier moves; see [boundary migration](#boundary-migration).
 
 - **I/O Edge — Rust, concurrent.** The only place where concurrency and the outside world
   live: networking, the slot clock, validator duties, RPC, metrics, and node orchestration. Bounded
-  queues provide backpressure. The choice of concurrency primitive (actor model vs. async tasks) is a
-  later, I/O-Edge-internal decision — it is **not** an architectural concern, because the consensus
-  state has a single owner in Runtime Shell and Verity Consensus is invoked sequentially regardless.
+  queues provide backpressure. The concurrency primitive is settled (2026-08-15, see the
+  [Concurrency Model](CONCURRENCY.md)): the single writer is a dedicated task fed by bounded
+  channels, with signature/proof verification staged in front of it. It remains an I/O-Edge-internal
+  concern — the consensus state has a single owner in Runtime Shell and Verity Consensus is invoked
+  sequentially regardless.
 
 ## Component diagram
 
