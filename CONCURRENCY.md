@@ -241,7 +241,10 @@ component waits on; only then do the verification stage, network, validator-duty
 tasks **begin serving**. What the first `ChainView` gates is serving, not construction:
 initialization that needs no consensus state — validator key preparation above all
 ([KEY_MANAGEMENT.md](KEY_MANAGEMENT.md)) — is spawned by the binary at process start and runs
-in parallel with this sequence. Shutdown inverts it, and **channel closure is the only
+in parallel with this sequence. The first `ChainView` is a *necessary* serving gate for every
+component, not always a *sufficient* one: a component may add its own readiness condition, and
+the validator-duty loop does — it serves only once its keys are also prepared
+(KEY_MANAGEMENT.md's join of two gates). Shutdown inverts it, and **channel closure is the only
 signal** — there is no shutdown broadcast. The binary stops the producers at the edge; each
 stopped producer drops its sender; every downstream task exits when its inputs return `None`
 (a closed-and-empty channel), with no side-channel bookkeeping. Concretely: the network task
