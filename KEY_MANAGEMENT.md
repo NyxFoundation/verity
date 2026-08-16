@@ -107,10 +107,14 @@ duty in a 4-second-slot protocol is negligible, and slot-only state keeps the me
   does not have. One keyspace, one writer still holds — per family, not per database.
 - **Write cost.** At most two fsynced single-row writes per slot per validator; negligible
   against the storage engine's proof workload.
-- **Startup.** Watermarks are read before validator readiness. If a watermark is *ahead* of
-  the current wall-clock slot, the clock has rewound (scenario 2 or 3): the node fails closed
-  — duties for that validator stay disabled until the clock passes the watermark, and the
-  condition is logged loudly. It is never treated as corruption to repair automatically.
+- **Startup.** Watermarks are read before validator readiness. An **absent row is the normal
+  first-run state** — the validator has never signed; signing is permitted and the first
+  signature creates the row. A **present row with `watermark ≥ current_slot`** means the
+  clock has rewound relative to a signature that already exists (scenario 2 or 3): the node
+  fails closed — duties for that validator stay disabled until `current_slot > watermark`,
+  and the condition is logged loudly. (`≥`, not `>`: at equality the sign path would refuse
+  anyway, so readiness gates on the same comparison the sign path enforces.) It is never
+  treated as corruption to repair automatically.
 - **Scenario coverage.** (1) is covered by the equality refusal, (2) by the startup check plus
   the per-sign comparison, (3) partially: a restored backup restores an old watermark, but the
   per-sign comparison still refuses any slot at or below it *if the restored node's clock is
@@ -154,26 +158,40 @@ window boundary) mark the two failure modes to design out.
 - **Clone-advance-swap: signing never waits.** `advance_preparation` needs `&mut`; handing
   the live key to a worker (or locking it) would stall signing for the rebuild duration. So
   the worker receives a **clone** (a ~33.5 MB memcpy), advances the clone off-thread while
-  the original keeps signing in the still-valid old window, and the validator task swaps the
-  advanced clone in between sign calls. The task is single-threaded, so the swap is a plain
-  field replacement with no torn state. Both key objects are the same key; no-reuse is
-  enforced by the watermark on the signing path, independent of which clone signs.
-- **Persist the advanced key.** After each successful advance, the key file is rewritten
-  atomically (temp file + rename; public key verified against the manifest on load). No
-  surveyed client does this, and the omission is why a year-old node would owe ~120
-  consecutive rebuilds (minutes to hours) at startup: the on-disk key never moves off its
-  activation window. With periodic persistence, startup catch-up is bounded by the downtime,
-  not the node's age. Safety is unaffected — a stale key file only costs extra catch-up, and
-  the watermark, not the key file, carries the no-reuse guarantee.
+  the original keeps signing, and the validator task swaps the advanced clone in between
+  sign calls. The task is single-threaded, so the swap is a plain field replacement with no
+  torn state. **Why the original stays valid throughout:** the windows overlap. Advancing at
+  the midpoint means the current slot sits in the old window's *second* bottom tree; the
+  advance produces a window of that same second tree plus the next one. Old and new windows
+  therefore share ≈ 3 days of coverage around the current slot — there is no moment at which
+  either key object is unable to sign for "now", however long the rebuild takes within that
+  margin. Both key objects are the same key; no-reuse is enforced by the watermark on the
+  signing path, independent of which clone signs.
+- **Persist the advanced key.** The `spawn_blocking` worker itself, as the final step of the
+  advance job and *before* returning the advanced clone, rewrites the key file atomically
+  (temp file + rename; public key verified against the manifest on load) — so a key the
+  validator task swaps in is already durable. A failed file write is logged and is
+  **non-fatal**: the swap still proceeds, because persistence only bounds restart cost while
+  the watermark, not the key file, carries the no-reuse guarantee; a stale file costs extra
+  catch-up and nothing else. No surveyed client persists advanced keys, and the omission is
+  why a year-old node would owe ~120 consecutive rebuilds (minutes to hours) at startup: the
+  on-disk key never moves off its activation window. With periodic persistence, startup
+  catch-up is bounded by the downtime, not the node's age.
 - **Panic containment.** leanSig's `sign` asserts; Runtime Shell code must not panic. The
   `verity-crypto` wrapper checks the activation and prepared intervals first and returns a
   typed error — the assert becomes unreachable, and Kani's target is exactly that
   unreachability.
-- **Startup order.** Load keys → read watermarks (clock-rewind check) → advance each key
-  until the current slot is inside its prepared interval (on `spawn_blocking`; may take a
-  while after long downtime, progress logged) → only then validator readiness. This extends
-  the [CONCURRENCY.md](CONCURRENCY.md#lifecycle) startup sequence: validator-duty tasks wait
-  on the first `ChainView` *and* on their keys being prepared.
+- **Startup order — who runs it, and when.** Key preparation is `verity-validator`'s own
+  initialization, running as its own task: the `verity` binary hands it the key directory
+  and the `signing_watermarks` handle at construction, and it then loads keys, reads
+  watermarks (clock-rewind check), and advances each key on `spawn_blocking` until the
+  current slot is inside its prepared interval (which may take a while after long downtime —
+  progress is logged). None of this needs consensus state, so it runs **in parallel with**
+  the chain task's own startup, not ordered against `ChainView` publication. The duty loop
+  begins serving only when **both** gates are open: the first `ChainView` has been observed
+  on its `watch` receiver (the CONCURRENCY.md readiness signal, unchanged) *and* key
+  preparation has completed. This is a join of two independent conditions, not an extra step
+  inserted into the [CONCURRENCY.md](CONCURRENCY.md#lifecycle) sequence.
 
 ## Deliberately out of scope
 
