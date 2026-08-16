@@ -238,7 +238,10 @@ chain task its handle; the chain task loads the finalized anchor and reconstruct
 `State` (initial values, `Store.time` included, per leanSpec's store initialization), then
 publishes the **first `ChainView`** — that publication is the readiness signal every other
 component waits on; only then do the verification stage, network, validator-duty, and RPC
-tasks start. Shutdown inverts it, and **channel closure is the only
+tasks **begin serving**. What the first `ChainView` gates is serving, not construction:
+initialization that needs no consensus state — validator key preparation above all
+([KEY_MANAGEMENT.md](KEY_MANAGEMENT.md)) — is spawned by the binary at process start and runs
+in parallel with this sequence. Shutdown inverts it, and **channel closure is the only
 signal** — there is no shutdown broadcast. The binary stops the producers at the edge; each
 stopped producer drops its sender; every downstream task exits when its inputs return `None`
 (a closed-and-empty channel), with no side-channel bookkeeping. Concretely: the network task

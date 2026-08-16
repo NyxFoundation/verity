@@ -182,16 +182,16 @@ window boundary) mark the two failure modes to design out.
   typed error — the assert becomes unreachable, and Kani's target is exactly that
   unreachability.
 - **Startup order — who runs it, and when.** Key preparation is `verity-validator`'s own
-  initialization, running as its own task: the `verity` binary hands it the key directory
-  and the `signing_watermarks` handle at construction, and it then loads keys, reads
-  watermarks (clock-rewind check), and advances each key on `spawn_blocking` until the
-  current slot is inside its prepared interval (which may take a while after long downtime —
-  progress is logged). None of this needs consensus state, so it runs **in parallel with**
-  the chain task's own startup, not ordered against `ChainView` publication. The duty loop
-  begins serving only when **both** gates are open: the first `ChainView` has been observed
-  on its `watch` receiver (the CONCURRENCY.md readiness signal, unchanged) *and* key
-  preparation has completed. This is a join of two independent conditions, not an extra step
-  inserted into the [CONCURRENCY.md](CONCURRENCY.md#lifecycle) sequence.
+  initialization: the `verity` binary **spawns the validator task at process start, alongside
+  the chain task**, handing it the key directory and the `signing_watermarks` handle at
+  construction. The task then loads keys, reads watermarks (clock-rewind check), and advances
+  each key on `spawn_blocking` until the current slot is inside its prepared interval (which
+  may take a while after long downtime — progress is logged). None of this needs consensus
+  state, so it runs in parallel with the chain task's own startup — per
+  [CONCURRENCY.md](CONCURRENCY.md#lifecycle), what the first `ChainView` gates is *serving*,
+  not construction. The duty loop begins serving only when **both** gates are open: the first
+  `ChainView` has been observed on its `watch` receiver (the CONCURRENCY.md readiness signal,
+  unchanged) *and* key preparation has completed — a join of two independent conditions.
 
 ## Deliberately out of scope
 
