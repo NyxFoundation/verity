@@ -87,8 +87,11 @@ Verity adopts the reference node's three-state machine, with the surveyed refine
 - **Checkpoint entry.** Fetch the finalized state and block over HTTP and verify at the
   strictest surveyed depth (ethlambda's): genesis-time match, validator-registry match
   against local genesis config, slot-ordering invariants
-  (`finalized ≤ justified ≤ state slot`), checkpoint-root consistency, and
-  `hash_tree_root(state) == anchor_block.state_root`. Failures split in two:
+  (`finalized ≤ justified ≤ state slot`), checkpoint-root consistency — meaning
+  (a) `hash_tree_root(anchor_block) == state.latest_finalized.root` (the fetched block *is*
+  the state's finalized block) and (b) when `latest_justified.slot == latest_finalized.slot`
+  their roots are equal — and `hash_tree_root(state) == anchor_block.state_root`. Failures
+  split in two:
   **transient fetch failures** (timeout, connection refused, HTTP 5xx) are retried within a
   bounded budget (attempt counts and backoff are tunables); **definitive failures** (SSZ
   decode failure, any verification check failing, HTTP 4xx) exit immediately with no retry.
@@ -116,7 +119,10 @@ flowchart LR
   first `ChainView`.
 - **Gap noticing is a signal from the verification stage.** When the stage parks an item
   whose parent (or attestation target) post-state is not in view — and when it evicts one —
-  it emits the awaited root and slot to the sync service over a bounded channel. This is
+  it emits `(awaited root, waiting item's slot)` to the sync service over a bounded channel.
+  The slot is the **waiting child's**, not the awaited block's — the awaited block is known
+  only by root, and the child's slot is what upper-bounds the gap's head-side edge for the
+  by-root/by-range split below. This is
   the concrete mechanism behind CONCURRENCY.md's "range sync closes the gap when the chain
   notices the missing ancestry": the noticing happens where unknown parents are first
   discovered, not in the chain task.
