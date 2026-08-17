@@ -189,9 +189,11 @@ window boundary) mark the two failure modes to design out.
   may take a while after long downtime — progress is logged). None of this needs consensus
   state, so it runs in parallel with the chain task's own startup — per
   [CONCURRENCY.md](CONCURRENCY.md#lifecycle), what the first `ChainView` gates is *serving*,
-  not construction. The duty loop begins serving only when **both** gates are open: the first
-  `ChainView` has been observed on its `watch` receiver (the CONCURRENCY.md readiness signal,
-  unchanged) *and* key preparation has completed — a join of two independent conditions.
+  not construction. The duty loop begins serving only when **every serving gate** is open — a join of
+  independent conditions, of which this document contributes two: the first `ChainView` has
+  been observed on its `watch` receiver (the CONCURRENCY.md readiness signal, unchanged)
+  *and* key preparation has completed. [SYNC.md](SYNC.md#decision-1--sync-mode-lifecycle)
+  adds the third: the node's sync state is `SYNCED`.
 
 ## Deliberately out of scope
 
