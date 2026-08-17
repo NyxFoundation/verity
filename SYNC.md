@@ -62,9 +62,12 @@ Verity adopts the reference node's three-state machine, with the surveyed refine
 - **States: `IDLE → SYNCING → SYNCED`**, demotion `SYNCED → SYNCING` when a gap reappears,
   and no `IDLE → SYNCED` shortcut (the reference's transition guards, kept).
 - **The SYNCING trigger is `our head slot < network finalized slot`**, where the network
-  finalized slot is the **majority vote** over connected peers' Status claims (the reference
-  scheme). Not head-lag (zeam's deadlock rationale), and not the maximum peer claim (one
-  lying peer could hold the node in SYNCING forever).
+  finalized slot is defined precisely as the **median of connected peers' claimed
+  `finalized.slot` values** (for an even peer count, the lower middle value — the
+  conservative choice). The median is what "majority vote" means here: no minority of lying
+  peers can move it outside the honest peers' range. Not head-lag (zeam's deadlock
+  rationale), and not the maximum peer claim (one lying peer could hold the node in SYNCING
+  forever).
 - **The condition is evaluated continuously.** Status is re-exchanged periodically rather
   than once per connection, and the trigger is re-checked on every Status update — the
   ethlambda/qlean-mini once-per-connection design is the named counterexample.
@@ -74,16 +77,26 @@ Verity adopts the reference node's three-state machine, with the surveyed refine
   an application of CONCURRENCY.md's necessary-not-sufficient rule. A validator that
   attests while behind broadcasts votes for a stale head and burns one-time signatures
   (KEY_MANAGEMENT.md) for nothing.
-- **Checkpoint sync is the entry procedure, before the machine starts.** With
-  `--checkpoint-sync-url`, fetch the finalized state and block over HTTP and verify at the
+- **The entry decision tree, exhaustively.** Before the machine starts, the anchor is chosen
+  by exactly one of three mutually exclusive paths:
+  1. `--checkpoint-sync-url` **given** → checkpoint entry (below). The database and genesis
+     are *not* fallbacks on this path.
+  2. Flag absent, **populated database** → resume from the database, subject to STORAGE.md's
+     identity validation (which already fails closed on mismatch).
+  3. Flag absent, **empty database** → start from genesis.
+- **Checkpoint entry.** Fetch the finalized state and block over HTTP and verify at the
   strictest surveyed depth (ethlambda's): genesis-time match, validator-registry match
   against local genesis config, slot-ordering invariants
   (`finalized ≤ justified ≤ state slot`), checkpoint-root consistency, and
-  `hash_tree_root(state) == anchor_block.state_root`. On any fetch or verification failure
-  the node **fails closed and exits** — no silent fallback to genesis or to a stale
-  database. Starting from a different anchor than the operator asked for is an operator
-  decision, never an automatic one. (qlean-mini's decode-only validation and dead
-  `ValidationFailed` variant are the counterexample.)
+  `hash_tree_root(state) == anchor_block.state_root`. Failures split in two:
+  **transient fetch failures** (timeout, connection refused, HTTP 5xx) are retried within a
+  bounded budget (attempt counts and backoff are tunables); **definitive failures** (SSZ
+  decode failure, any verification check failing, HTTP 4xx) exit immediately with no retry.
+  When the budget is exhausted or a definitive failure occurs, the node **fails closed and
+  exits** — never a silent fallback to genesis or a stale database. Starting from a
+  different anchor than the operator asked for is an operator decision, never an automatic
+  one. (qlean-mini's decode-only validation and dead `ValidationFailed` variant are the
+  counterexample.)
 
 ## Decision 2 — the fetch pipeline
 
@@ -112,9 +125,14 @@ flowchart LR
   walk capped — a by-root walk cannot close a large gap faster than the chain grows (zeam
   caps at 64 slots; the exact thresholds are tunables). Anything larger runs
   `BlocksByRange` forward from the last connected slot: **one batch in flight at a time**,
-  up to `MAX_REQUEST_BLOCKS` per batch, paginated until the gap closes (ethlambda's shape;
-  zeam's concurrent non-overlapping windows are complexity the devnet scale does not
-  justify — revisit on measurement). ream's everything-by-root design is the
+  up to `MAX_REQUEST_BLOCKS` per batch (ethlambda's shape; zeam's concurrent
+  non-overlapping windows are complexity the devnet scale does not justify — revisit on
+  measurement). **Pagination terminates on the same condition the state machine watches**:
+  the sync service subscribes to the `watch`-published `Arc<ChainView>` like every other
+  consumer (CONCURRENCY.md — the snapshot is the read path; there is no query channel), and
+  after each completed batch it re-checks `ChainView` head against the network finalized
+  slot. Behind → issue the next window; caught up → stop, and the Decision 1 machine
+  promotes to SYNCED on the same inputs. ream's everything-by-root design is the
   counterexample for deep sync: a one-day gap is ~21,600 sequential round-trips.
 - **Fetched blocks take the same path as gossip: through the verification stage into
   channel ③.** There is no side door into the chain task; the `Verified*` type invariant
@@ -143,10 +161,20 @@ precedent:
   liveness cut. At most 2 concurrent requests per peer. The spec's own client raises
   distinct codec errors *"so callers can downscore the peer"* — the scheme fits the spec's
   design intent even though it is not normative.
-- **Transient failures and protocol violations are distinguished** (zeam's regression,
-  learned): timeouts and disconnects cost score but never set capability conclusions; a
-  "peer does not serve BlocksByRange" capability flag is set only on a genuine
-  protocol-level rejection, and carries a TTL so the pool is not poisoned permanently.
+- **Every failure class has one fixed consequence** (the transient/protocol distinction is
+  zeam's regression, learned):
+
+  | Event | Score | Capability flag |
+  |---|---|---|
+  | Success | +10 | — |
+  | Timeout / disconnect mid-request | −20 | never |
+  | `INVALID_REQUEST` / `SERVER_ERROR` | −20 | never |
+  | Malformed content inside a `SUCCESS` (out-of-window, non-monotonic, over-count) | −20 | never — the peer *does* serve the protocol, badly |
+  | `RESOURCE_UNAVAILABLE` | **no change** — it is the spec's *legal* answer for history below the 3,600-slot window; re-route the request to another peer | never |
+  | libp2p protocol-negotiation failure (peer does not speak the protocol at all) | −20 | **set**, with a TTL so the pool is not poisoned permanently |
+
+  The capability flag ("peer does not serve BlocksByRange") thus has exactly one trigger:
+  negotiation failure. Nothing response-shaped ever sets it.
 - **Invalid gossip content is never punished — counted in metrics only.** Under the current
   spec, gossipsub forwards *before* verification, so the peer that delivered an invalid
   message may be an honest relay, not the originator. Punishing relays is only coherent
