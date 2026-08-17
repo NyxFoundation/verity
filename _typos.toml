@@ -16,3 +16,8 @@ ser = "ser"
 # "symetric" — the real directory name in leanMultisig (`crates/backend/symetric`), misspelled
 # upstream. Correcting it in our docs would point readers at a path that does not exist.
 symetric = "symetric"
+
+[default.extend-identifiers]
+# Abbreviated git commit SHA of leanEthereum/leanSig cited in KEY_MANAGEMENT.md; the
+# trailing "ba" is not a typo of "by"/"be".
+c08a3ba = "c08a3ba"
