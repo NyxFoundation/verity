@@ -1,6 +1,6 @@
 ---
 title: Verity Architecture
-last_updated: 2026-08-14
+last_updated: 2026-08-17
 tags:
   - architecture
   - verification-boundary
@@ -85,7 +85,7 @@ flowchart TB
     subgraph B["Runtime Shell — Rust, panic-free"]
         direction LR
         CODEC["SSZ codec + hash_tree_root<br/>wire bytes ↔ typed values"]
-        CRYPTO["Signature verification<br/>verity-crypto: XMSS · leanMultisig"]
+        CRYPTO["Signature verification<br/>verity-crypto: XMSS · leanVM"]
         STORE["State + fork-choice store<br/>single writer · threads immutable values"]
         DB["Database<br/>blocks · states · anchor"]
         FFI["FFI bindings layer"]
@@ -182,8 +182,9 @@ upstream Lean library name per Rust's `-sys` convention.
 
 - `verity-p2p` — gossip and req/resp over libp2p.
 - `verity-crypto` — adapter over the two upstream signature libraries: [`leansig`](https://github.com/leanEthereum/leanSig)
-  for per-validator XMSS sign / verify, and [`leanMultisig`](https://github.com/leanEthereum/leanMultisig)
-  for aggregation and aggregate-proof verification. One capability contract, two suppliers behind it.
+  for per-validator XMSS sign / verify, and [`leanVM`](https://github.com/leanEthereum/leanVM)
+  (formerly leanMultisig) for aggregation and aggregate-proof verification. One capability
+  contract, two suppliers behind it.
 - `verity-db` — persistence (Repository): blocks, states, aggregate proofs, and the finalized anchor.
   Keeps the storage concern out of the single-writer aggregate coordinator. See
   [Storage engine and retention](#storage-engine-and-retention).
