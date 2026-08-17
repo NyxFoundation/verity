@@ -155,8 +155,9 @@ flowchart LR
   buffer is parked storage, not a send path: it never blocks, and it holds only the one
   *recoverable* failure — parent post-state not yet in view. Every definitive failure —
   malformed SSZ, a root mismatch, an invalid signature or proof — drops the item on the spot,
-  counted in metrics (peer scoring for invalid input is deferred to the sync /
-  peer-management design). Overflow evicts count-bounded, in FIFO order of arrival into the
+  counted in metrics (never peer-punished — see
+  [SYNC.md](SYNC.md#decision-3--peer-management)). Overflow evicts count-bounded, in FIFO
+  order of arrival into the
   buffer, and eviction is silent: nothing re-requests an evicted item. An evicted block is
   peer-recoverable — range sync closes the gap when the chain notices the missing ancestry —
   and an evicted attestation's vote re-arrives embedded in an aggregate or a block body. The
@@ -270,8 +271,9 @@ Listed so they are not mistaken for omissions:
 - **Exact field layouts** of `ChainView` and the `Verified*` types — their contracts are fixed
   above, their struct definitions are not — and internal data structures such as the pending
   buffer's index.
-- **Peer scoring** in response to invalid (verification-failing) input — deferred to the sync
-  / peer-management design, the next design area in sequence.
+- **Peer scoring** in response to invalid (verification-failing) input — settled in
+  [SYNC.md](SYNC.md#decision-3--peer-management): counted in metrics, never punished, because
+  gossipsub forwards before verification and the deliverer may be an honest relay.
 
 ## Verification obligations introduced by this model
 
