@@ -155,8 +155,9 @@ flowchart LR
   buffer is parked storage, not a send path: it never blocks, and it holds only the one
   *recoverable* failure — parent post-state not yet in view. Every definitive failure —
   malformed SSZ, a root mismatch, an invalid signature or proof — drops the item on the spot,
-  counted in metrics (peer scoring for invalid input is deferred to the sync /
-  peer-management design). Overflow evicts count-bounded, in FIFO order of arrival into the
+  counted in metrics (never peer-punished — see
+  [SYNC.md](SYNC.md#decision-3--peer-management)). Overflow evicts count-bounded, in FIFO
+  order of arrival into the
   buffer, and eviction is silent: nothing re-requests an evicted item. An evicted block is
   peer-recoverable — range sync closes the gap when the chain notices the missing ancestry —
   and an evicted attestation's vote re-arrives embedded in an aggregate or a block body. The
@@ -242,9 +243,10 @@ tasks **begin serving**. What the first `ChainView` gates is serving, not constr
 initialization that needs no consensus state — validator key preparation above all
 ([KEY_MANAGEMENT.md](KEY_MANAGEMENT.md)) — is spawned by the binary at process start and runs
 in parallel with this sequence. The first `ChainView` is a *necessary* serving gate for every
-component, not always a *sufficient* one: a component may add its own readiness condition, and
-the validator-duty loop does — it serves only once its keys are also prepared
-(KEY_MANAGEMENT.md's join of two gates). Shutdown inverts it, and **channel closure is the only
+component, not always a *sufficient* one: a component may add its own readiness conditions,
+and the validator-duty loop does — it serves only once its keys are also prepared
+([KEY_MANAGEMENT.md](KEY_MANAGEMENT.md)) and the node is `SYNCED`
+([SYNC.md](SYNC.md)) — a join of three gates. Shutdown inverts it, and **channel closure is the only
 signal** — there is no shutdown broadcast. The binary stops the producers at the edge; each
 stopped producer drops its sender; every downstream task exits when its inputs return `None`
 (a closed-and-empty channel), with no side-channel bookkeeping. Concretely: the network task
@@ -270,8 +272,9 @@ Listed so they are not mistaken for omissions:
 - **Exact field layouts** of `ChainView` and the `Verified*` types — their contracts are fixed
   above, their struct definitions are not — and internal data structures such as the pending
   buffer's index.
-- **Peer scoring** in response to invalid (verification-failing) input — deferred to the sync
-  / peer-management design, the next design area in sequence.
+- **Peer scoring** in response to invalid (verification-failing) input — settled in
+  [SYNC.md](SYNC.md#decision-3--peer-management): counted in metrics, never punished, because
+  gossipsub forwards before verification and the deliverer may be an honest relay.
 
 ## Verification obligations introduced by this model
 
