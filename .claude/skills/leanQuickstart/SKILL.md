@@ -14,7 +14,7 @@ description: |
   and any work spinning up or running a local lean multi-client devnet for Verity.
   Negative triggers: Do NOT activate for consensus container shapes / fork choice /
   state transition (use the leanSpec skill). Do NOT activate for aggregation / zkVM /
-  proof internals (use the leanMultisig skill). Do NOT activate for the metric
+  proof internals (use the leanVM skill). Do NOT activate for the metric
   contract — names/types/buckets/labels — (use the leanMetrics skill); this skill
   only covers RUNNING the bundled Prometheus/Grafana stack. Do NOT activate for pure
   docs-site (mdBook) work. Do NOT activate when working outside the Verity project.
@@ -114,10 +114,10 @@ Paths are relative to the lean-quickstart repo root, read at `main`.
    `metrics/docker-compose-metrics.yaml` if you want the Prometheus/Grafana stack.
 4. In your output, cite the **file/script + the `main` commit SHA** you checked.
 
-## 5. Relationship to leanSpec, leanMultisig, leanMetrics & Verity
+## 5. Relationship to leanSpec, leanVM, leanMetrics & Verity
 
 - **leanSpec** (separate skill) = consensus protocol & container shapes (the chain rules).
-- **leanMultisig** (separate skill) = aggregation + zkVM proof internals.
+- **leanVM** (separate skill) = aggregation + zkVM proof internals.
 - **leanMetrics** (separate skill) = the observability **metric contract** (names/types/
   buckets/labels). This skill only covers **running** the bundled Prometheus/Grafana
   stack, not what the metrics are.

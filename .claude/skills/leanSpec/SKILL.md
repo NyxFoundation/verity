@@ -8,7 +8,7 @@ description: |
   test vectors. Maps a topic to the authoritative leanSpec path for any protocol element.
   Triggers: "leanSpec", "leanSpecを確認", "仕様を確認", "Verityの仕様", "prime", "verity context",
   "where is the spec for", "container shape", "コンテナの形", "3SF", "fork choice",
-  "state transition", "XMSS", "leanMultisig", "devnet spec", and starting any Verity
+  "state transition", "XMSS", "leanVM", "devnet spec", and starting any Verity
   implementation or review work.
   Negative triggers: Do NOT activate for pure docs-site work (mdBook page authoring or
   build/serve). Do NOT activate when working outside the Verity project.
@@ -84,7 +84,7 @@ Paths are relative to the leanSpec repo root, read at `origin/main`.
 | Genesis / validator / chain config | `src/lean_spec/subspecs/{genesis,validator,chain}/`, `forks/lstar/containers/config.py` |
 | API | `src/lean_spec/subspecs/api/` |
 | Conformance test vectors | `tests/consensus/devnet/{state_transition,fc,ssz,networking,sync,verify_signatures}/` |
-| leanMultisig (aggregation / zkVM) | **not** in leanSpec — use the dedicated `leanMultisig` skill (`github.com/leanEthereum/leanMultisig`) |
+| leanVM (aggregation / zkVM) | **not** in leanSpec — use the dedicated `leanVM` skill (`github.com/leanEthereum/leanVM`) |
 | ethlambda (Rust *design* reference, not spec) | external `github.com/lambdaclass/ethlambda` |
 
 ## 4. How to use (implementing / reviewing / answering)

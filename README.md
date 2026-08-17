@@ -22,7 +22,7 @@ Verity makes a different bet — that the implementation should be *proven* to m
 ## References
 
 - https://github.com/leanEthereum/leanSpec
-- https://github.com/leanEthereum/leanMultisig
+- https://github.com/leanEthereum/leanVM
 - https://github.com/leanEthereum/leanMetrics
 - https://hive.leanroadmap.org/
 - https://observatory.leanroadmap.org/

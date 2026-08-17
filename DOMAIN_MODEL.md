@@ -34,7 +34,7 @@ below; this section is the *strategic* frame above it.
 |---|---|---|---|---|
 | **State Transition** | Consensus-critical | `State` aggregate + `SignedBlock` processing; justification / finalization invariants | Verified Core (pure fns) | Verity Consensus (separate Lean repo) |
 | **Fork Choice** | Consensus-critical | `Store` aggregate, LMD GHOST, head / safe_target, payload `new → known` | Verified Core pure decision fns **+** Runtime Shell single-writer store | Verity Consensus + `verity-chain` |
-| **Signature & Aggregation** | Supporting | signatures, Type-1 / Type-2 proofs, verify / aggregate | Runtime Shell | `verity-crypto` (ACL → leanSig, leanMultisig) |
+| **Signature & Aggregation** | Supporting | signatures, Type-1 / Type-2 proofs, verify / aggregate | Runtime Shell | `verity-crypto` (ACL → leanSig, leanVM) |
 | **Serialization** | Supporting | SSZ encode / decode, `hash_tree_root`, merkleization | Runtime Shell | `verity-types` (+ external SSZ lib) |
 | **Validator Duties** | Supporting | proposer / attester duties, production, signing, aggregation scheduling | I/O Edge | `verity-validator` |
 | **Networking** | Generic | gossip topics, req / resp, peers | I/O Edge | `verity-p2p` |
@@ -62,7 +62,7 @@ pattern names *how* each relationship is governed.
 |---|---|---|
 | **leanSpec** | State Transition / Fork Choice | **Conformist** on container shapes; **Partnership** on correctness (proofs find spec bugs; fixes flow back upstream) |
 | **leanSig** | Signature & Aggregation | **ACL / Anti-Corruption Layer** (adapter) — per-validator XMSS sign / verify |
-| **leanMultisig** | Signature & Aggregation | **ACL / Anti-Corruption Layer** (adapter) — aggregation and aggregate-proof verification |
+| **leanVM** | Signature & Aggregation | **ACL / Anti-Corruption Layer** (adapter) — aggregation and aggregate-proof verification |
 | **leanMetrics** | Telemetry | **Conformist** (exact metric contract) |
 | **external SSZ library** | Serialization | **ACL / adapter** |
 
@@ -86,7 +86,7 @@ flowchart LR
     subgraph ext["External upstream contexts"]
         SPEC["leanSpec"]
         SIGLIB["leanSig"]
-        MULTI["leanMultisig"]
+        MULTI["leanVM"]
         METR["leanMetrics"]
         SSZ["SSZ library"]
     end
