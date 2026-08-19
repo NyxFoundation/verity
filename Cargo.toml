@@ -75,3 +75,11 @@ libp2p = { version = "0.56", default-features = false, features = [
 # --- Storage -------------------------------------------------------------------------------
 # See ARCHITECTURE.md "Storage engine and retention" for why an LSM engine and not a B-tree one.
 rocksdb = "0.24"
+
+# --- Test-only -----------------------------------------------------------------------------
+# Scoped to SSZ round-trip properties in `verity-types`. This is a deliberate, narrow exception
+# to the kickoff decision that no verification harness ships on day one: a codec is one of the
+# few places where the property is writable directly, and leanSpec's fixtures only ever supply
+# the shapes the spec happened to generate. The graduated harness of MODEL_CHECK.md — bolero,
+# Kani, loom — is still introduced later, per its tool-to-zone mapping.
+proptest = "1.9"
