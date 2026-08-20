@@ -61,3 +61,43 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  # Separate from the fast gate: the production-scheme tarball is ~147 MB and
+  # is how we pin container encodings to leanSpec. Local `cargo test` skips
+  # these vectors unless VERITY_FIXTURES points at an extracted tree.
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read fixture pin
+        id: pin
+        run: echo "sha256=$(cut -d' ' -f1 crates/verity-types/fixtures.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache production fixtures
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: fixtures-prod
+          key: fixtures-prod-scheme-${{ steps.pin.outputs.sha256 }}
+
+      - name: Fetch and extract production fixtures
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fL --retry 3 -o fixtures-prod-scheme.tar.gz \
+            https://github.com/leanEthereum/leanSpec/releases/download/latest/fixtures-prod-scheme.tar.gz
+          sha256sum -c crates/verity-types/fixtures.sha256
+          mkdir -p fixtures-prod
+          tar -xzf fixtures-prod-scheme.tar.gz -C fixtures-prod \
+            --wildcards '*/ssz/*/ssz/test_consensus_containers/*.json'
+          rm fixtures-prod-scheme.tar.gz
+
+      - name: SSZ fixture conformance
+        env:
+          VERITY_FIXTURES: ${{ github.workspace }}/fixtures-prod
+        run: cargo test -p verity-types --test ssz_fixtures -- --nocapture

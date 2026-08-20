@@ -83,3 +83,5 @@ rocksdb = "0.24"
 # the shapes the spec happened to generate. The graduated harness of MODEL_CHECK.md — bolero,
 # Kani, loom — is still introduced later, per its tool-to-zone mapping.
 proptest = "1.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
