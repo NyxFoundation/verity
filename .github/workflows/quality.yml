@@ -2,7 +2,8 @@ name: Quality
 
 on:
   push:
-    branches: [main]
+    # develop = DEV; main = PRD. Lint runs on both.
+    branches: [develop, main]
   pull_request:
   workflow_dispatch:
   schedule:

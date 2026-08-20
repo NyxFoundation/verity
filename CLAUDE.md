@@ -64,11 +64,18 @@ mdbook serve     # live-reload preview at http://localhost:3000
 
 Per global rules, every `.md` under `docs/` requires YAML frontmatter (`title`, `last_updated`, `tags`) — except `docs/generated/` and `docs/vendor/`. The existing `docs/src/` pages predate this rule and lack it; **add frontmatter when you next edit a page**, and include it in any new page from creation.
 
+## Branches
+
+- `develop` — DEV. Default branch. Feature PRs land here.
+- `main` — PRD. Receives `develop` via release; docs.verityclient.com deploys from here only.
+
 ## CI / deployment
+
+Checks (Rust, Quality, Secret Scan, Docs build) run on pull requests and on pushes to both `develop` and `main`.
 
 `.github/workflows/docs.yml` runs only when `docs/**` or the workflow file changes:
 
-- **build** (PRs + pushes to `main`): `mdbook build` with mdBook `0.4.40`, uploads the site as an artifact.
-- **deploy** (push to `main` only): downloads the artifact and deploys to Cloudflare Workers (`docs.verityclient.com`) via `wrangler deploy`. Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets.
+- **build** (PRs + pushes to `develop` or `main`): `mdbook build` with mdBook `0.4.40`, uploads the site as an artifact.
+- **deploy** (push to `main` / PRD only): downloads the artifact and deploys to Cloudflare Workers (`docs.verityclient.com`) via `wrangler deploy`. Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets.
 
 Because the workflow is path-filtered, changes outside `docs/` do not trigger it.

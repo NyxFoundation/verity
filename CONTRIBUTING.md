@@ -1,5 +1,10 @@
 # Contributing to Verity
 
+## Branches
+
+- `develop` is DEV and the default branch. Open pull requests against `develop`.
+- `main` is PRD. Do not target it unless the change is a production hotfix.
+
 ## Local checks with pre-commit
 
 Verity uses [pre-commit](https://pre-commit.com/) to run fast, deterministic lint

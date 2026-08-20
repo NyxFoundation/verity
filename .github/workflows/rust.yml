@@ -2,7 +2,8 @@ name: Rust
 
 on:
   push:
-    branches: [main]
+    # develop = DEV; main = PRD. Checks run on both; nothing here deploys.
+    branches: [develop, main]
     paths:
       - "crates/**"
       - "Cargo.toml"

@@ -9,7 +9,7 @@ src = "src"
 default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/NyxFoundation/verity"
-edit-url-template = "https://github.com/NyxFoundation/verity/edit/main/docs/{path}"
+edit-url-template = "https://github.com/NyxFoundation/verity/edit/develop/docs/{path}"
 site-url = "/"
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
