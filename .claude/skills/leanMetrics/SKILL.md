@@ -14,7 +14,7 @@ description: |
   any work exposing or monitoring consensus-client metrics in Verity.
   Negative triggers: Do NOT activate for consensus container shapes / fork choice /
   state transition behavior (use the leanSpec skill). Do NOT activate for aggregation /
-  zkVM / proof internals (use the leanMultisig skill). Do NOT activate for pure docs-site
+  zkVM / proof internals (use the leanVM skill). Do NOT activate for pure docs-site
   (mdBook) work. Do NOT activate when working outside the Verity project.
 ---
 
@@ -126,10 +126,10 @@ authoritative for the contract.
 3. For coverage/status questions, read the per-client status column (✅/📝/□).
 4. In your output, cite the **`metrics.md` section + the `main` commit SHA** you checked.
 
-## 5. Relationship to leanSpec & leanMultisig & Verity
+## 5. Relationship to leanSpec & leanVM & Verity
 
 - **leanSpec** (separate skill) = consensus protocol & container shapes (Python).
-- **leanMultisig** (separate skill) = aggregation + zkVM (Rust).
+- **leanVM** (separate skill) = aggregation + zkVM (Rust).
 - **leanMetrics** (this skill) = the observability **metric contract** (Prometheus
   names/types/buckets/labels) + Grafana dashboards.
 - Verity's `verity-metrics` crate implements leanMetrics; **ethlambda** and **Ream** are

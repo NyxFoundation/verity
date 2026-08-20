@@ -2,7 +2,8 @@ name: Quality
 
 on:
   push:
-    branches: [main]
+    # develop = DEV; main = PRD. Lint runs on both.
+    branches: [develop, main]
   pull_request:
   workflow_dispatch:
   schedule:
@@ -45,7 +46,7 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: "--no-progress docs/src README.md ARCHITECTURE.md DOMAIN_MODEL.md"
+          args: "--no-progress docs/src README.md ARCHITECTURE.md DOMAIN_MODEL.md STORAGE.md"
           fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

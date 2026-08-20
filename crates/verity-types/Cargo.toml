@@ -1,0 +1,25 @@
+[package]
+name = "verity-types"
+description = "Consensus container definitions and chain constants, matching the leanSpec reference implementation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# This crate holds container *shapes* and their serialization, nothing else. It is the
+# foundation every other crate depends on, so it deliberately carries no dependency beyond
+# SSZ: no networking, no storage, no cryptography, and no FFI.
+[dependencies]
+libssz.workspace = true
+libssz-derive.workspace = true
+libssz-merkle.workspace = true
+libssz-types.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

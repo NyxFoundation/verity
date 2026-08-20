@@ -2,7 +2,8 @@ name: Docs
 
 on:
   push:
-    branches: [main]
+    # develop = DEV (build only); main = PRD (build + deploy).
+    branches: [develop, main]
     paths:
       - "docs/**"
       - ".github/workflows/docs.yml"

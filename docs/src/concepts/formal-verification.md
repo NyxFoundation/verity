@@ -1,6 +1,6 @@
 ---
 title: Formal Verification
-last_updated: 2026-07-22
+last_updated: 2026-08-17
 tags:
   - formal-verification
   - lean4
@@ -119,7 +119,7 @@ What must be trusted for the claim to hold — listed so no link stays implicit:
   library computes the proven functions.
 - **Cryptography.** `hash_tree_root` collision resistance is an axiom (SSZ-7); the algebra
   of Poseidon / KoalaBear and XMSS is ArkLib's domain and enters the model only at call
-  sites; leanMultisig's implementation is trusted in the Runtime Shell.
+  sites; leanVM's implementation is trusted in the Runtime Shell.
 - **The Rust toolchain and shell.** rustc, and the Runtime Shell / I/O Edge code — held to
   the panic-free bar and model checking rather than proof.
 - **Hardware and OS**, under everything.
