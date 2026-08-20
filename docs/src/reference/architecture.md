@@ -1,6 +1,6 @@
 ---
 title: Verity Architecture
-last_updated: 2026-08-14
+last_updated: 2026-08-17
 tags:
   - architecture
   - verification-boundary
@@ -85,7 +85,7 @@ flowchart TB
     subgraph B["Runtime Shell — Rust, panic-free"]
         direction LR
         CODEC["SSZ codec + hash_tree_root<br/>wire bytes ↔ typed values"]
-        CRYPTO["Signature verification<br/>verity-crypto: XMSS · leanMultisig"]
+        CRYPTO["Signature verification<br/>verity-crypto: XMSS · leanVM"]
         STORE["State + fork-choice store<br/>single writer · threads immutable values"]
         DB["Database<br/>blocks · states · anchor"]
         FFI["FFI bindings layer"]
@@ -182,8 +182,9 @@ upstream Lean library name per Rust's `-sys` convention.
 
 - `verity-p2p` — gossip and req/resp over libp2p.
 - `verity-crypto` — adapter over the two upstream signature libraries: [`leansig`](https://github.com/leanEthereum/leanSig)
-  for per-validator XMSS sign / verify, and [`leanMultisig`](https://github.com/leanEthereum/leanMultisig)
-  for aggregation and aggregate-proof verification. One capability contract, two suppliers behind it.
+  for per-validator XMSS sign / verify, and [`leanVM`](https://github.com/leanEthereum/leanVM)
+  (formerly leanMultisig) for aggregation and aggregate-proof verification. One capability
+  contract, two suppliers behind it.
 - `verity-db` — persistence (Repository): blocks, states, aggregate proofs, and the finalized anchor.
   Keeps the storage concern out of the single-writer aggregate coordinator. See
   [Storage engine and retention](#storage-engine-and-retention).
@@ -231,170 +232,43 @@ flowchart TB
     DB --> TYPES
 ```
 
-### Storage engine, schema, and retention
+### Storage engine and retention
 
-`verity-db` is an append-oriented, typed key-value repository. It persists the data needed to
-resume a full node after restart without treating RocksDB as part of the consensus specification:
-all consensus values have an explicit SSZ type at the repository boundary, while column-family
-layout, retention, and compression are Runtime Shell concerns.
-
-Sizes are measured from leanSpec's `fixtures-prod-scheme.tar.gz` release asset. At
-`SECONDS_PER_SLOT = 4`, a day is 21,600 slots.
+`verity-db` stores two workloads with opposite shapes, and the split drives every decision below.
+Sizes are measured from leanSpec's `fixtures-prod-scheme.tar.gz` release asset; at
+`SECONDS_PER_SLOT = 4` a day is 21,600 slots. The table layout that follows from these decisions —
+keys, pruning rules, and the snapshot/diff scheme for state — is in
+[Storage Schema](https://github.com/NyxFoundation/verity/blob/main/STORAGE.md).
 
 | Workload | Value size | Volume | Lifetime |
 |---|---|---|---|
-| Headers, bodies, state snapshots/diffs, and indices | ~100 B – 800 B | ~5 MB/day | retained |
-| Aggregate proofs (`MultiMessageAggregate`) | 155–236 KB, median 190 KB | ~4.1 GB/day before pruning | 21,600-slot window |
+| Blocks, states, indices, finalized anchor | ~100 B – 800 B | ~5 MB/day | permanent |
+| Aggregate proofs (`MultiMessageAggregate`) | 155–236 KB, median 190 KB | ~4.1 GB/day | pruned after ~1 day |
 
 **Engine: RocksDB.** The proof workload — six-figure-byte values written continuously and dropped
-en masse a day later — is what an LSM tree with range tombstones is built for. The cost is a C++
+en masse a day later — is what an LSM tree with range tombstones is built for, and the same choice
+is what ethlambda, zeam, and qlean-mini run (gean uses Pebble, the same family). The cost is a C++
 dependency in the runtime's build and trust surface; that cost is accepted for Runtime Shell, where
 the bar is memory-safe, panic-free Rust around a well-exercised store, not proof. It buys nothing in
 Verified Core and reaches nothing there.
 
-**Backend contract.** Storage sits behind a byte-oriented backend trait with RocksDB and in-memory
-implementations. The trait exposes point reads, lexicographically ordered half-open range reads,
-atomic cross-table write batches, and range deletes. The in-memory backend must preserve RocksDB's
-lexicographic iteration semantics. Tests and ephemeral nodes use it; the engine remains replaceable
-if the proof workload later moves out of the database.
+**Backend trait.** Storage sits behind a backend trait with an in-memory implementation alongside
+the RocksDB one, following ethlambda's `StorageBackend` split. Tests and ephemeral nodes run
+in-memory; the engine stays replaceable if the proof workload later moves out of the database.
+Anything that leaks one engine's semantics into the trait — range deletes above all — is documented
+at the trait, not assumed.
 
-#### Column families and encodings
-
-RocksDB's default column family is reserved; Verity application data lives in these 11 column
-families. `root` and `state_root` are raw 32-byte SSZ roots. `slot_be` and `validator_index_be` are
-fixed eight-byte unsigned big-endian integers, so lexicographic order is numeric order. Every listed
-SSZ value must decode as exactly one canonical encoding; a decoding or integrity failure is storage
-corruption, not an absent value.
-
-| Column family | Key | Value | Retention / purpose |
-|---|---|---|---|
-| `block_headers` | `block_root` | `SSZ(BlockHeader)` | Every processed block, retained |
-| `block_bodies` | `block_root` | `SSZ(BlockBody)` | Every processed block, including an empty body; anchors only when supplied |
-| `block_proofs` | `slot_be ‖ block_root` | `SSZ(MultiMessageAggregate)` | Proof-bearing blocks; range-pruned |
-| `state_snapshots` | `block_root` | `SSZ(State)` | Anchor and periodic full-state bases, retained |
-| `state_diffs` | `block_root` | `SSZ(StateDiff)` | One per processed non-anchor block, retained |
-| `canonical_blocks` | `slot_be` | `block_root` | Current canonical block at a non-empty slot |
-| `state_roots` | `state_root` | `block_root` | Reverse lookup for checkpoint sync and state-root queries |
-| `fork_choice_blocks` | `slot_be ‖ block_root` | `parent_root` | Processed fork-choice tree, retained |
-| `known_votes` | `validator_index_be` | `SSZ(AttestationData)` | Latest counted vote per validator |
-| `pending_votes` | `validator_index_be` | `SSZ(AttestationData)` | Latest not-yet-counted vote per validator |
-| `metadata` | fixed ASCII key | typed scalar or SSZ value | Database identity and current view pointers |
-
-A `BlockHeader`, `BlockBody`, and `MultiMessageAggregate` use their consensus SSZ encodings; in
-particular `block_proofs` stores the entire `MultiMessageAggregate` container, not an ad-hoc extract
-of its `proof` field. This keeps the on-disk type boundary identical to the protocol type even if the
-container grows in a later fork.
-
-`StateDiff` is a Verity repository container, encoded with SSZ in this field order:
-`base_block_root`, `slot`, `latest_justified`, `latest_finalized`, `justified_slots`,
-`justifications_roots`, and `justifications_validators`. Configuration and the validator registry
-come from the preceding full snapshot; the latest header and historical block roots are reconstructed
-from persisted block data and the parent link. Reconstruction validates both the diff's parent link
-against the child header and the resulting state's `hash_tree_root` against that header's `state_root`.
-
-A full `State` snapshot is written for genesis and checkpoint-sync anchors, then for the first
-processed block whose edge from its parent crosses a 1,024-slot boundary:
-
-```text
-floor(parent_slot / 1024) < floor(block_slot / 1024)
-```
-
-This applies to every processed branch, not only the canonical one, and bounds a diff replay to at
-most 1,023 entries despite skipped slots.
-
-`canonical_blocks` is deliberately distinct from the all-branch `fork_choice_blocks` index. On every
-head change, the chain writer walks the old and new head back to their common ancestor, deletes
-slots leaving the canonical chain, and upserts slots joining it. A side branch can therefore never
-overwrite the canonical range-sync index merely by being processed.
-
-#### Metadata and database identity
-
-`metadata` has no free-form application keys. Its fixed keys and types are:
-
-| Key | Value |
-|---|---|
-| `schema_version` | `SSZ(uint32)` repository schema version |
-| `chain_fingerprint` | Genesis state's `hash_tree_root` (`Bytes32`) |
-| `fork_version` | Canonical protocol fork-version scalar |
-| `ssz_schema_digest` | `Bytes32` SHA-256 of the versioned stored-type manifest |
-| `head`, `safe_target` | `Bytes32` |
-| `latest_justified`, `latest_finalized` | `SSZ(Checkpoint)` |
-| `served_from_slot` | `SSZ(uint64)` |
-| `last_processed_interval` | `SSZ(Interval)` |
-
-The stored-type manifest lists `BlockHeader`, `BlockBody`, `MultiMessageAggregate`, `State`,
-`StateDiff`, `Checkpoint`, and `AttestationData` in a fixed order. Its digest makes an SSZ-shape
-change reviewable and prevents a new client from silently decoding an old database. The genesis
-state root fingerprints genesis time, configuration, and validator registry without inventing a
-second chain-identity format.
-
-Opening a populated database requires all identity values to match the configured network and
-runtime schema. No mismatch or corruption is treated as an empty database. The node stops, keeps
-the directory for diagnosis, and requires an operator to choose a new directory and checkpoint-sync
-again; it never automatically resets or overwrites the old one.
-
-#### Single-writer commits and restart
-
-`verity-chain` — initially the chain module within the single `verity-consensus` crate — owns the
-only write capability. P2P, RPC, validator duties, and maintenance submit requests to that owner;
-they never write the backend directly. This aligns the owner of block/state/fork-choice consistency
-with the owner that assembles the RocksDB batch. Read-only snapshot views may proceed concurrently.
-
-A processed block is committed in one cross-column-family `WriteBatch`: its header, body, proof,
-state diff, optional snapshot, `state_roots` entry, `fork_choice_blocks` entry, canonical-index
-changes, and the affected metadata. The chain writer verifies header root, body root, state root,
-and parent relationships before exposing the commit. Pending or parentless network blocks remain in
-a bounded in-memory cache; they are not persisted and are reacquired after a restart.
-
-Votes are persisted in their already-reduced form, not as raw XMSS signatures or reusable proof
-pools. For each proof participant, the stored vote wins only if its attestation slot is greater than
-the existing one, or the slots tie and its `AttestationData` root is lexicographically greater.
-`pending_votes` is updated when a valid block-external aggregate arrives. At the interval-3 event,
-the writer computes and persists `safe_target`; at interval 4 it merges pending into `known_votes`,
-clears pending, and persists the recomputed head and head-derived finalized checkpoint. Every such
-transition, its vote changes, and `last_processed_interval` commit atomically. Raw signatures and
-proof pools are bounded in-memory aggregation inputs and are intentionally discarded on restart.
-
-The persisted interval is required because wall-clock time alone cannot tell which interval events
-were applied before a crash. On restart, the node validates the database, restores the fork-choice
-view from `latest_justified.slot` onward with a range scan, recomputes head/safe-target/checkpoint
-metadata from the vote maps, and then replays ticks from `last_processed_interval` to the current
-wall-clock interval. A disagreement is corruption and fails closed.
-
-Write-ahead logging remains enabled. Routine imports and interval updates use an atomic commit
-without an fsync; bootstrap and checkpoint-sync anchors, and commits that advance finalization, use
-an fsync. An anchor's metadata, header/body when available, full snapshot, reverse state-root index,
-canonical index, and fork-choice entry are one fsynced batch. An anchor without its original signed
-proof is not a range-sync response item.
-
-#### Retention and range sync
-
-**Proof retention: 21,600 slots (~1 day).** Proofs use the slot-prefixed key so a maintenance batch
-can delete the half-open range `[0, cutoff)` with one range tombstone, where
-`cutoff = tip_slot − 21,600` (saturating at zero). It performs that deletion only when
-`cutoff ≤ latest_finalized.slot`; no proof from the current non-finalized range is removed.
-Headers, bodies, snapshots, diffs, state-root mappings, and fork-choice blocks are never pruned by
-this path. Vote maps are compacted only when the current fork-choice rules declare a vote stale:
-its head is at or below the finalized slot, or is not a descendant of the finalized block.
+**Proof retention: 21,600 slots (~1 day).** Proofs live in their own table keyed `slot ‖ root`, so
+pruning is a slot-ordered range delete rather than a scan. They are dropped only below
+`tip_slot − 21,600` and only when that cutoff is already finalized; non-finalized proofs are never
+touched. Blocks and states are never pruned by this path.
 
 The floor is not ours to choose: leanSpec sets `MIN_SLOTS_FOR_BLOCK_REQUESTS = 3600` (4 hours) and
-a responder **MUST** serve `BlocksByRange` over that window. One day is an operational horizon six
-times that floor: a node down overnight can rejoin by range sync rather than needing a checkpoint.
-Verity retains proofs so this obligation survives a restart.
-
-A checkpoint-sync node does not advertise range service until it has fetched and verified a
-proof-bearing canonical history covering the required recent window. `served_from_slot` records the
-first such slot; requests below `max(current_slot − 3600, served_from_slot)` receive
-`RESOURCE_UNAVAILABLE`. Within the advertised window, a canonical non-anchor block with a missing
-proof is storage corruption, never an empty slot. Genesis and checkpoint-sync anchors without their
-original proof are likewise omitted from `BlocksByRange`, not synthesized.
-
-#### Physical tuning
-
-`block_proofs` uses no compression: aggregate proofs are high-entropy cryptographic blobs and gain
-little from spending CPU on compression. The other column families use LZ4. Cache size, memtable
-sizes, compaction concurrency, and related RocksDB settings are operational tunables; their defaults
-are set from production-fixture benchmarks rather than encoded into the consensus or database schema.
+a responder **MUST** serve `BlocksByRange` over that window. Everything above it is an operational
+choice about how far behind a peer can fall and still catch up over P2P instead of needing a
+checkpoint. One day is that horizon — a node down overnight rejoins by range sync — at 6× the
+mandated floor. Note that leanSpec's own reference node satisfies the requirement in memory and
+persists no proofs at all; Verity persists them so the guarantee survives a restart.
 
 ### Capability contracts
 

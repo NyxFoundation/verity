@@ -16,7 +16,7 @@ description: |
   Negative triggers: Do NOT activate for spinning up a local devnet to RUN it rather than
   test it (use the leanQuickstart skill). Do NOT activate for consensus container shapes /
   fork choice / state transition (use the leanSpec skill). Do NOT activate for aggregation
-  / zkVM / proof internals (use the leanMultisig skill). Do NOT activate for the metric
+  / zkVM / proof internals (use the leanVM skill). Do NOT activate for the metric
   contract — names/types/buckets/labels — (use the leanMetrics skill). Do NOT activate for
   pure docs-site (mdBook) work. Do NOT activate when working outside the Verity project.
 ---
@@ -150,7 +150,7 @@ Paths are relative to the hive repo root, read at `master`.
 ## 7. Relationship to the other skills & Verity
 
 - **leanQuickstart** (separate skill) = spin up and **run** a local lean devnet.
-- **leanSpec** / **leanMultisig** / **leanMetrics** (separate skills) = protocol &
+- **leanSpec** / **leanVM** / **leanMetrics** (separate skills) = protocol &
   container shapes / aggregation & zkVM / the metric contract.
 - **hive** (this skill) = the **test harness** that exercises clients (build + `--sim` +
   `--client`), especially the `lean` simulator.

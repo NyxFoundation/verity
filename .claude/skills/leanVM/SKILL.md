@@ -1,13 +1,14 @@
 ---
-name: leanMultisig
+name: leanVM
 description: |
   Ground every question about post-quantum signature aggregation and the zkVM in
-  leanMultisig — the authoritative spec and Rust reference implementation
-  (github.com/leanEthereum/leanMultisig), always read from the latest remote main.
+  leanVM — the authoritative spec and Rust reference implementation
+  (github.com/leanEthereum/leanVM), always read from the latest remote main.
   Verity's verity-crypto crate depends on it directly. Use before implementing,
   reviewing, or answering anything about XMSS aggregation, Type-1/Type-2 proofs, the
   prover/verifier, the zkVM, the zkDSL, or WHIR.
-  Triggers: "leanMultisig", "lean_multisig", "leanMultisigを確認", "署名集約", "aggregation",
+  Triggers: "leanVM", "lean_vm", "leanVMを確認", "leanMultisig", "lean_multisig" (the
+  repo's former name — old references still mean this skill), "署名集約", "aggregation",
   "Type-1 proof", "Type-2 proof", "zkVM", "zkDSL", "WHIR", "prover", "verifier",
   "verity-crypto", and any work touching signature aggregation or proof generation in Verity.
   Negative triggers: Do NOT activate for consensus container shapes / fork choice / state
@@ -15,9 +16,13 @@ description: |
   activate when working outside the Verity project.
 ---
 
-# leanMultisig — source of truth for aggregation & the zkVM
+# leanVM — source of truth for aggregation & the zkVM
 
-leanMultisig (`github.com/leanEthereum/leanMultisig`) is a minimal zkVM targeting
+> Renamed upstream from **leanMultisig** to **leanVM** (2026-08-14; the old GitHub URL
+> redirects). Older Verity docs, memories, and upstream discussions may still use the old
+> name — they refer to this same repository.
+
+leanVM (`github.com/leanEthereum/leanVM`) is a minimal zkVM targeting
 aggregation of hash-based (Generalized-XMSS) signatures. It is the **authoritative spec
 and Rust reference implementation** for everything aggregation/zkVM-related in Verity.
 Verity's `verity-crypto` crate depends on it directly (as a pinned git dependency).
@@ -25,38 +30,38 @@ Verity's `verity-crypto` crate depends on it directly (as a pinned git dependenc
 ## 0. Core principle
 
 - The behavior of signature aggregation, Type-1/Type-2 proofs, the prover/verifier, the
-  zkVM and its zkDSL is defined by **leanMultisig** (its Rust crates + design docs). When
+  zkVM and its zkDSL is defined by **leanVM** (its Rust crates + design docs). When
   in doubt, read the source.
 - Division of authority with the leanSpec skill: **leanSpec** defines the *consensus
   containers* that carry proofs (`TypeOneMultiSignature`, `SignedBlock.proof` =
-  `ByteList512KiB`, the verify entry points). **leanMultisig** defines how those proofs
+  `ByteList512KiB`, the verify entry points). **leanVM** defines how those proofs
   are *produced and verified*. For container shapes → leanSpec; for proof internals →
   here.
 
-## 1. Always read leanMultisig from the remote `main` (no local path assumptions)
+## 1. Always read leanVM from the remote `main` (no local path assumptions)
 
-leanMultisig moves fast. Read the latest `main` of the canonical upstream directly from
+leanVM moves fast. Read the latest `main` of the canonical upstream directly from
 the remote — this works for every developer and in CI, with no dependency on anyone's
 local clone path.
 
-Repo: `github.com/leanEthereum/leanMultisig` (canonical; do **not** use a personal fork).
+Repo: `github.com/leanEthereum/leanVM` (canonical; do **not** use a personal fork).
 
 ```bash
 # Latest main commit — cite this SHA in your output:
-gh api repos/leanEthereum/leanMultisig/commits/main --jq '.sha'
+gh api repos/leanEthereum/leanVM/commits/main --jq '.sha'
 
 # Read a file at main:
-gh api "repos/leanEthereum/leanMultisig/contents/crates/xmss/xmss.md?ref=main" --jq '.content' | base64 -d
+gh api "repos/leanEthereum/leanVM/contents/crates/xmss/xmss.md?ref=main" --jq '.content' | base64 -d
 # raw fallback (no gh):
-curl -s https://raw.githubusercontent.com/leanEthereum/leanMultisig/main/crates/xmss/xmss.md
+curl -s https://raw.githubusercontent.com/leanEthereum/leanVM/main/crates/xmss/xmss.md
 
 # List a directory at main:
-gh api "repos/leanEthereum/leanMultisig/contents/crates?ref=main" --jq '.[].name'
+gh api "repos/leanEthereum/leanVM/contents/crates?ref=main" --jq '.[].name'
 # Full tree:
-gh api "repos/leanEthereum/leanMultisig/git/trees/main?recursive=1" --jq '.tree[].path'
+gh api "repos/leanEthereum/leanVM/git/trees/main?recursive=1" --jq '.tree[].path'
 ```
 
-No `gh`/`curl`? Use WebFetch on `https://github.com/leanEthereum/leanMultisig/blob/main/<path>`.
+No `gh`/`curl`? Use WebFetch on `https://github.com/leanEthereum/leanVM/blob/main/<path>`.
 
 If you happen to have a local clone, you *may* use it for fast navigation/grep — but
 `git fetch origin` first and read `origin/main` (clones drift onto feature branches and
@@ -64,7 +69,7 @@ forks). Never assume a specific clone path.
 
 ## 2. How Verity consumes it
 
-- `verity-crypto` depends on leanMultisig as a **pinned git dependency** in `Cargo.toml`.
+- `verity-crypto` depends on leanVM as a **pinned git dependency** in `Cargo.toml`.
   The pinned commit is what Verity builds against; the latest `main` is the source of
   truth for understanding/spec questions. When bumping the pin, re-read `main`.
 - The proving stack is expensive; the prover context is set up once at startup. Verity
@@ -72,9 +77,9 @@ forks). Never assume a specific clone path.
 
 ## 3. Topic → authoritative location map
 
-Paths are relative to the leanMultisig repo root, read at `main`.
+Paths are relative to the leanVM repo root, read at `main`.
 
-| Topic | leanMultisig (authoritative) |
+| Topic | leanVM (authoritative) |
 |---|---|
 | XMSS signature scheme | `crates/xmss/` (+ `crates/xmss/xmss.md`) |
 | Aggregation: Type-1 / Type-2 proofs | `crates/rec_aggregation/` (+ `crates/rec_aggregation/TYPE1_TYPE2_LAYOUT.md`) |
@@ -90,14 +95,14 @@ Paths are relative to the leanMultisig repo root, read at `main`.
 
 ## 4. How to use (implementing / reviewing / answering)
 
-1. Read the **authoritative leanMultisig path at `main`** for the topic first.
+1. Read the **authoritative leanVM path at `main`** for the topic first.
 2. For the consensus containers carrying proofs, defer to the **leanSpec** skill.
-3. In your output, cite the **leanMultisig path + the `main` commit SHA** you checked.
+3. In your output, cite the **leanVM path + the `main` commit SHA** you checked.
 
 ## 5. Relationship to leanSpec & Verity
 
 - **leanSpec** (separate skill) = consensus protocol spec & container shapes (Python).
-- **leanMultisig** (this skill) = aggregation + zkVM (Rust); produces/verifies the proofs
+- **leanVM** (this skill) = aggregation + zkVM (Rust); produces/verifies the proofs
   that fill leanSpec's containers.
 - Verity (Rust) wires both together: `verity-types` (leanSpec shapes) +
-  `verity-crypto` (leanMultisig + Generalized-XMSS). The client is pre-implementation today.
+  `verity-crypto` (leanVM + Generalized-XMSS). The client is pre-implementation today.
