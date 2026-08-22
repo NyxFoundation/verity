@@ -76,6 +76,10 @@ libp2p = { version = "0.56", default-features = false, features = [
 # See ARCHITECTURE.md "Storage engine and retention" for why an LSM engine and not a B-tree one.
 rocksdb = "0.24"
 
+# --- Workspace members ---------------------------------------------------------------------
+# Declared here so a member's path appears in one place, like every external dependency.
+verity-types = { path = "crates/verity-types" }
+
 # --- Test-only -----------------------------------------------------------------------------
 # Scoped to SSZ round-trip properties in `verity-types`. This is a deliberate, narrow exception
 # to the kickoff decision that no verification harness ships on day one: a codec is one of the
