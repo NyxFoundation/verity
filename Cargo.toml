@@ -78,7 +78,11 @@ rocksdb = "0.24"
 
 # --- Workspace members ---------------------------------------------------------------------
 # Declared here so a member's path appears in one place, like every external dependency.
-verity-types = { path = "crates/verity-types" }
+#
+# `version` is redundant for a path dependency inside the workspace, but omitting it leaves a
+# wildcard requirement, which `deny.toml` bans for the same reason it bans one on a git
+# dependency: nothing in the manifest then states what the dependent was built against.
+verity-types = { path = "crates/verity-types", version = "0.0.0" }
 
 # --- Test-only -----------------------------------------------------------------------------
 # Scoped to SSZ round-trip properties in `verity-types`. This is a deliberate, narrow exception
