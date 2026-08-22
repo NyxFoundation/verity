@@ -4,6 +4,11 @@
 //! tree. The fast `cargo test` gate leaves this unset and the test returns.
 //! CI's fixtures job always sets it, and fails if no vector matched.
 //!
+//! Two suites are consumed: `test_consensus_containers`, and the two containers in
+//! `test_xmss_containers` that `verity-types` actually defines — the aggregation proofs
+//! are consensus containers despite the suite they ship in. The rest of that suite is
+//! XMSS key material and lands with `verity-crypto`.
+//!
 //! Source: leanSpec `tests/consensus/lstar/ssz/` filled into the
 //! `fixtures-prod-scheme.tar.gz` release asset, sha256-pinned in
 //! `crates/verity-types/fixtures.sha256`. leanSpec `main` @
@@ -25,8 +30,19 @@ use verity_types::primitives::{Bytes32, Bytes52, Interval, Slot, SubnetId, Valid
 use verity_types::state::State;
 use verity_types::validator::Validator;
 
-/// Types whose signature field is an XMSS container. They land with `verity-crypto`.
-const SKIPPED_TYPES: &[&str] = &["SignedAttestation"];
+/// Types this crate does not define. They carry XMSS key material or a raw XMSS
+/// signature, and land with `verity-crypto`. Every skip is counted and reported, so a
+/// suite that silently stopped matching cannot hide here.
+const SKIPPED_TYPES: &[&str] = &[
+    "SignedAttestation",
+    "Signature",
+    "PublicKey",
+    "HashTreeLayer",
+    "HashTreeOpening",
+];
+
+/// Fixture suites this test reads. Anything outside them is another crate's concern.
+const SUITES: &[&str] = &["test_consensus_containers", "test_xmss_containers"];
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,8 +76,9 @@ fn should_match_leanspec_ssz_vectors_when_fixtures_are_present() {
     collect_ssz_json(&root, &mut files);
     assert!(
         !files.is_empty(),
-        "no SSZ JSON under {} (expected **/test_consensus_containers/*.json)",
-        root.display()
+        "no SSZ JSON under {} (expected **/{{{}}}/*.json)",
+        root.display(),
+        SUITES.join(",")
     );
 
     let mut matched = 0usize;
@@ -98,7 +115,7 @@ fn collect_ssz_json(dir: &Path, out: &mut Vec<PathBuf>) {
         let is_json = path.extension().is_some_and(|ext| ext == "json");
         let is_container_suite = path
             .components()
-            .any(|c| c.as_os_str() == "test_consensus_containers");
+            .any(|c| SUITES.iter().any(|suite| c.as_os_str() == *suite));
         if is_json && is_container_suite {
             out.push(path);
         }
@@ -131,9 +148,14 @@ fn run_file(path: &Path, matched: &mut usize, skipped: &mut usize, failures: &mu
 
 fn run_case(case: &FixtureCase) -> Result<Outcome, String> {
     let bytes = from_hex(&case.serialized)?;
-    let reject = case.rejection_reason.is_some() || case.root.is_empty();
+    // Only an explicit rejectionReason marks a vector as invalid. Treating a missing root
+    // as one too would demand that a valid case *fail* to decode, turning a real decode bug
+    // into a pass. A valid case with no root is a fixture we cannot check, and says so.
+    let reject = case.rejection_reason.is_some();
     let root = if reject {
         Vec::new()
+    } else if case.root.is_empty() {
+        return Err("valid vector carries no root".into());
     } else {
         from_hex(&case.root)?
     };

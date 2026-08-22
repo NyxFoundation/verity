@@ -94,7 +94,8 @@ jobs:
           sha256sum -c crates/verity-types/fixtures.sha256
           mkdir -p fixtures-prod
           tar -xzf fixtures-prod-scheme.tar.gz -C fixtures-prod \
-            --wildcards '*/ssz/*/ssz/test_consensus_containers/*.json'
+            --wildcards '*/ssz/*/ssz/test_consensus_containers/*.json' \
+            '*/ssz/*/ssz/test_xmss_containers/*.json'
           rm fixtures-prod-scheme.tar.gz
 
       - name: SSZ fixture conformance
