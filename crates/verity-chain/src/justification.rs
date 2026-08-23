@@ -18,7 +18,7 @@ pub const IMMEDIATE_JUSTIFICATION_WINDOW: u64 = 5;
 ///
 /// Returns `None` for a slot at or behind the boundary: those are justified by definition and
 /// carry no tracked index. Slot `finalized + 1` maps to index 0.
-#[must_use]
+#[must_use = "this only locates the bit; reading or setting it in the state is the caller's job"]
 pub fn justified_index_after(slot: Slot, finalized: Slot) -> Option<usize> {
     if slot.0 <= finalized.0 {
         return None;
@@ -33,7 +33,7 @@ pub fn justified_index_after(slot: Slot, finalized: Slot) -> Option<usize> {
 /// Per 3SF-mini, the distance from the finalized slot must be within the immediate window, a
 /// perfect square, or a pronic number (`n(n+1)`: 6, 12, 20, …). A slot behind the boundary is
 /// already settled and is never a future candidate.
-#[must_use]
+#[must_use = "this answers the question; it neither records the verdict nor rejects the slot"]
 pub fn is_justifiable_after(slot: Slot, finalized: Slot) -> bool {
     if slot.0 < finalized.0 {
         return false;
@@ -61,7 +61,7 @@ pub fn is_justifiable_after(slot: Slot, finalized: Slot) -> bool {
 ///
 /// Selection is by slot alone. That the candidate descends from `current` is a separate store
 /// invariant and is not checked here.
-#[must_use]
+#[must_use = "this returns the advanced checkpoint; neither argument is modified"]
 pub fn advance_checkpoint(current: Checkpoint, candidate: Checkpoint) -> Checkpoint {
     if candidate.slot.0 > current.slot.0 {
         candidate

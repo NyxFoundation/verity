@@ -21,13 +21,13 @@ pub struct SlotClock {
 
 impl SlotClock {
     /// Builds a clock anchored at `genesis_time`, a Unix timestamp in **seconds**.
-    #[must_use]
+    #[must_use = "a clock is a value; constructing one starts nothing and registers nothing"]
     pub const fn new(genesis_time: u64) -> Self {
         Self { genesis_time }
     }
 
     /// The Unix timestamp, in seconds, at which slot 0 began.
-    #[must_use]
+    #[must_use = "this reads the anchor the clock was built with; it cannot move it"]
     pub const fn genesis_time(&self) -> u64 {
         self.genesis_time
     }
@@ -36,26 +36,26 @@ impl SlotClock {
     ///
     /// Clamping rather than signing is what makes every accessor below total: a node started
     /// ahead of genesis reports slot 0 and interval 0 instead of failing.
-    #[must_use]
+    #[must_use = "this measures against the instant passed in; the clock stores no time of its own"]
     pub const fn milliseconds_since_genesis(&self, now_milliseconds: u64) -> u64 {
         now_milliseconds.saturating_sub(self.genesis_time * 1000)
     }
 
     /// The slot containing `now_milliseconds`, or slot 0 before genesis.
-    #[must_use]
+    #[must_use = "the slot is derived from the argument, not from a clock this type reads"]
     pub const fn current_slot(&self, now_milliseconds: u64) -> Slot {
         Slot(self.milliseconds_since_genesis(now_milliseconds) / MILLISECONDS_PER_SLOT)
     }
 
     /// The interval within the current slot, in `0..INTERVALS_PER_SLOT`.
-    #[must_use]
+    #[must_use = "the position inside the slot, not a count since genesis; see `total_intervals`"]
     pub const fn current_interval(&self, now_milliseconds: u64) -> Interval {
         let into_slot = self.milliseconds_since_genesis(now_milliseconds) % MILLISECONDS_PER_SLOT;
         Interval(into_slot / MILLISECONDS_PER_INTERVAL)
     }
 
     /// Intervals elapsed since genesis, counting across slot boundaries.
-    #[must_use]
+    #[must_use = "a count since genesis, not the position inside a slot; see `current_interval`"]
     pub const fn total_intervals(&self, now_milliseconds: u64) -> Interval {
         Interval(self.milliseconds_since_genesis(now_milliseconds) / MILLISECONDS_PER_INTERVAL)
     }
@@ -64,7 +64,7 @@ impl SlotClock {
     ///
     /// Before genesis the next boundary is genesis itself. Exactly on a boundary this returns
     /// a full interval rather than zero, so a caller looping on it always advances.
-    #[must_use]
+    #[must_use = "this returns how long to wait; it does not wait"]
     pub const fn until_next_interval(&self, now_milliseconds: u64) -> Duration {
         let genesis_milliseconds = self.genesis_time * 1000;
         if now_milliseconds < genesis_milliseconds {
@@ -79,7 +79,7 @@ impl SlotClock {
 /// The interval count at the start of `slot`.
 ///
 /// Slot boundaries fall on exact multiples of the per-slot interval count.
-#[must_use]
+#[must_use = "this converts a slot to its interval count; it reads no clock and changes no slot"]
 pub const fn intervals_at_slot_start(slot: Slot) -> Interval {
     Interval(slot.0 * INTERVALS_PER_SLOT)
 }
