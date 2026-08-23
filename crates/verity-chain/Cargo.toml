@@ -1,0 +1,22 @@
+[package]
+name = "verity-chain"
+description = "Consensus decisions over the container types: justification candidacy and the slot clock."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# Pure decisions over `verity-types` shapes. No storage, no networking, no cryptography, and
+# no wall clock: every function here takes the time it should reason about as an argument.
+[dependencies]
+verity-types.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

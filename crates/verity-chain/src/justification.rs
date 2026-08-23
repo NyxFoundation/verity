@@ -1,0 +1,160 @@
+//! Justification candidacy — which slots may be justified after a given finalized boundary.
+//!
+//! leanSpec defines these as methods on `Slot` and `Checkpoint`. Verity keeps them off the
+//! container types on purpose: they are the leading candidates to move into the Verified
+//! Core, and binding them to `verity-types` would make every crate that merely uses a slot
+//! link the FFI boundary once that move happens. See `ARCHITECTURE.md`, "Capability
+//! contracts".
+//!
+//! Transcribed from leanSpec `src/lean_spec/spec/forks/lstar/slot.py`, read at commit
+//! `0588c2d215a955a516378677a92db2a5666802f3`.
+
+use verity_types::{Checkpoint, Slot};
+
+/// Slots within this distance of the finalized boundary are always justification candidates.
+pub const IMMEDIATE_JUSTIFICATION_WINDOW: u64 = 5;
+
+/// Position of `slot` in the justification bitfield anchored at `finalized`.
+///
+/// Returns `None` for a slot at or behind the boundary: those are justified by definition and
+/// carry no tracked index. Slot `finalized + 1` maps to index 0.
+#[must_use = "this only locates the bit; reading or setting it in the state is the caller's job"]
+pub fn justified_index_after(slot: Slot, finalized: Slot) -> Option<usize> {
+    if slot.0 <= finalized.0 {
+        return None;
+    }
+    // The subtraction cannot underflow: the branch above established `slot > finalized`, so
+    // the difference is at least 1 and the decrement stays in range.
+    Some((slot.0 - finalized.0 - 1) as usize)
+}
+
+/// Whether `slot` is a valid justification candidate after `finalized`.
+///
+/// Per 3SF-mini, the distance from the finalized slot must be within the immediate window, a
+/// perfect square, or a pronic number (`n(n+1)`: 6, 12, 20, …). A slot behind the boundary is
+/// already settled and is never a future candidate.
+#[must_use = "this answers the question; it neither records the verdict nor rejects the slot"]
+pub fn is_justifiable_after(slot: Slot, finalized: Slot) -> bool {
+    if slot.0 < finalized.0 {
+        return false;
+    }
+    let delta = slot.0 - finalized.0;
+
+    // Most candidates land here, so this runs before either square root.
+    if delta <= IMMEDIATE_JUSTIFICATION_WINDOW {
+        return true;
+    }
+
+    // Squares 1 and 4 already returned above; the first to reach here is 9.
+    if is_perfect_square(u128::from(delta)) {
+        return true;
+    }
+
+    // For a pronic delta = n(n+1), 4*delta + 1 = (2n+1)^2. Widened to u128 because 4*delta + 1
+    // overflows u64 near the top of the slot range. The parity test mirrors leanSpec; an odd
+    // square always has an odd root, so it never changes the answer on its own.
+    let discriminant = 4 * u128::from(delta) + 1;
+    is_perfect_square(discriminant) && discriminant.isqrt() % 2 == 1
+}
+
+/// The later of two checkpoints, keeping `current` on a slot tie.
+///
+/// Selection is by slot alone. That the candidate descends from `current` is a separate store
+/// invariant and is not checked here.
+#[must_use = "this returns the advanced checkpoint; neither argument is modified"]
+pub fn advance_checkpoint(current: Checkpoint, candidate: Checkpoint) -> Checkpoint {
+    if candidate.slot.0 > current.slot.0 {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn is_perfect_square(value: u128) -> bool {
+    let root = value.isqrt();
+    root * root == value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{advance_checkpoint, is_justifiable_after, justified_index_after};
+    use verity_types::{Checkpoint, Slot};
+
+    #[test]
+    fn should_report_no_index_when_slot_is_at_or_behind_the_finalized_boundary() {
+        assert_eq!(justified_index_after(Slot(10), Slot(10)), None);
+        assert_eq!(justified_index_after(Slot(9), Slot(10)), None);
+    }
+
+    #[test]
+    fn should_map_the_first_slot_after_the_boundary_to_index_zero() {
+        assert_eq!(justified_index_after(Slot(11), Slot(10)), Some(0));
+        assert_eq!(justified_index_after(Slot(13), Slot(10)), Some(2));
+    }
+
+    #[test]
+    fn should_reject_when_the_slot_is_behind_the_finalized_boundary() {
+        assert!(!is_justifiable_after(Slot(9), Slot(10)));
+    }
+
+    #[test]
+    fn should_accept_every_delta_inside_the_immediate_window() {
+        assert!((0..=5).all(|delta| is_justifiable_after(Slot(100 + delta), Slot(100))));
+    }
+
+    #[test]
+    fn should_reject_a_delta_that_is_neither_square_nor_pronic() {
+        for delta in [7, 8, 10, 11, 13, 14, 15] {
+            assert!(
+                !is_justifiable_after(Slot(delta), Slot(0)),
+                "delta {delta} should not be justifiable"
+            );
+        }
+    }
+
+    #[test]
+    fn should_accept_a_square_delta_beyond_the_immediate_window() {
+        for delta in [9, 16, 25, 36] {
+            assert!(is_justifiable_after(Slot(delta), Slot(0)), "delta {delta}");
+        }
+    }
+
+    #[test]
+    fn should_accept_a_pronic_delta_beyond_the_immediate_window() {
+        for delta in [6, 12, 20, 30, 42] {
+            assert!(is_justifiable_after(Slot(delta), Slot(0)), "delta {delta}");
+        }
+    }
+
+    #[test]
+    fn should_not_overflow_when_the_delta_is_near_the_slot_ceiling() {
+        // 4 * delta + 1 leaves u64 here; the answer matters less than the absence of a panic.
+        assert!(!is_justifiable_after(Slot(u64::MAX), Slot(0)));
+    }
+
+    #[test]
+    fn should_keep_the_current_checkpoint_when_the_candidate_ties_on_slot() {
+        let current = Checkpoint {
+            root: [1u8; 32],
+            slot: Slot(7),
+        };
+        let candidate = Checkpoint {
+            root: [2u8; 32],
+            slot: Slot(7),
+        };
+        assert_eq!(advance_checkpoint(current, candidate), current);
+    }
+
+    #[test]
+    fn should_take_the_candidate_when_it_is_strictly_later() {
+        let current = Checkpoint {
+            root: [1u8; 32],
+            slot: Slot(7),
+        };
+        let candidate = Checkpoint {
+            root: [2u8; 32],
+            slot: Slot(8),
+        };
+        assert_eq!(advance_checkpoint(current, candidate), candidate);
+    }
+}
