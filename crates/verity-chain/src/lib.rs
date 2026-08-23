@@ -7,12 +7,26 @@
 //! every other crate depends on.
 //!
 //! Nothing here reads a clock, a socket, or a database. `slot_clock` takes the instant it
-//! should reason about as an argument for exactly that reason.
+//! should reason about as an argument, and `state_transition` takes the block, for exactly
+//! that reason. Signature verification happens before the transition is called, so this
+//! crate carries no cryptographic dependency either.
 
+pub mod error;
 pub mod justification;
+pub mod merkle;
+pub mod proposer;
 pub mod slot_clock;
+pub mod state_transition;
 
+pub use error::RejectionReason;
 pub use justification::{
-    IMMEDIATE_JUSTIFICATION_WINDOW, advance_checkpoint, is_justifiable_after, justified_index_after,
+    IMMEDIATE_JUSTIFICATION_WINDOW, advance_checkpoint, extend_justified_slots_to,
+    is_justifiable_after, is_slot_justified, justified_index_after,
 };
+pub use merkle::hash_tree_root;
+pub use proposer::proposer_for_slot;
 pub use slot_clock::{SlotClock, intervals_at_slot_start};
+pub use state_transition::{
+    generate_genesis, process_attestations, process_block, process_block_header, process_slots,
+    state_transition,
+};
