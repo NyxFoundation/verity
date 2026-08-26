@@ -178,7 +178,7 @@ impl JustificationState {
             return Ok(false);
         }
         // Both roots must match the canonical chain; this also rejects zero-hash roots.
-        if !lies_on_chain(data, &state.historical_block_hashes) {
+        if !is_on_chain(data, &state.historical_block_hashes) {
             return Ok(false);
         }
         if target.slot.0 <= source.slot.0 {
@@ -275,7 +275,7 @@ impl JustificationState {
 }
 
 /// Whether every checkpoint in the data points at the chain view's block for its slot.
-fn lies_on_chain(data: &AttestationData, chain: &HistoricalBlockHashes) -> bool {
+fn is_on_chain(data: &AttestationData, chain: &HistoricalBlockHashes) -> bool {
     // Empty slots carry the zero hash, so a vote recording one is meaningless.
     if data.source.root == ZERO_HASH || data.target.root == ZERO_HASH || data.head.root == ZERO_HASH
     {
