@@ -1,6 +1,6 @@
 [package]
 name = "verity-chain"
-description = "Consensus decisions over the container types: justification candidacy and the slot clock."
+description = "Consensus decisions over the container types: the state transition, justification candidacy, and the slot clock."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,14 @@ publish = false
 
 # Pure decisions over `verity-types` shapes. No storage, no networking, no cryptography, and
 # no wall clock: every function here takes the time it should reason about as an argument.
+#
+# `libssz-merkle` is here for one reason: the state transition commits to `hash_tree_root` of
+# the state, the parent header, and the block body, so the decision cannot be expressed
+# without it. It is the same Serialization capability `verity-types` already depends on, not
+# a new supplier.
 [dependencies]
+libssz-merkle.workspace = true
+libssz-types.workspace = true
 verity-types.workspace = true
 
 [dev-dependencies]
