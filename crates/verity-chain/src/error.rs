@@ -6,9 +6,10 @@
 //! leanSpec enum it mirrors so the two stay greppable against each other.
 //!
 //! Only the reasons Verity can currently produce are defined. leanSpec's enum has 36; the
-//! rest belong to fork choice and gossip validation, and land with them. An unmodelled
-//! reason is not silently tolerated: [`RejectionReason::as_str`] is what the fixture suites
-//! compare against, so a vector expecting a reason this enum lacks fails the run.
+//! four still absent are raised from paths this workspace has not reached — proposer-index
+//! range checking, block-proof verification, and wire decoding. An unmodelled reason is not
+//! silently tolerated: [`RejectionReason::as_str`] is what the fixture suites compare
+//! against, so a vector expecting a reason this enum lacks fails the run.
 //!
 //! One variant is here ahead of the code that leanSpec raises it from.
 //! [`RejectionReason::BlockSlotGapTooLarge`] guards the transition's empty-slot walk, which
@@ -54,6 +55,44 @@ pub enum RejectionReason {
     JustifiedSlotOutOfRange,
     /// A tracked justification root is the zero hash, which marks a slot with no block.
     ZeroHashJustificationRoot,
+    /// The anchor block does not commit to the anchor state it was handed with.
+    AnchorStateRootMismatch,
+    /// The block's parent has no state in the store, so the transition has nothing to start from.
+    UnknownParentBlock,
+    /// The block's slot runs past the horizon the store's own clock admits.
+    BlockTooFarInFuture,
+    /// The block repeats one attestation data entry, which the wire format forbids.
+    DuplicateAttestationData,
+    /// The vote names a source block the store has never seen.
+    UnknownSourceBlock,
+    /// The vote names a target block the store has never seen.
+    UnknownTargetBlock,
+    /// The vote names a head block the store has never seen.
+    UnknownHeadBlock,
+    /// The vote's source sits later than its target, which history forbids.
+    SourceAfterTarget,
+    /// The vote's head sits earlier than its target, which history forbids.
+    HeadOlderThanTarget,
+    /// The vote's source checkpoint slot disagrees with the slot of the block it names.
+    SourceSlotMismatch,
+    /// The vote's target checkpoint slot disagrees with the slot of the block it names.
+    TargetSlotMismatch,
+    /// The vote's head checkpoint slot disagrees with the slot of the block it names.
+    HeadSlotMismatch,
+    /// The vote's source does not lie on the target's chain of ancestors.
+    SourceNotAncestorOfTarget,
+    /// The vote's target does not lie on the head's chain of ancestors.
+    TargetNotAncestorOfHead,
+    /// The vote's head does not descend from the finalized block, so it can carry no weight.
+    HeadNotDescendantOfFinalized,
+    /// The vote's slot has not started locally yet, beyond the clock-skew margin.
+    AttestationTooFarInFuture,
+    /// The vote claims a head from a slot the vote itself precedes.
+    AttestationSlotBeforeHead,
+    /// The vote names a validator the target block's post-state registry does not hold.
+    ValidatorNotInState,
+    /// Signature verification failed.
+    InvalidSignature,
 }
 
 impl RejectionReason {
@@ -75,6 +114,25 @@ impl RejectionReason {
             Self::JustificationVotesLengthMismatch => "JUSTIFICATION_VOTES_LENGTH_MISMATCH",
             Self::JustifiedSlotOutOfRange => "JUSTIFIED_SLOT_OUT_OF_RANGE",
             Self::ZeroHashJustificationRoot => "ZERO_HASH_JUSTIFICATION_ROOT",
+            Self::AnchorStateRootMismatch => "ANCHOR_STATE_ROOT_MISMATCH",
+            Self::UnknownParentBlock => "UNKNOWN_PARENT_BLOCK",
+            Self::BlockTooFarInFuture => "BLOCK_TOO_FAR_IN_FUTURE",
+            Self::DuplicateAttestationData => "DUPLICATE_ATTESTATION_DATA",
+            Self::UnknownSourceBlock => "UNKNOWN_SOURCE_BLOCK",
+            Self::UnknownTargetBlock => "UNKNOWN_TARGET_BLOCK",
+            Self::UnknownHeadBlock => "UNKNOWN_HEAD_BLOCK",
+            Self::SourceAfterTarget => "SOURCE_AFTER_TARGET",
+            Self::HeadOlderThanTarget => "HEAD_OLDER_THAN_TARGET",
+            Self::SourceSlotMismatch => "SOURCE_SLOT_MISMATCH",
+            Self::TargetSlotMismatch => "TARGET_SLOT_MISMATCH",
+            Self::HeadSlotMismatch => "HEAD_SLOT_MISMATCH",
+            Self::SourceNotAncestorOfTarget => "SOURCE_NOT_ANCESTOR_OF_TARGET",
+            Self::TargetNotAncestorOfHead => "TARGET_NOT_ANCESTOR_OF_HEAD",
+            Self::HeadNotDescendantOfFinalized => "HEAD_NOT_DESCENDANT_OF_FINALIZED",
+            Self::AttestationTooFarInFuture => "ATTESTATION_TOO_FAR_IN_FUTURE",
+            Self::AttestationSlotBeforeHead => "ATTESTATION_SLOT_BEFORE_HEAD",
+            Self::ValidatorNotInState => "VALIDATOR_NOT_IN_STATE",
+            Self::InvalidSignature => "INVALID_SIGNATURE",
         }
     }
 }
@@ -107,6 +165,25 @@ mod tests {
         RejectionReason::JustificationVotesLengthMismatch,
         RejectionReason::JustifiedSlotOutOfRange,
         RejectionReason::ZeroHashJustificationRoot,
+        RejectionReason::AnchorStateRootMismatch,
+        RejectionReason::UnknownParentBlock,
+        RejectionReason::BlockTooFarInFuture,
+        RejectionReason::DuplicateAttestationData,
+        RejectionReason::UnknownSourceBlock,
+        RejectionReason::UnknownTargetBlock,
+        RejectionReason::UnknownHeadBlock,
+        RejectionReason::SourceAfterTarget,
+        RejectionReason::HeadOlderThanTarget,
+        RejectionReason::SourceSlotMismatch,
+        RejectionReason::TargetSlotMismatch,
+        RejectionReason::HeadSlotMismatch,
+        RejectionReason::SourceNotAncestorOfTarget,
+        RejectionReason::TargetNotAncestorOfHead,
+        RejectionReason::HeadNotDescendantOfFinalized,
+        RejectionReason::AttestationTooFarInFuture,
+        RejectionReason::AttestationSlotBeforeHead,
+        RejectionReason::ValidatorNotInState,
+        RejectionReason::InvalidSignature,
     ];
 
     #[test]

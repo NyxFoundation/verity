@@ -1,6 +1,6 @@
 [package]
 name = "verity-chain"
-description = "Consensus decisions over the container types: the state transition, justification candidacy, and the slot clock."
+description = "Consensus decisions over the container types: the state transition, fork choice, justification candidacy, and the slot clock."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

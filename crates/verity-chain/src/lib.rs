@@ -7,11 +7,13 @@
 //! every other crate depends on.
 //!
 //! Nothing here reads a clock, a socket, or a database. `slot_clock` takes the instant it
-//! should reason about as an argument, and `state_transition` takes the block, for exactly
-//! that reason. Signature verification happens before the transition is called, so this
-//! crate carries no cryptographic dependency either.
+//! should reason about as an argument, `state_transition` takes the block, and `fork_choice`
+//! takes the interval to advance to, for exactly that reason. Signature verification happens
+//! before any of them is called, so this crate carries no cryptographic dependency either —
+//! see `fork_choice` for where leanSpec's three verifying entry points are split apart.
 
 pub mod error;
+pub mod fork_choice;
 pub mod justification;
 pub mod merkle;
 pub mod proposer;
@@ -19,6 +21,12 @@ pub mod slot_clock;
 pub mod state_transition;
 
 pub use error::RejectionReason;
+pub use fork_choice::{
+    AttestationSignature, AttestationSignatureEntry, Store, accept_new_attestations,
+    attestation_target, block_weights, on_block, on_tick, prune_stale_attestation_data,
+    record_aggregated_payload, record_attestation_signature, update_head, update_safe_target,
+    validate_attestation, validate_attestation_signer,
+};
 pub use justification::{
     IMMEDIATE_JUSTIFICATION_WINDOW, advance_checkpoint, extend_justified_slots_to,
     is_justifiable_after, is_slot_justified, justified_index_after,
