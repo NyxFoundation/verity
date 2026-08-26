@@ -1,3 +1,12 @@
+---
+title: Design Philosophy
+last_updated: 2026-08-26
+tags:
+  - design-philosophy
+  - formal-verification
+  - verification-boundary
+---
+
 # Design Philosophy
 
 Verity is the Provable Consensus Client. Where other clients test for correctness, Verity proves it. The point of this document is not to list features or pick libraries — it is to state the beliefs that decide every later question. When two reasonable designs compete, the one that keeps Verity *provably* faithful to the specification wins.
@@ -20,7 +29,7 @@ These are the convictions that sit above the design principles. They rarely chan
 
 - **Minimalism in service of verifiability.** Keeping things small is not an aesthetic preference here; it is a precondition for proof. Every abstraction, generic, and indirection that Verity Consensus must account for widens the surface a proof has to cover and loosens the correspondence between the Rust implementation and its Lean 4 model. So Verity keeps the proven surface as small as the protocol allows, and adds structure only when a real protocol requirement demands it — never in anticipation of one.
 
-- **The verification boundary is a first-class part of the architecture — and it moves.** Verity is explicit, at all times, about what lives inside Verity Consensus and what lives outside it. The boundary is designed, documented, and defended — not discovered after the fact. Code crossing into Verity Consensus is held to its standard; code outside it exists to feed it clean, well-typed inputs and to carry its outputs to the network. But where the boundary *sits* is not fixed. As the proof effort matures and the upstream roadmap evolves, components cross it in both directions: serialization may be pulled inside the proven core once it is verified in Lean, and the state transition may be pushed back out toward a zkVM artifact if real-time proving demands a different language. What is invariant is not the placement but the discipline — whatever is inside is held to the proof standard, the boundary is always explicit and defended, and a component's side is decided by the guarantee it currently meets, never assumed permanent. The architecture is therefore designed so that moving a component across the boundary is a re-binding, not a redesign.
+- **The verification boundary is a first-class part of the architecture — and it moves.** Verity is explicit, at all times, about what lives inside Verity Consensus and what lives outside it. The boundary is designed, documented, and defended — not discovered after the fact. Code crossing into Verity Consensus is held to its standard; code outside it exists to feed it clean, well-typed inputs and to carry its outputs to the network. But where the boundary *sits* is not fixed. As the proof effort matures, components cross into the proven core: serialization, for instance, may be pulled inside once it is verified in Lean. What is invariant is not the placement but the discipline — whatever is inside is held to the proof standard, the boundary is always explicit and defended, and a component's side is decided by the guarantee it currently meets, never assumed permanent. The architecture is therefore designed so that moving a component across the boundary is a re-binding, not a redesign.
 
 ## Design principles
 

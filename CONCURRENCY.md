@@ -74,7 +74,7 @@ observe a half-applied mutation and has no way to mutate shared state. What is f
 its **contract**, not its field list: it must carry (a) the current head and the latest
 justified / finalized checkpoints, and (b) enough of the block tree and post-states to resolve
 a validator registry by block root. Those two clauses serve its two consumer groups — the read
-APIs [memo.md](memo.md) assigns to `verity-chain` (head, finalized checkpoint, state views)
+APIs assigned to `verity-chain` (head, finalized checkpoint, state views)
 and the verification stage's key resolution. **The `watch`-published snapshot is the entire
 read path**: there is no query channel into the chain task; RPC, metrics, and validator duties
 answer reads from the snapshot they hold. The exact field layout is an implementation

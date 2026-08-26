@@ -1,6 +1,6 @@
 ---
 title: Formal Verification
-last_updated: 2026-08-17
+last_updated: 2026-08-26
 tags:
   - formal-verification
   - lean4
@@ -139,12 +139,6 @@ either proven or it does not ship.
   ([fradamt/verified-consensus](https://github.com/fradamt/verified-consensus);
   [ssf-mc](https://github.com/freespek/ssf-mc)'s bounded model checking of full 3SF).
   Verity consumes the protocol; those efforts justify it.
-- **ZK execution proofs.** Proving that one execution of the STF was faithful is
-  complementary to proving the STF correct for all inputs.
-  [verifiable-stf](https://github.com/NyxFoundation/verifiable-stf) prototypes that
-  direction for the Lean-written STF (zkVM verification of Lean IR execution traces); the
-  full tension is recorded in the
-  [Ethlambda notes](https://github.com/NyxFoundation/verity/blob/main/memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification).
 - **Cryptographic primitive algebra**: ArkLib.
 
 ## Tracking a moving specification
