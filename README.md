@@ -29,6 +29,14 @@ Verity makes a different bet — that the implementation should be *proven* to m
 - https://leanroadmap.org/
 - https://strawmap.org/
 
+## Documentation
+
+Reader-facing documentation is published at
+[docs.verityclient.com](https://docs.verityclient.com), built from `docs/src/` — start
+with the [architecture](./docs/src/reference/architecture.md). The internal design
+records that sit underneath it — domain model, concurrency, sync, storage, key
+management, and verification tooling — are in [`docs/design/`](./docs/design/).
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for local setup — Verity uses

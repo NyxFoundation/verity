@@ -30,7 +30,7 @@ what carries fidelity at each link:
 | Transcription | [formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec): a Lean 4 model of leanSpec | **Evidenced, not proven** — every Lean file cites the Python source it mirrors; review and leanSpec-derived vectors keep the gap visible |
 | Proof | The proposition catalog: theorems about the model | **Machine-checked** by the Lean 4 kernel; `sorry`-free |
 | Artifact | Verity Consensus: the compiled, exported subset of the model (Lean C backend → static library → C ABI) | **Trusted** — the C backend and linking sit outside every proof (see [the trust base](#the-trust-base)) |
-| Runtime | The Rust shell around the artifact | **Checked, not proven** — the panic-free bar plus the [model-checking strategy](https://github.com/NyxFoundation/verity/blob/main/MODEL_CHECK.md) |
+| Runtime | The Rust shell around the artifact | **Checked, not proven** — the panic-free bar plus the [model-checking strategy](https://github.com/NyxFoundation/verity/blob/main/docs/design/model-check.md) |
 
 ## One model, two roles
 
@@ -47,7 +47,7 @@ and the distinction *is* the verification boundary:
   **design-basis guarantee**: it fixes what the Rust must uphold. The model-checking
   toolchain (Kani, proptest/bolero, Loom, Miri) is what will carry that obligation onto the
   implementation — it is phased in per the
-  [model-checking strategy](https://github.com/NyxFoundation/verity/blob/main/MODEL_CHECK.md),
+  [model-checking strategy](https://github.com/NyxFoundation/verity/blob/main/docs/design/model-check.md),
   not wired in from day one, so until a harness targets a given proposition, that
   proposition constrains the design but says nothing yet about the running Rust.
 

@@ -1,14 +1,23 @@
+---
+title: Verity Domain Model
+last_updated: 2026-08-26
+tags:
+  - domain-model
+  - leanspec
+  - types
+---
+
 # Verity Domain Model
 
 > Status: pre-implementation. This document models the consensus domain that Verity must
 > realize. The single source of truth is **leanSpec** (the Python reference implementation);
-> Verity's Rust/Lean types must match it exactly. Read alongside [Architecture](ARCHITECTURE.md).
+> Verity's Rust/Lean types must match it exactly. Read alongside [Architecture](../src/reference/architecture.md).
 >
 > Grounded in `leanEthereum/leanSpec` `main` @ `57d4339929e4bb8e87a190ea2838408cb9057d82`
 > (2026-07-04; `src/lean_spec/spec/forks/lstar/` — the lstar fork, devnet-4/5 in flight).
 > The Lean 4 formal model of this ground truth is
 > [formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec); see
-> [Formal Verification](docs/src/concepts/formal-verification.md) for how its proposition
+> [Formal Verification](../src/concepts/formal-verification.md) for how its proposition
 > catalog maps onto the zones.
 
 The domain is the **Lean Ethereum consensus protocol**: a set of validators that vote on a
@@ -25,7 +34,7 @@ straddle the verification boundary**: **Fork Choice** is proven as pure decision
 Verified Core, yet its mutable `Store` and single-writer ownership are realized in Runtime Shell. The
 **Realized in** column is a *current snapshot*, not a fixed assignment — capabilities migrate
 across the Verified Core ↔ Runtime Shell boundary as the verification frontier moves (see
-[boundary migration](ARCHITECTURE.md#boundary-migration)), and the State Transition and Serialization rows are
+[boundary migration](../src/reference/architecture.md#boundary-migration)), and the State Transition and Serialization rows are
 expected to move in opposite directions. The
 *tactical* per-zone view stays in [Mapping to verification zones](#mapping-to-verification-zones)
 below; this section is the *strategic* frame above it.
@@ -38,7 +47,7 @@ below; this section is the *strategic* frame above it.
 | **Serialization** | Supporting | SSZ encode / decode, `hash_tree_root`, merkleization | Runtime Shell | `verity-types` (+ external SSZ lib) |
 | **Validator Duties** | Supporting | proposer / attester duties, production, signing, aggregation scheduling | I/O Edge | `verity-validator` |
 | **Networking** | Generic | gossip topics, req / resp, peers | I/O Edge | `verity-p2p` |
-| **Persistence** | Generic | block / state store, aggregate-proof store with a bounded retention window, finalized anchor; Repository over RocksDB behind a backend trait ([schema](STORAGE.md)) | Runtime Shell | `verity-db` |
+| **Persistence** | Generic | block / state store, aggregate-proof store with a bounded retention window, finalized anchor; Repository over RocksDB behind a backend trait ([schema](storage.md)) | Runtime Shell | `verity-db` |
 | **Node Orchestration** | Generic | lifecycle, slot clock, backpressure | I/O Edge | `verity` (bin) |
 | **API** | Generic | HTTP / RPC surface | I/O Edge | `verity-rpc` |
 | **Telemetry** | Generic | metric contract | I/O Edge | `verity-metrics` (Conformist → leanMetrics) |
@@ -79,7 +88,7 @@ satisfies a capability contract whose implementation may be native-Rust (Runtime
 Verified Core. Persistence is factored out as a **Repository** (`verity-db`) that `verity-chain` reads and
 writes through, keeping storage out of the aggregate coordinator. This matches the inward dependency
 invariant (calls flow toward higher assurance; Verified Core never calls outward) in
-[Architecture](ARCHITECTURE.md).
+[Architecture](../src/reference/architecture.md).
 
 ```mermaid
 flowchart LR
@@ -316,7 +325,7 @@ stateDiagram-v2
 
 ## Mapping to verification zones
 
-This domain model lines up with the [Architecture](ARCHITECTURE.md) zones:
+This domain model lines up with the [Architecture](../src/reference/architecture.md) zones:
 
 - **Verified Core (Verity Consensus, Lean):** the `State` aggregate and the state-transition service —
   pure, total functions that the proofs defend.

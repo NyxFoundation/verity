@@ -53,13 +53,13 @@ repos:
       - id: typos
 
   # --- Markdown lint (commit stage) — reads .markdownlint.jsonc ---
-  # Scoped to mdBook source, excluding SUMMARY.md (multiple H1 part-titles are by design),
-  # matching the previous Docs workflow step.
+  # Scoped to mdBook source and the design records, excluding SUMMARY.md (multiple H1
+  # part-titles are by design).
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: v0.18.1
     hooks:
       - id: markdownlint-cli2
-        files: ^docs/src/.*\.md$
+        files: ^docs/(src|design)/.*\.md$
         exclude: ^docs/src/SUMMARY\.md$
 
   # --- Rust hooks (local; honour rust-toolchain.toml) ---

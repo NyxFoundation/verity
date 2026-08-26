@@ -1,6 +1,6 @@
 //! Why the spec rejects an input.
 //!
-//! This is the `ProcessingError` of `ARCHITECTURE.md`'s capability contracts — a plain enum,
+//! This is the `ProcessingError` of `docs/src/reference/architecture.md`'s capability contracts — a plain enum,
 //! no structured payload, because rejection reasons are a small closed set and nothing but
 //! the discriminant has to survive a future trip across the C ABI. It is named after the
 //! leanSpec enum it mirrors so the two stay greppable against each other.

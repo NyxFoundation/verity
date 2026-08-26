@@ -9,10 +9,9 @@ tags:
 ---
 
 <!--
-  This page mirrors the repo-root ARCHITECTURE.md, which is canonical.
-  When editing, change the root file first and re-sync this page.
-  Only the links differ: book-internal targets are relative, repo-internal
-  documents not published in the book (DOMAIN_MODEL.md, memo.md) point to GitHub.
+  This page is canonical for the architecture. The design documents it links to
+  live in docs/design/ and are not published in the book, so they are referenced
+  by GitHub URL; book-internal targets stay relative.
 -->
 
 # Verity Architecture
@@ -238,7 +237,7 @@ flowchart TB
 Sizes are measured from leanSpec's `fixtures-prod-scheme.tar.gz` release asset; at
 `SECONDS_PER_SLOT = 4` a day is 21,600 slots. The table layout that follows from these decisions —
 keys, pruning rules, and the snapshot/diff scheme for state — is in
-[Storage Schema](https://github.com/NyxFoundation/verity/blob/main/STORAGE.md).
+[Storage Schema](https://github.com/NyxFoundation/verity/blob/main/docs/design/storage.md).
 
 | Workload | Value size | Volume | Lifetime |
 |---|---|---|---|
@@ -316,7 +315,7 @@ fork-choice store, `AnchorWF` (discharged by `Reachable`) for the state, and
 `ValidatorRegistry.WellFormed` for validator keys. Maintaining those predicates across every mutation
 is Runtime Shell's half of the contract: Verified Core's theorems speak only about inputs that satisfy
 them, so the single writer must preserve them, and the boundary harnesses target exactly them (see the
-[Model-Checking Strategy](https://github.com/NyxFoundation/verity/blob/main/MODEL_CHECK.md)).
+[Model-Checking Strategy](https://github.com/NyxFoundation/verity/blob/main/docs/design/model-check.md)).
 
 The contracts must be defined **inner to both their consumers and their implementations** — otherwise
 `verity-consensus-sys` implementing a contract defined in `verity-chain` would force a `sys → chain`
@@ -350,7 +349,7 @@ Two obligations follow:
 - **Verification.** The promote/lower code is boundary code in the Runtime Shell and is the
   primary target of the boundary harnesses (round-trip properties, no-panic-on-any-input,
   range enforcement — see the
-  [Model-Checking Strategy](https://github.com/NyxFoundation/verity/blob/main/MODEL_CHECK.md)).
+  [Model-Checking Strategy](https://github.com/NyxFoundation/verity/blob/main/docs/design/model-check.md)).
   Cross-language behavioral equivalence is additionally evidenced by shared leanSpec vectors
   run on both sides.
 - **Measurement.** Adopting a Lean implementation behind a contract is gated on measured
@@ -403,7 +402,7 @@ A migration must **not** change:
 - consumer code (`verity-chain`, `verity-validator`) — it depends on the contract, not the placement;
 - consensus container **shapes** (the `verity-types` shared model) — shape is separable from the
   serialization *behavior* that may move (see the
-  [Domain Model](https://github.com/NyxFoundation/verity/blob/main/DOMAIN_MODEL.md));
+  [Domain Model](https://github.com/NyxFoundation/verity/blob/main/docs/design/domain-model.md));
 - the zone **definitions** (the guarantee levels);
 - the inward invariant (calls still flow toward higher assurance; Verified Core still never calls outward).
 

@@ -1,3 +1,12 @@
+---
+title: Verification Tooling Adoption Strategy
+last_updated: 2026-08-26
+tags:
+  - verification
+  - model-checking
+  - tooling
+---
+
 # Verification Tooling Adoption Strategy
 
 > Internal planning memo — not part of the published mdBook. Strategy level only:
@@ -18,7 +27,7 @@
 Verity's verification path is a **Lean 4 deductive proof of the Verified Core**: the
 consensus logic is written as pure, total Lean functions and proven correct, then
 compiled via Lean's C backend into a static library and consumed by the Rust runtime over
-a C ABI (see `ARCHITECTURE.md`). That deductive proof is the ceiling for the *functional
+a C ABI (see `architecture.md`). That deductive proof is the ceiling for the *functional
 correctness* of the proven core, and nothing here displaces it. Model checking is adopted
 as a **complement**, never a replacement — it earns its place in exactly three situations
 the deductive proof leaves open:
@@ -64,7 +73,7 @@ samples a space, 5 samples inputs, 6 watches one run. Each zone gets the stronge
 its nature allows — a pure sequential core can reach row 1; a concurrent I/O subsystem
 tops out at rows 3–4.
 
-The horizontal axis is the **zone** (per `ARCHITECTURE.md`): Verified Core, the
+The horizontal axis is the **zone** (per `architecture.md`): Verified Core, the
 boundary code that services the moving seam (physically in the Runtime Shell), the rest
 of the Runtime Shell, and the I/O Edge. Crossing the two axes gives the whole plan on
 one grid — a cell is filled only where that technique is both *applicable* and *the
@@ -90,9 +99,9 @@ guarantee there is a deliberate, acknowledged floor — see Honest limits.
 ## The zones, and what checks each
 
 The architecture has exactly **three zones**, defined by guarantee level in
-`ARCHITECTURE.md`: Verified Core, Runtime Shell, and I/O Edge. The **verification
+`architecture.md`: Verified Core, Runtime Shell, and I/O Edge. The **verification
 boundary** is the moving seam between Verified Core and Runtime Shell — a line, not a
-zone of its own (see `docs/src/reference/data-representation.md`). The Rust that
+zone of its own (see `../src/reference/data-representation.md`). The Rust that
 services that seam — promote ↔ lower conversions, range and well-formedness checks,
 SSZ, the FFI wrapper — is **boundary code**, and it lives in the Runtime Shell. Each
 zone is owned by a different primary technique; model checking plays a specific,
@@ -107,7 +116,7 @@ bounded role in each.
 ## Tool-to-zone mapping
 
 Each tool is adopted for a specific zone and tied to a stated belief from the
-[design philosophy](../docs/src/design-philosophy.md). The mapping — not the tool list —
+[design philosophy](../src/design-philosophy.md). The mapping — not the tool list —
 is the decision.
 
 - **Kani** (AWS; bounded model checker, CBMC backend). Verifies absence of panics,
@@ -158,7 +167,7 @@ The properties the tools above check are not invented ad hoc. The
 [formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec) proposition catalog
 (`docs/lean4-proof-propositions.md`) proves spec-level propositions about the Lean model
 across eight domains, and only part of that model is compiled into the shipped artifact
-(see `docs/src/concepts/formal-verification.md`). The rest — the **proof-only** domains,
+(see `../src/concepts/formal-verification.md`). The rest — the **proof-only** domains,
 whose production implementations are Rust — hand each proposition to this strategy as a
 named implementation obligation:
 

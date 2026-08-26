@@ -1,9 +1,18 @@
+---
+title: Sync Pipeline
+last_updated: 2026-08-26
+tags:
+  - sync
+  - networking
+  - p2p
+---
+
 # Sync Pipeline
 
 > Status: pre-implementation. Decisions ratified 2026-08-16. This document settles how Verity
 > joins the network and catches up: the sync mode lifecycle, the block-fetch pipeline, and
-> peer management. It plugs into the runtime model of [CONCURRENCY.md](CONCURRENCY.md) and
-> pays two debts recorded there and in [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md): the mechanism
+> peer management. It plugs into the runtime model of [concurrency.md](concurrency.md) and
+> pays two debts recorded there and in [key-management.md](key-management.md): the mechanism
 > by which "the chain notices the missing ancestry", and the peer-scoring policy both
 > documents deferred to this design.
 
@@ -23,7 +32,7 @@ Read at leanSpec `main` = `cce7955`.
 - The suite's **one MUST**: a responder serves `BlocksByRange` over the sliding
   `MIN_SLOTS_FOR_BLOCK_REQUESTS = 3600`-slot window; below it, `RESOURCE_UNAVAILABLE`.
   Verity's responder side — retention, `served_from_slot`, refusal below the window — is
-  already fixed in [STORAGE.md](STORAGE.md#retention-and-range-sync) and is not restated
+  already fixed in [storage.md](storage.md#retention-and-range-sync) and is not restated
   here.
 - **Checkpoint sync is HTTP, not libp2p**: a Beacon-API-shaped GET of
   `/lean/v0/states/finalized` and `/lean/v0/blocks/finalized` returning raw SSZ. The spec
@@ -73,15 +82,15 @@ Verity adopts the reference node's three-state machine, with the surveyed refine
   ethlambda/qlean-mini once-per-connection design is the named counterexample.
 - **Duties require `SYNCED`.** The sync service publishes its state over a small `watch`
   channel; the validator duty loop reads it as its **third serving gate**, joining the two
-  from [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md) (first `ChainView` observed, keys prepared) —
-  an application of CONCURRENCY.md's necessary-not-sufficient rule. A validator that
+  from [key-management.md](key-management.md) (first `ChainView` observed, keys prepared) —
+  an application of concurrency.md's necessary-not-sufficient rule. A validator that
   attests while behind broadcasts votes for a stale head and burns one-time signatures
-  (KEY_MANAGEMENT.md) for nothing.
+  (key-management.md) for nothing.
 - **The entry decision tree, exhaustively.** Before the machine starts, the anchor is chosen
   by exactly one of three mutually exclusive paths:
   1. `--checkpoint-sync-url` **given** → checkpoint entry (below). The database and genesis
      are *not* fallbacks on this path.
-  2. Flag absent, **populated database** → resume from the database, subject to STORAGE.md's
+  2. Flag absent, **populated database** → resume from the database, subject to storage.md's
      identity validation (which already fails closed on mismatch).
   3. Flag absent, **empty database** → start from genesis.
 - **Checkpoint entry.** Fetch the finalized state and block over HTTP and verify at the
@@ -115,7 +124,7 @@ flowchart LR
 - **The sync service is its own I/O Edge task** (the reference's `SyncService` placement).
   It owns the state machine of Decision 1, aggregates peer Status, and orchestrates
   requests. It is a peer of the networking and validator tasks in the
-  [CONCURRENCY.md](CONCURRENCY.md) lifecycle: spawned by the binary, serving after the
+  [concurrency.md](concurrency.md) lifecycle: spawned by the binary, serving after the
   first `ChainView`.
 - **Gap noticing is a signal from the verification stage.** When the stage parks an item
   whose parent (or attestation target) post-state is not in view — and when it evicts one —
@@ -123,7 +132,7 @@ flowchart LR
   The slot is the **waiting child's**, not the awaited block's — the awaited block is known
   only by root, and the child's slot is what upper-bounds the gap's head-side edge for the
   by-root/by-range split below. This is
-  the concrete mechanism behind CONCURRENCY.md's "range sync closes the gap when the chain
+  the concrete mechanism behind concurrency.md's "range sync closes the gap when the chain
   notices the missing ancestry": the noticing happens where unknown parents are first
   discovered, not in the chain task.
 - **Small gaps go by root, large gaps by range** (zeam's split). A gap of at most a few
@@ -135,14 +144,14 @@ flowchart LR
   non-overlapping windows are complexity the devnet scale does not justify — revisit on
   measurement). **Pagination terminates on the same condition the state machine watches**:
   the sync service subscribes to the `watch`-published `Arc<ChainView>` like every other
-  consumer (CONCURRENCY.md — the snapshot is the read path; there is no query channel), and
+  consumer (concurrency.md — the snapshot is the read path; there is no query channel), and
   after each completed batch it re-checks `ChainView` head against the network finalized
   slot. Behind → issue the next window; caught up → stop, and the Decision 1 machine
   promotes to SYNCED on the same inputs. ream's everything-by-root design is the
   counterexample for deep sync: a one-day gap is ~21,600 sequential round-trips.
 - **Fetched blocks take the same path as gossip: through the verification stage into
   channel ③.** There is no side door into the chain task; the `Verified*` type invariant
-  of CONCURRENCY.md holds for the sync path without exceptions.
+  of concurrency.md holds for the sync path without exceptions.
 - **Structural response validation happens in the sync service** before handing blocks to
   the stage: slots within the requested window, monotonic order, chunk count within the
   request. Violations are protocol-level failures and feed the peer score (Decision 3);
@@ -196,7 +205,7 @@ precedent:
 
 - **Light-client protocols** — no counterpart exists in leanSpec.
 - **State snap-sync** — unnecessary: checkpoint sync carries the anchor state over HTTP,
-  and all later states are reconstructible from [STORAGE.md](STORAGE.md)'s snapshots and
+  and all later states are reconstructible from [storage.md](storage.md)'s snapshots and
   diffs.
 - **DAS-style data-availability sync** — future-fork machinery with no current spec.
 - **Exact thresholds** (by-root/by-range split, Status refresh cadence, walk caps, gap
@@ -207,10 +216,10 @@ precedent:
 
 - **The state machine is a pure function over Status inputs** — transitions
   (`IDLE→SYNCING→SYNCED`, demotion, no shortcut) are property-tested directly; the duty
-  gate adds a third case to the readiness-join tests from KEY_MANAGEMENT.md.
+  gate adds a third case to the readiness-join tests from key-management.md.
 - **Kani / bolero:** structural response validation (no-panic on arbitrary response bytes,
   out-of-window and non-monotonic chunks always rejected) and checkpoint-state verification
   (every listed check individually falsifiable — qlean-mini's dead error variant is the
   cautionary tale).
 - **Loom:** nothing new — the sync service is one task whose shared edges are bounded
-  channels, the same interleaving surface CONCURRENCY.md already targets.
+  channels, the same interleaving surface concurrency.md already targets.

@@ -18,6 +18,6 @@ ser = "ser"
 symetric = "symetric"
 
 [default.extend-identifiers]
-# Abbreviated git commit SHA of leanEthereum/leanSig cited in KEY_MANAGEMENT.md; the
+# Abbreviated git commit SHA of leanEthereum/leanSig cited in docs/design/key-management.md; the
 # trailing "ba" is not a typo of "by"/"be".
 c08a3ba = "c08a3ba"

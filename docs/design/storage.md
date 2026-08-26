@@ -1,7 +1,16 @@
+---
+title: Storage Schema
+last_updated: 2026-08-26
+tags:
+  - storage
+  - rocksdb
+  - schema
+---
+
 # Storage Schema
 
 What `verity-db` persists, how it is keyed, which transitions commit together, and which short-lived
-aggregation inputs remain in memory. [Architecture](ARCHITECTURE.md#storage-engine-and-retention)
+aggregation inputs remain in memory. [Architecture](../src/reference/architecture.md#storage-engine-and-retention)
 settles the engine — RocksDB behind a backend trait — and this document fixes the repository layout
 underneath it.
 
@@ -54,7 +63,7 @@ corruption, not an absent value.
 | `fork_choice_blocks` | `slot_be ‖ block_root` | `parent_root` | Processed fork-choice tree; retained |
 | `known_votes` | `validator_index_be` | `SSZ(AttestationData)` | Latest counted vote per validator |
 | `pending_votes` | `validator_index_be` | `SSZ(AttestationData)` | Latest not-yet-counted vote per validator |
-| `signing_watermarks` | `validator_index_be ‖ role` | `SSZ(uint64)` last-signed slot | Local XMSS no-reuse state; retained; see [Key Management](KEY_MANAGEMENT.md) |
+| `signing_watermarks` | `validator_index_be ‖ role` | `SSZ(uint64)` last-signed slot | Local XMSS no-reuse state; retained; see [Key Management](key-management.md) |
 | `metadata` | fixed ASCII key | typed scalar or SSZ value | Database identity and current view pointers |
 
 `role` is one byte: `0x00` attestation, `0x01` proposal. `signing_watermarks` rows exist only
@@ -135,7 +144,7 @@ automatically: an operator must select a new directory and explicitly checkpoint
 `verity-chain` — initially the chain module inside the single `verity-consensus` crate — owns the
 only write capability, with **one documented exception**: `signing_watermarks` is written solely by
 the validator signing path, because its persist-before-sign ordering must stay synchronous inside
-that path (see [Key Management](KEY_MANAGEMENT.md#decision-1--signing-watermark-persist-before-sign)).
+that path (see [Key Management](key-management.md#decision-1--signing-watermark-persist-before-sign)).
 The discipline is one writer per column family, not one writer per database. Watermark writes always
 fsync. P2P, RPC, validator duties, and maintenance otherwise submit requests to the chain writer
 rather than writing the backend directly. Read-only snapshot views may run concurrently.

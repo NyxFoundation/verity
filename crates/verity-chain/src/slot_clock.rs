@@ -3,7 +3,7 @@
 //! The clock holds no time source. Every accessor takes the instant it should reason about,
 //! in milliseconds since the Unix epoch, so the arithmetic stays pure and testable against
 //! the spec's vectors. Reading the actual clock belongs to the orchestrator that drives the
-//! node — see `ARCHITECTURE.md`, "I/O Edge".
+//! node — see `docs/src/reference/architecture.md`, "I/O Edge".
 //!
 //! Transcribed from leanSpec `src/lean_spec/node/chain/clock.py`, read at commit
 //! `0588c2d215a955a516378677a92db2a5666802f3`.

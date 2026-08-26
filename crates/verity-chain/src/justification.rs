@@ -3,7 +3,7 @@
 //! leanSpec defines these as methods on `Slot` and `Checkpoint`. Verity keeps them off the
 //! container types on purpose: they are the leading candidates to move into the Verified
 //! Core, and binding them to `verity-types` would make every crate that merely uses a slot
-//! link the FFI boundary once that move happens. See `ARCHITECTURE.md`, "Capability
+//! link the FFI boundary once that move happens. See `docs/src/reference/architecture.md`, "Capability
 //! contracts".
 //!
 //! Transcribed from leanSpec `src/lean_spec/spec/forks/lstar/slot.py`, read at commit

@@ -35,7 +35,7 @@ Owner-ratified ground rules for the first Rust code. Do not re-open these withou
 - **Toolchain**: Rust edition 2024, resolver 3, latest stable pinned via `rust-toolchain.toml` (external floor: leanSig requires ≥1.87; no nightly needed).
 - **License**: MIT (Nyx Foundation copyright).
 - **Devnet**: always track the latest devnet generation; never hardcode a generation in docs or code comments.
-- **Verification harness**: NOT wired in from day one (no bolero/proptest in the initial scaffold or CI); introduced later per `MODEL_CHECK.md`'s tool-to-zone mapping.
+- **Verification harness**: NOT wired in from day one (no bolero/proptest in the initial scaffold or CI); introduced later per `docs/design/model-check.md`'s tool-to-zone mapping.
 - Known caveat: leanSig internally depends on `ethereum_ssz`, so two SSZ implementations coexist transitively — harmless, but mind type conversions at the signature boundary.
 
 ## Documentation site (`docs/`)
