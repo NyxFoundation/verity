@@ -47,14 +47,14 @@ pub fn process_attestations(
     state: &State,
     attestations: &[AggregatedAttestation],
 ) -> Result<State, RejectionReason> {
-    // Each distinct data builds a per-root vote table sized to the validator set, so the
-    // distinct count is what drives work. Aggregates split over one target share their data
-    // and count once.
-    let distinct: HashSet<&AttestationData> = attestations
+    // Each unique AttestationData builds a per-root vote table sized to the validator set,
+    // so the unique count is what drives work. Aggregates split over one target share their
+    // data and count once.
+    let unique_attestation_data: HashSet<&AttestationData> = attestations
         .iter()
         .map(|attestation| &attestation.data)
         .collect();
-    if distinct.len() > MAX_ATTESTATIONS_DATA as usize {
+    if unique_attestation_data.len() > MAX_ATTESTATIONS_DATA as usize {
         return Err(RejectionReason::TooManyAttestationData);
     }
 
