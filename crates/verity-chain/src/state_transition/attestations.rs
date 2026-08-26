@@ -1,7 +1,7 @@
 //! Applying a block's attestations, and the justification and finalization that follow.
 //!
 //! This is the 3SF-mini accounting. The state stores votes as one flat bitlist segmented by
-//! tracked root; this module unpacks that layout into a per-root tally, applies the block's
+//! tracked root; this module unpacks that layout into per-root vote flags, applies the block's
 //! votes, and packs it back.
 //!
 //! ```text
@@ -25,7 +25,9 @@ use verity_types::{
 };
 
 use crate::error::RejectionReason;
-use crate::justification::{is_justifiable_after, is_slot_justified, justified_index_after};
+use crate::justification::{
+    advance_checkpoint, is_justifiable_after, is_slot_justified, justified_index_after,
+};
 
 /// Applies `attestations` to `state`, moving the justified and finalized checkpoints.
 ///
@@ -45,8 +47,9 @@ pub fn process_attestations(
     state: &State,
     attestations: &[AggregatedAttestation],
 ) -> Result<State, RejectionReason> {
-    // Each distinct data builds a tally sized to the validator set, so the distinct count is
-    // what drives work. Aggregates split over one target share their data and count once.
+    // Each distinct data builds a per-root vote table sized to the validator set, so the
+    // distinct count is what drives work. Aggregates split over one target share their data
+    // and count once.
     let distinct: HashSet<&AttestationData> = attestations
         .iter()
         .map(|attestation| &attestation.data)
@@ -60,19 +63,19 @@ pub fn process_attestations(
         return Err(RejectionReason::EmptyValidatorRegistry);
     }
 
-    let mut tally = Tally::unpack(state, validator_count)?;
+    let mut justification_state = JustificationState::unpack(state, validator_count)?;
     let root_to_slot = index_chain_by_slot(state);
 
     for attestation in attestations {
-        tally.apply(attestation, state, &root_to_slot, validator_count)?;
+        justification_state.apply(attestation, state, &root_to_slot, validator_count)?;
     }
 
-    tally.repack(state, validator_count)
+    justification_state.repack(state, validator_count)
 }
 
 /// Every unfinalized root in the chain view, mapped to the slot it sits at.
 ///
-/// Used only to prune tallies once finalization moves; a root absent from it is off-chain.
+/// Used only to prune tracked roots once finalization moves; a root absent from it is off-chain.
 fn index_chain_by_slot(state: &State) -> HashMap<Bytes32, Slot> {
     let start = state.latest_finalized.slot.0.saturating_add(1) as usize;
     state
@@ -84,8 +87,9 @@ fn index_chain_by_slot(state: &State) -> HashMap<Bytes32, Slot> {
         .collect()
 }
 
-/// The accounting carried across a block's votes, applied to the state in one step at the end.
-struct Tally {
+/// The justification and finalization accounting carried across a block's votes,
+/// applied to the state in one step at the end.
+struct JustificationState {
     /// Per-root vote flags. Ordered by root, which is what makes the repack canonical.
     justifications: BTreeMap<Bytes32, Vec<bool>>,
     justified_slots: JustifiedSlots,
@@ -93,8 +97,8 @@ struct Tally {
     latest_finalized: Checkpoint,
 }
 
-impl Tally {
-    /// Recovers the per-root tallies from the state's flat segmented layout.
+impl JustificationState {
+    /// Recovers the per-root vote flags from the state's flat segmented layout.
     fn unpack(state: &State, validator_count: usize) -> Result<Self, RejectionReason> {
         let expected = state.justifications_roots.len() * validator_count;
         if state.justifications_validators.len() != expected {
@@ -133,8 +137,8 @@ impl Tally {
         }
 
         let voters = voting_validator_indices(&attestation.aggregation_bits)?;
-        // A bit outside the registry has no flag in the tally. This guards the unsigned path,
-        // where no signature stage catches it first.
+        // A bit outside the registry has no flag in the per-root vote table. This guards the
+        // unsigned path, where no signature stage catches it first.
         if voters.iter().any(|index| *index >= validator_count) {
             return Err(RejectionReason::ValidatorIndexOutOfRange);
         }
@@ -157,7 +161,7 @@ impl Tally {
         Ok(())
     }
 
-    /// Whether a vote survives every filter and should be tallied.
+    /// Whether a vote survives every filter and should be counted.
     ///
     /// The order is leanSpec's: the two justification lookups can reject a vote outright, so
     /// they must run before the cheaper chain and distance checks.
@@ -195,9 +199,7 @@ impl Tally {
 
         // Targets within one block can resolve out of order, so an earlier target seen after
         // a later one must not drag the checkpoint back.
-        if target.slot.0 > self.latest_justified.slot.0 {
-            self.latest_justified = target;
-        }
+        self.latest_justified = advance_checkpoint(self.latest_justified, target);
 
         // In range: `apply` already dropped every target at or behind the boundary, and the
         // header stage grew the bitfield to cover the block's slot.
@@ -239,7 +241,7 @@ impl Tally {
             self.justified_slots = from_bits(bits)?;
 
             // A root absent from the chain view is off-chain and can never justify. Drop such
-            // a tally rather than tracking or rejecting it.
+            // a per-root vote table rather than tracking or rejecting it.
             self.justifications.retain(|root, _| {
                 root_to_slot
                     .get(root)
@@ -249,7 +251,7 @@ impl Tally {
         Ok(())
     }
 
-    /// Flattens the tallies back into the state's segmented layout, roots first.
+    /// Flattens the per-root vote flags back into the state's segmented layout, roots first.
     fn repack(self, state: &State, validator_count: usize) -> Result<State, RejectionReason> {
         let mut roots = JustificationRoots::default();
         let mut votes: Vec<bool> = Vec::with_capacity(self.justifications.len() * validator_count);
@@ -426,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn should_reject_an_aggregate_that_names_nobody_before_it_reaches_the_tally() {
+    fn should_reject_an_aggregate_that_names_nobody_before_it_reaches_the_vote_table() {
         assert_eq!(
             super::voting_validator_indices(
                 &AggregationBits::try_from(vec![false, false]).unwrap()
