@@ -30,7 +30,7 @@ pub fn process_block_header(state: &State, block: &Block) -> Result<State, Rejec
     let parent_root = hash_tree_root(&parent_header);
 
     validate(state, block, parent_root)?;
-    let (latest_justified, latest_finalized) = anchor_checkpoints(state, parent_root);
+    let (latest_justified, latest_finalized) = derive_header_checkpoints(state, parent_root);
     let historical_block_hashes = record_parent_and_skipped_slots(state, block, parent_root)?;
 
     // Flags are stored relative to the finalized boundary. The current slot is not
@@ -84,11 +84,11 @@ fn validate(
     Ok(())
 }
 
-/// The justified and finalized checkpoints the header stage leaves in place.
+/// Derives the justified and finalized checkpoints for the post-header state.
 ///
 /// Genesis is the chain's anchor, justified and finalized by definition, so the first block
 /// forces its parent to both. Every later block keeps what only attestations move.
-fn anchor_checkpoints(
+fn derive_header_checkpoints(
     state: &State,
     parent_root: verity_types::Bytes32,
 ) -> (Checkpoint, Checkpoint) {
