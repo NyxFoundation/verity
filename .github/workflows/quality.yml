@@ -35,10 +35,25 @@ jobs:
         env:
           SKIP: fmt,clippy
 
+  internal-links:
+    # Offline link check on every PR: relative and anchor targets only, so it is
+    # deterministic and cannot be blocked by an external host. Lives here rather than
+    # in docs.yml because that workflow is path-filtered to the book's own inputs,
+    # and docs/design/ is outside them. Skip the scheduled run — that one is online.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check internal links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: "--offline --no-progress docs/src docs/design"
+          fail: true
+
   link-check:
     # Full external link check on a schedule (and on demand) — kept off PRs to avoid
-    # flaky external rate-limits blocking merges. PR-time link checking is the offline
-    # check in the Docs workflow.
+    # flaky external rate-limits blocking merges. PR-time link checking is the
+    # `internal-links` job above.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -46,7 +61,7 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: "--no-progress docs/src README.md ARCHITECTURE.md DOMAIN_MODEL.md STORAGE.md"
+          args: "--no-progress docs/src docs/design README.md CONTRIBUTING.md"
           fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

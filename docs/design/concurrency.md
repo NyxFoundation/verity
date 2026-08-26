@@ -1,13 +1,22 @@
+---
+title: Verity Concurrency Model
+last_updated: 2026-08-26
+tags:
+  - concurrency
+  - runtime
+  - model-checking
+---
+
 # Verity Concurrency Model
 
 > Status: pre-implementation. Decisions ratified 2026-08-15. This document settles the question
-> [ARCHITECTURE.md](ARCHITECTURE.md) left open at the I/O Edge — which concurrency primitive
+> [architecture.md](../src/reference/architecture.md) left open at the I/O Edge — which concurrency primitive
 > enforces the single-writer discipline, where signature and proof verification execute, and how
 > inbound work reaches the consensus state — and records the evidence the decisions rest on.
 
 The selection criterion throughout is **verifiability, not throughput**. The deductive proof
 stops at the FFI seam and structurally cannot reach concurrency (see
-[MODEL_CHECK.md](MODEL_CHECK.md)); the strongest tool available in this zone is exhaustive
+[model-check.md](model-check.md)); the strongest tool available in this zone is exhaustive
 concurrency model checking (Loom), and Loom is only tractable on small interleaving spaces. Every
 choice below either eliminates a concurrency property outright (by making it a type-system fact)
 or confines the surviving interleavings to channel endpoints, where Loom can reach them.
@@ -74,7 +83,7 @@ observe a half-applied mutation and has no way to mutate shared state. What is f
 its **contract**, not its field list: it must carry (a) the current head and the latest
 justified / finalized checkpoints, and (b) enough of the block tree and post-states to resolve
 a validator registry by block root. Those two clauses serve its two consumer groups — the read
-APIs [memo.md](memo.md) assigns to `verity-chain` (head, finalized checkpoint, state views)
+APIs assigned to `verity-chain` (head, finalized checkpoint, state views)
 and the verification stage's key resolution. **The `watch`-published snapshot is the entire
 read path**: there is no query channel into the chain task; RPC, metrics, and validator duties
 answer reads from the snapshot they hold. The exact field layout is an implementation
@@ -82,7 +91,7 @@ decision. Three consequences are fixed alongside the contract:
 
 - **Retention bound.** The snapshot covers the *unfinalized* block tree plus the finalized
   anchor — exactly what fork choice operates on, and the only states verification's registry
-  resolution can name. Anything older is `verity-db`'s job ([STORAGE.md](STORAGE.md) state
+  resolution can name. Anything older is `verity-db`'s job ([storage.md](storage.md) state
   snapshots + diffs): an RPC query for a historical state is a database read, not a snapshot
   miss.
 - **Publication cadence.** At most once per chain-task loop iteration, after an event's import
@@ -126,7 +135,7 @@ flowchart LR
 ```
 
 - **Placement.** Between the network task and the chain task, as its own stage — the
-  `Codec + Crypto` participant in ARCHITECTURE.md's inbound-block sequence, made an execution
+  `Codec + Crypto` participant in architecture.md's inbound-block sequence, made an execution
   unit. The network task performs topic validation and deduplication only: no decode, no
   crypto, so network liveness (mesh maintenance, keep-alives) never waits on a proof. It hands
   raw bytes to the stage with `try_send` on the stage's bounded input channel — the single
@@ -139,9 +148,9 @@ flowchart LR
   `VerifiedBlock` / `VerifiedAttestation` values whose constructors are private to the
   verification stage. An unverified value cannot reach the chain task, and therefore cannot
   reach the FFI: the spec's verify-before-STF ordering holds by construction, and the boundary
-  harnesses (Kani / bolero, per MODEL_CHECK.md) cut exactly at these constructors. A
+  harnesses (Kani / bolero, per model-check.md) cut exactly at these constructors. A
   `Verified*` value wraps the decoded, typed container together with the roots computed during
-  verification — ARCHITECTURE.md's "verified, typed block (+ roots)" — so the chain task
+  verification — architecture.md's "verified, typed block (+ roots)" — so the chain task
   re-computes nothing; the exact fields are an implementation decision.
 - **State supply.** The stage resolves validator registries (parent / target post-state) from
   the `watch`-published `Arc<ChainView>` snapshot — the read side of Decision 1 is the supply
@@ -156,7 +165,7 @@ flowchart LR
   *recoverable* failure — parent post-state not yet in view. Every definitive failure —
   malformed SSZ, a root mismatch, an invalid signature or proof — drops the item on the spot,
   counted in metrics (never peer-punished — see
-  [SYNC.md](SYNC.md#decision-3--peer-management)). Overflow evicts count-bounded, in FIFO
+  [sync.md](sync.md#decision-3--peer-management)). Overflow evicts count-bounded, in FIFO
   order of arrival into the
   buffer, and eviction is silent: nothing re-requests an evicted item. An evicted block is
   peer-recoverable — range sync closes the gap when the chain notices the missing ancestry —
@@ -225,7 +234,7 @@ verification stage.
   the network edge — never a value that verification effort was already spent on. Everything
   dropped there is peer-recoverable by construction: `BlocksByRange` responders MUST serve
   3,600 slots (leanSpec floor) and Verity itself retains proofs for 21,600 slots
-  ([STORAGE.md](STORAGE.md)). Range sync is pull-based, so it cannot flood ③ beyond what the
+  ([storage.md](storage.md)). Range sync is pull-based, so it cannot flood ③ beyond what the
   node itself requested.
 - **Biased ordering cannot starve** ① or ② in practice — their rates are bounded by the slot
   clock, not the network — and the bias is the desired property stated directly: time and the
@@ -234,19 +243,19 @@ verification stage.
 ## Lifecycle
 
 Startup runs the dependency arrows backwards. The `verity` binary — the owner of all wiring —
-opens the database, validates its identity values ([STORAGE.md](STORAGE.md)), and hands the
+opens the database, validates its identity values ([storage.md](storage.md)), and hands the
 chain task its handle; the chain task loads the finalized anchor and reconstructs `Store` and
 `State` (initial values, `Store.time` included, per leanSpec's store initialization), then
 publishes the **first `ChainView`** — that publication is the readiness signal every other
 component waits on; only then do the verification stage, network, validator-duty, and RPC
 tasks **begin serving**. What the first `ChainView` gates is serving, not construction:
 initialization that needs no consensus state — validator key preparation above all
-([KEY_MANAGEMENT.md](KEY_MANAGEMENT.md)) — is spawned by the binary at process start and runs
+([key-management.md](key-management.md)) — is spawned by the binary at process start and runs
 in parallel with this sequence. The first `ChainView` is a *necessary* serving gate for every
 component, not always a *sufficient* one: a component may add its own readiness conditions,
 and the validator-duty loop does — it serves only once its keys are also prepared
-([KEY_MANAGEMENT.md](KEY_MANAGEMENT.md)) and the node is `SYNCED`
-([SYNC.md](SYNC.md)) — a join of three gates. Shutdown inverts it, and **channel closure is the only
+([key-management.md](key-management.md)) and the node is `SYNCED`
+([sync.md](sync.md)) — a join of three gates. Shutdown inverts it, and **channel closure is the only
 signal** — there is no shutdown broadcast. The binary stops the producers at the edge; each
 stopped producer drops its sender; every downstream task exits when its inputs return `None`
 (a closed-and-empty channel), with no side-channel bookkeeping. Concretely: the network task
@@ -273,12 +282,12 @@ Listed so they are not mistaken for omissions:
   above, their struct definitions are not — and internal data structures such as the pending
   buffer's index.
 - **Peer scoring** in response to invalid (verification-failing) input — settled in
-  [SYNC.md](SYNC.md#decision-3--peer-management): counted in metrics, never punished, because
+  [sync.md](sync.md#decision-3--peer-management): counted in metrics, never punished, because
   gossipsub forwards before verification and the deliverer may be an honest relay.
 
 ## Verification obligations introduced by this model
 
-What this document adds to the [MODEL_CHECK.md](MODEL_CHECK.md) map, concretely:
+What this document adds to the [model-check.md](model-check.md) map, concretely:
 
 - **Loom targets:** the chain task's select loop, channel endpoints, and snapshot publication
   — the only interleaving spaces this design leaves alive.
@@ -288,5 +297,5 @@ What this document adds to the [MODEL_CHECK.md](MODEL_CHECK.md) map, concretely:
   no-panic-on-any-input for decode and proof verification, and rejection ⇒ no store effect.
 
 A panic that escapes despite these checks is not caught and continued: consistent with
-ARCHITECTURE.md's error model, it is classed as an availability failure and aborts the
+architecture.md's error model, it is classed as an availability failure and aborts the
 process — never a silently degraded consensus path.

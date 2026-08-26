@@ -11,7 +11,7 @@ repository = "https://github.com/NyxFoundation/verity"
 authors = ["Nyx Foundation"]
 
 # Lints are defined once here and inherited by every crate via `[lints] workspace = true`.
-# `unsafe_code` is denied workspace-wide; per ARCHITECTURE.md the only crate allowed to opt back
+# `unsafe_code` is denied workspace-wide; per docs/src/reference/architecture.md the only crate allowed to opt back
 # in is `verity-consensus-sys` (the FFI boundary), which will override this locally when it lands.
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -73,7 +73,7 @@ libp2p = { version = "0.56", default-features = false, features = [
 ] }
 
 # --- Storage -------------------------------------------------------------------------------
-# See ARCHITECTURE.md "Storage engine and retention" for why an LSM engine and not a B-tree one.
+# See docs/src/reference/architecture.md "Storage engine and retention" for why an LSM engine and not a B-tree one.
 rocksdb = "0.24"
 
 # --- Workspace members ---------------------------------------------------------------------
@@ -88,7 +88,7 @@ verity-types = { path = "crates/verity-types", version = "0.0.0" }
 # Scoped to SSZ round-trip properties in `verity-types`. This is a deliberate, narrow exception
 # to the kickoff decision that no verification harness ships on day one: a codec is one of the
 # few places where the property is writable directly, and leanSpec's fixtures only ever supply
-# the shapes the spec happened to generate. The graduated harness of MODEL_CHECK.md — bolero,
+# the shapes the spec happened to generate. The graduated harness of docs/design/model-check.md — bolero,
 # Kani, loom — is still introduced later, per its tool-to-zone mapping.
 proptest = "1.9"
 serde = { version = "1.0", features = ["derive"] }

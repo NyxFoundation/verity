@@ -1,6 +1,6 @@
 //! The one place the hash tree root hasher is chosen.
 //!
-//! `hash_tree_root` is a capability contract in `ARCHITECTURE.md`, currently satisfied by the
+//! `hash_tree_root` is a capability contract in `docs/src/reference/architecture.md`, currently satisfied by the
 //! external SSZ library. Routing every call in this crate through one function is what keeps
 //! that swap a one-file change: nothing else names a hasher.
 

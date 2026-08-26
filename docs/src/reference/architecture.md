@@ -1,6 +1,6 @@
 ---
 title: Verity Architecture
-last_updated: 2026-08-17
+last_updated: 2026-08-26
 tags:
   - architecture
   - verification-boundary
@@ -9,10 +9,9 @@ tags:
 ---
 
 <!--
-  This page mirrors the repo-root ARCHITECTURE.md, which is canonical.
-  When editing, change the root file first and re-sync this page.
-  Only the links differ: book-internal targets are relative, repo-internal
-  documents not published in the book (DOMAIN_MODEL.md, memo.md) point to GitHub.
+  This page is canonical for the architecture. The design documents it links to
+  live in docs/design/ and are not published in the book, so they are referenced
+  by GitHub URL; book-internal targets stay relative.
 -->
 
 # Verity Architecture
@@ -49,8 +48,8 @@ verification frontier moves; see [boundary migration](#boundary-migration).
   see [Formal Verification](../concepts/formal-verification.md) for the one-model, two-roles
   split between compiled-and-exported functions and proof-only propositions. Its current
   occupants are deliberately **minimal** — only the state transition and the fork-choice transition
-  functions — but that export set is a snapshot, not a definition: it contracts if a function leaves for
-  a zkVM artifact, and grows if a function (e.g. `hash_tree_root`) is verified in Lean and pulled in.
+  functions — but that export set is a snapshot, not a definition: it grows as a function
+  (e.g. `hash_tree_root`) is verified in Lean and pulled in.
 
 - **Runtime Shell — Rust, panic-free.** The trusted, panic-free zone. Manufactures clean,
   typed, **already-verified** inputs for Verity Consensus, owns the consensus state and fork-choice view
@@ -151,8 +150,8 @@ inward, from higher-effect / lower-assurance toward lower-effect / higher-assura
 outward.** Today that ordering reads `I/O Edge → Runtime Shell → Verified Core` over the current crate snapshot, and the compiler
 enforces it rather than discipline. The invariant is stated over *guarantee levels*, not crate
 identities, so it survives migration: if `hash_tree_root` moves into Verified Core, `verity-types` (Runtime Shell)
-calls inward to Verified Core for it — still `Runtime Shell → Verified Core`, still legal; if the state transition leaves Verified Core, its export
-set shrinks but nothing starts calling outward. Names follow the existing `verity-*` convention
+calls inward to Verified Core for it — still `Runtime Shell → Verified Core`, still legal, with the export
+set growing but nothing starting to call outward. Names follow the existing `verity-*` convention
 (`verity-crypto`, `verity-metrics`); the sole exception is the FFI bindings crate, which follows its
 upstream Lean library name per Rust's `-sys` convention.
 
@@ -238,7 +237,7 @@ flowchart TB
 Sizes are measured from leanSpec's `fixtures-prod-scheme.tar.gz` release asset; at
 `SECONDS_PER_SLOT = 4` a day is 21,600 slots. The table layout that follows from these decisions —
 keys, pruning rules, and the snapshot/diff scheme for state — is in
-[Storage Schema](https://github.com/NyxFoundation/verity/blob/main/STORAGE.md).
+[Storage Schema](https://github.com/NyxFoundation/verity/blob/main/docs/design/storage.md).
 
 | Workload | Value size | Volume | Lifetime |
 |---|---|---|---|
@@ -316,7 +315,7 @@ fork-choice store, `AnchorWF` (discharged by `Reachable`) for the state, and
 `ValidatorRegistry.WellFormed` for validator keys. Maintaining those predicates across every mutation
 is Runtime Shell's half of the contract: Verified Core's theorems speak only about inputs that satisfy
 them, so the single writer must preserve them, and the boundary harnesses target exactly them (see the
-[Model-Checking Strategy](https://github.com/NyxFoundation/verity/blob/main/MODEL_CHECK.md)).
+[Model-Checking Strategy](https://github.com/NyxFoundation/verity/blob/main/docs/design/model-check.md)).
 
 The contracts must be defined **inner to both their consumers and their implementations** — otherwise
 `verity-consensus-sys` implementing a contract defined in `verity-chain` would force a `sys → chain`
@@ -350,26 +349,17 @@ Two obligations follow:
 - **Verification.** The promote/lower code is boundary code in the Runtime Shell and is the
   primary target of the boundary harnesses (round-trip properties, no-panic-on-any-input,
   range enforcement — see the
-  [Model-Checking Strategy](https://github.com/NyxFoundation/verity/blob/main/MODEL_CHECK.md)).
+  [Model-Checking Strategy](https://github.com/NyxFoundation/verity/blob/main/docs/design/model-check.md)).
   Cross-language behavioral equivalence is additionally evidenced by shared leanSpec vectors
-  run on both sides;
-  [verifiable-stf](https://github.com/NyxFoundation/verifiable-stf) demonstrates the
-  strongest form of that evidence — the compiled-Lean and compiled-Rust STF produce
-  **byte-identical outputs** on the same inputs.
+  run on both sides.
 - **Measurement.** Adopting a Lean implementation behind a contract is gated on measured
-  cost, not assumed cost. Two data sets exist today:
-  - [leanSSZ](https://github.com/NyxFoundation/leanSSZ)'s C ABI PoC (Rust-caller round-trip
-    and `hash_tree_root` match): STF+HTR 27.5 ms at V=4096, within budget; per-op on a
-    ~526 KB state, serialize 33 ms / `hash_tree_root` 58 ms / deserialize 54 ms
-    (list-based codec, uncached merkleization).
-  - verifiable-stf's compiled-Lean vs compiled-Rust STF comparison (RISC-V zkVM cycles, a
-    proxy for relative native cost): 26.1 M vs 12.5 M cycles at N=10 and 35.3 M vs 14.4 M at
-    N=100 — the Lean runtime's one-time `Init` accounts for ~15 M of the Lean side, so the
-    steady-state Lean overhead is roughly **1.4× Rust** once initialization is amortized
-    across a long-lived process.
-
-  These numbers are inputs to the migration triggers below: a capability moves into the
-  Verified Core only when its measured seam cost fits the slot-time budget.
+  cost, not assumed cost. One data set exists today:
+  [leanSSZ](https://github.com/NyxFoundation/leanSSZ)'s C ABI PoC (Rust-caller round-trip
+  and `hash_tree_root` match): STF+HTR 27.5 ms at V=4096, within budget; per-op on a
+  ~526 KB state, serialize 33 ms / `hash_tree_root` 58 ms / deserialize 54 ms
+  (list-based codec, uncached merkleization). These numbers are inputs to the migration
+  triggers below: a capability moves into the Verified Core only when its measured seam cost
+  fits the slot-time budget.
 
 **Interchange shape — a conditional design, not an adoption decision.** Nothing here decides
 *whether* any capability is bound to Lean — that remains gated per capability (stable, proved,
@@ -412,24 +402,18 @@ A migration must **not** change:
 - consumer code (`verity-chain`, `verity-validator`) — it depends on the contract, not the placement;
 - consensus container **shapes** (the `verity-types` shared model) — shape is separable from the
   serialization *behavior* that may move (see the
-  [Domain Model](https://github.com/NyxFoundation/verity/blob/main/DOMAIN_MODEL.md));
+  [Domain Model](https://github.com/NyxFoundation/verity/blob/main/docs/design/domain-model.md));
 - the zone **definitions** (the guarantee levels);
 - the inward invariant (calls still flow toward higher assurance; Verified Core still never calls outward).
 
-**Anticipated migrations.** Two are foreseen, in opposite directions, alongside two partial placements
+**Anticipated migrations.** One is foreseen — inward — alongside two partial placements
 already in the design:
 
 | Capability | Today | Anticipated move | Trigger | Effect |
 |---|---|---|---|---|
-| State transition | Verified Core | Verified Core → Runtime Shell | An upstream spec for SNARK-proving the consensus STF materializes (none published as of 2026-07; see [Ethlambda notes](https://github.com/NyxFoundation/verity/blob/main/memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification)) | Verified Core export set shrinks; FFI surface contracts; the `StateTransition` contract is bound to a zkVM-friendly (Rust / leanVM) implementation |
 | SSZ / `hash_tree_root` | Runtime Shell | Runtime Shell → Verified Core | A Lean-verified merkleization becomes available | Verified Core computes its own roots; "Verity Consensus receives precomputed roots" no longer holds; `verity-types` calls inward to Verified Core for the `Serialization` contract |
 | Fork choice | Verified Core (decision) + Runtime Shell (`Store`) | — | — | The worked example of a capability split across the boundary: a pure decision in Verified Core over a mutable `Store` owned in Runtime Shell |
 | Proposer selection | Runtime Shell (pure function, chain-side) | Runtime Shell → Verified Core (candidate) | Verified in Lean and pulled into the export set | Same pattern as SSZ: a pure decision whose shape is already what the core requires |
-
-The STF row is **not a decision to move it** — the working position is that the STF stays in Verity
-Consensus (Lean 4). It is recorded so the design is shown to *withstand* the move if the trigger fires;
-the full tension is in the
-[Ethlambda notes](https://github.com/NyxFoundation/verity/blob/main/memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification).
 
 ## Notes
 

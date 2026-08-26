@@ -2,7 +2,7 @@
 //!
 //! leanSpec puts `Checkpoint.advance_to` and `AttestationData.lies_on_chain` on these
 //! containers. They are consensus decisions, not shape, so they live behind the capability
-//! that owns them rather than here — see `ARCHITECTURE.md`, "Capability contracts".
+//! that owns them rather than here — see `docs/src/reference/architecture.md`, "Capability contracts".
 
 use libssz_derive::{HashTreeRoot, SszDecode, SszEncode};
 

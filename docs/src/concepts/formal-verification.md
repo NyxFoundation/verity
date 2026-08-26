@@ -1,6 +1,6 @@
 ---
 title: Formal Verification
-last_updated: 2026-08-17
+last_updated: 2026-08-26
 tags:
   - formal-verification
   - lean4
@@ -30,7 +30,7 @@ what carries fidelity at each link:
 | Transcription | [formal-leanSpec](https://github.com/NyxFoundation/formal-leanSpec): a Lean 4 model of leanSpec | **Evidenced, not proven** — every Lean file cites the Python source it mirrors; review and leanSpec-derived vectors keep the gap visible |
 | Proof | The proposition catalog: theorems about the model | **Machine-checked** by the Lean 4 kernel; `sorry`-free |
 | Artifact | Verity Consensus: the compiled, exported subset of the model (Lean C backend → static library → C ABI) | **Trusted** — the C backend and linking sit outside every proof (see [the trust base](#the-trust-base)) |
-| Runtime | The Rust shell around the artifact | **Checked, not proven** — the panic-free bar plus the [model-checking strategy](https://github.com/NyxFoundation/verity/blob/main/MODEL_CHECK.md) |
+| Runtime | The Rust shell around the artifact | **Checked, not proven** — the panic-free bar plus the [model-checking strategy](https://github.com/NyxFoundation/verity/blob/main/docs/design/model-check.md) |
 
 ## One model, two roles
 
@@ -47,7 +47,7 @@ and the distinction *is* the verification boundary:
   **design-basis guarantee**: it fixes what the Rust must uphold. The model-checking
   toolchain (Kani, proptest/bolero, Loom, Miri) is what will carry that obligation onto the
   implementation — it is phased in per the
-  [model-checking strategy](https://github.com/NyxFoundation/verity/blob/main/MODEL_CHECK.md),
+  [model-checking strategy](https://github.com/NyxFoundation/verity/blob/main/docs/design/model-check.md),
   not wired in from day one, so until a harness targets a given proposition, that
   proposition constrains the design but says nothing yet about the running Rust.
 
@@ -139,12 +139,6 @@ either proven or it does not ship.
   ([fradamt/verified-consensus](https://github.com/fradamt/verified-consensus);
   [ssf-mc](https://github.com/freespek/ssf-mc)'s bounded model checking of full 3SF).
   Verity consumes the protocol; those efforts justify it.
-- **ZK execution proofs.** Proving that one execution of the STF was faithful is
-  complementary to proving the STF correct for all inputs.
-  [verifiable-stf](https://github.com/NyxFoundation/verifiable-stf) prototypes that
-  direction for the Lean-written STF (zkVM verification of Lean IR execution traces); the
-  full tension is recorded in the
-  [Ethlambda notes](https://github.com/NyxFoundation/verity/blob/main/memo.md#open-question-unresolved-zk-proving-the-stf-vs-lean4-verification).
 - **Cryptographic primitive algebra**: ArkLib.
 
 ## Tracking a moving specification

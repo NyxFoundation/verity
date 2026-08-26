@@ -1,9 +1,18 @@
+---
+title: Validator Key Management — XMSS Signing State
+last_updated: 2026-08-26
+tags:
+  - xmss
+  - key-management
+  - validator
+---
+
 # Validator Key Management — XMSS Signing State
 
 > Status: pre-implementation. Decisions ratified 2026-08-16. This document settles how Verity
 > manages its validators' XMSS keys: the crash-safe no-reuse guarantee, key material loading,
-> and preparation scheduling. It extends [STORAGE.md](STORAGE.md) with one column family and
-> plugs into the runtime model of [CONCURRENCY.md](CONCURRENCY.md).
+> and preparation scheduling. It extends [storage.md](storage.md) with one column family and
+> plugs into the runtime model of [concurrency.md](concurrency.md).
 
 The stake is unusual and worth stating first. XMSS is a **stateful one-time signature
 scheme**: signing two *different* messages with the same key at the same epoch does not incur
@@ -84,7 +93,7 @@ Three scenarios break the clock-monotonicity bet:
 
 Verity persists a **signing watermark**: the last slot signed, per `(validator, role)`, in a
 dedicated `verity-db` column family (`signing_watermarks`, defined in
-[STORAGE.md](STORAGE.md#column-families)). The signing path enforces, in this order:
+[storage.md](storage.md#column-families)). The signing path enforces, in this order:
 
 1. derive the message for slot `s`;
 2. require `s > watermark(validator, role)` — **equality is refused**, even for a
@@ -101,9 +110,9 @@ duty in a 4-second-slot protocol is negligible, and slot-only state keeps the me
 `u64`s per validator instead of a message-root log.
 
 - **Ownership.** The validator signing path is the sole writer of `signing_watermarks` — the
-  one documented exception to the chain task's write ownership (see STORAGE.md). This keeps
+  one documented exception to the chain task's write ownership (see storage.md). This keeps
   the check-write-sign sequence synchronous inside the signing path; routing it through the
-  chain task would add a query channel that [CONCURRENCY.md](CONCURRENCY.md) deliberately
+  chain task would add a query channel that [concurrency.md](concurrency.md) deliberately
   does not have. One keyspace, one writer still holds — per family, not per database.
 - **Write cost.** At most two fsynced single-row writes per slot per validator; negligible
   against the storage engine's proof workload.
@@ -188,11 +197,11 @@ window boundary) mark the two failure modes to design out.
   each key on `spawn_blocking` until the current slot is inside its prepared interval (which
   may take a while after long downtime — progress is logged). None of this needs consensus
   state, so it runs in parallel with the chain task's own startup — per
-  [CONCURRENCY.md](CONCURRENCY.md#lifecycle), what the first `ChainView` gates is *serving*,
+  [concurrency.md](concurrency.md#lifecycle), what the first `ChainView` gates is *serving*,
   not construction. The duty loop begins serving only when **every serving gate** is open — a join of
   independent conditions, of which this document contributes two: the first `ChainView` has
-  been observed on its `watch` receiver (the CONCURRENCY.md readiness signal, unchanged)
-  *and* key preparation has completed. [SYNC.md](SYNC.md#decision-1--sync-mode-lifecycle)
+  been observed on its `watch` receiver (the concurrency.md readiness signal, unchanged)
+  *and* key preparation has completed. [sync.md](sync.md#decision-1--sync-mode-lifecycle)
   adds the third: the node's sync state is `SYNCED`.
 
 ## Deliberately out of scope
@@ -215,4 +224,4 @@ window boundary) mark the two failure modes to design out.
   no partial registry) and the sign wrapper (leanSig's asserts unreachable given the
   wrapper's pre-checks).
 - **The swap** needs no Loom target: clone and swap happen on one task; the only shared edge
-  is the `spawn_blocking` result channel, already covered by the CONCURRENCY.md targets.
+  is the `spawn_blocking` result channel, already covered by the concurrency.md targets.

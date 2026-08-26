@@ -11,7 +11,7 @@
 //! Verity places them behind the capability that owns them instead. The reason is migration
 //! cost: those predicates are the leading candidates to move into the Verified Core, and
 //! binding them here would make every crate that merely uses a type link the FFI boundary.
-//! See `ARCHITECTURE.md`, "Capability contracts".
+//! See `docs/src/reference/architecture.md`, "Capability contracts".
 //!
 //! # Source
 //!
