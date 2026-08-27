@@ -1,0 +1,38 @@
+[package]
+name = "verity-crypto"
+description = "Post-quantum signatures for the consensus path: XMSS sign and verify over leanSig, aggregation and aggregate-proof verification over leanVM."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# One capability, two suppliers. `leansig` signs and verifies for a single validator;
+# `rec_aggregation` (leanVM) aggregates and checks aggregate proofs. `leansig_wrapper` is
+# leanVM's own parameter selection, taken rather than restated so that a signature this crate
+# verifies is one leanVM can aggregate — see `scheme.rs`. `backend` is leanVM's runtime, and
+# supplies only the prover warm-up in `aggregate::init_prover`.
+#
+# The `libssz` family is here because consensus containers carry XMSS material: leanSig
+# serializes through `ethereum_ssz`, so the wire shapes are declared in `libssz` terms and
+# converted at the boundary. `serde_norway` reads one file, lean-quickstart's key manifest.
+[dependencies]
+backend.workspace = true
+leansig.workspace = true
+leansig_wrapper.workspace = true
+libssz.workspace = true
+libssz-derive.workspace = true
+libssz-merkle.workspace = true
+libssz-types.workspace = true
+rec_aggregation.workspace = true
+serde.workspace = true
+serde_norway.workspace = true
+verity-types.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

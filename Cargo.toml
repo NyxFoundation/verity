@@ -24,24 +24,53 @@ all = { level = "warn", priority = -1 }
 [workspace.dependencies]
 
 # --- Post-quantum signatures ---------------------------------------------------------------
-# XMSS sign / verify per validator. Rev-pinned rather than branch-tracked (kickoff decision,
-# 2026-07-22): a branch head can move under us between CI runs and a lockfile alone would not
-# make that visible in review.
+# XMSS sign / verify per validator.
 #
-# The rev is the head of leanSig's `devnet4` branch, not of `main`. The two have diverged, and
-# `devnet4` is what both other Rust lean clients run against (ream and ethlambda each track that
-# branch). Bump this by re-reading what those clients track, not by following `main`.
+# `branch`, not `rev`, and that is forced rather than chosen. leanVM depends on leanSig by branch
+# (`devnet4`). Cargo keys a git package by URL *and* reference, so `?branch=devnet4` and
+# `?rev=<sha>` are two distinct packages even when both resolve to the same commit: the graph ends
+# up with two copies of leanSig and every type crossing the leanSig/leanVM boundary stops matching.
+# `[patch]` cannot merge them either — cargo rejects a patch resolving to the same source. Matching
+# leanVM's reference exactly is the only way to keep one leanSig in the graph.
 #
-# `version` is redundant for resolution — the rev already determines the code — but a git
+# What a rev here would have bought is bought instead by Cargo.lock, which pins
+# `15cbdd43ec8525aa43fea2f42cafc5ed366084ae` and is committed; CI builds `--locked`, so a moved
+# branch head cannot reach a build without showing up as a lockfile diff in review. This is the
+# same arrangement Plonky3 already uses below, for the same reason: the pin lives wherever cargo
+# will actually honour it.
+#
+# Bumping leanSig means bumping leanVM's rev in the same change, then re-running
+# `cargo update leansig --precise <sha>` — the two revs are only safe in matched pairs.
+#
+# `version` is redundant for resolution — the reference already determines the code — but a git
 # dependency without one is a wildcard requirement, which `deny.toml` bans.
 #
-# Pinning this rev is necessary but NOT sufficient. leanSig itself depends on Plonky3 with neither
+# Pinning leanSig is necessary but NOT sufficient. leanSig itself depends on Plonky3 with neither
 # rev nor branch, so a fresh resolve floats it to that repository's HEAD, which no longer compiles
 # against leanSig. Plonky3 is therefore pinned in Cargo.lock (`cargo update p3-field --precise`) —
 # it cannot be pinned here, because cargo drops a `[patch]` whose version cannot satisfy Plonky3's
 # own intra-workspace requirements. A bare `cargo update` refloats it and breaks the build; see
 # CLAUDE.md for the full trap.
-leansig = { git = "https://github.com/leanEthereum/leanSig", rev = "15cbdd43ec8525aa43fea2f42cafc5ed366084ae", version = "0.1.0" }
+leansig = { git = "https://github.com/leanEthereum/leanSig", branch = "devnet4", version = "0.1.0" }
+
+# Aggregation and aggregate-proof verification. leanVM (renamed upstream from `leanMultisig`)
+# is a workspace, and Verity depends on two of its members:
+#
+# - `leansig_wrapper` fixes the concrete XMSS instantiation — V=46, TARGET_SUM=200, BASE=8,
+#   LOG_LIFETIME=32 — which is exactly leanSpec's `PROD_CONFIG`. Taking the parameters from here
+#   rather than re-instantiating leanSig ourselves is what guarantees that a signature Verity
+#   verifies is a signature leanVM can aggregate: one source of truth for the scheme, not two.
+# - `rec_aggregation` is the aggregation and proof-verification surface itself.
+#
+# The rev is pinned for the same reason leanSig's is, plus one specific to this pair: leanVM
+# depends on leanSig by *branch* (`devnet4`), so the rev below is what decides which leanSig
+# commit ends up in the graph alongside our own pin. `e2592df` is the leanVM commit whose
+# Cargo.lock resolves leanSig to `15cbdd43...` — the same commit pinned above. Bumping one of
+# these two revs without re-checking the other splits leanSig into two copies in the graph, and
+# every type crossing the boundary stops matching.
+backend = { git = "https://github.com/leanEthereum/leanVM", rev = "e2592df4e30fdddbbf8ae26a333116c68cec7026", version = "0.1.0" }
+leansig_wrapper = { git = "https://github.com/leanEthereum/leanVM", rev = "e2592df4e30fdddbbf8ae26a333116c68cec7026", version = "0.1.0" }
+rec_aggregation = { git = "https://github.com/leanEthereum/leanVM", rev = "e2592df4e30fdddbbf8ae26a333116c68cec7026", version = "0.1.0" }
 
 # --- SSZ -----------------------------------------------------------------------------------
 # lambdaclass' implementation. NyxFoundation/leanSSZ (proven in Lean, C ABI PoC complete) is the
@@ -83,6 +112,7 @@ rocksdb = "0.24"
 # wildcard requirement, which `deny.toml` bans for the same reason it bans one on a git
 # dependency: nothing in the manifest then states what the dependent was built against.
 verity-types = { path = "crates/verity-types", version = "0.0.0" }
+verity-crypto = { path = "crates/verity-crypto", version = "0.0.0" }
 
 # --- Test-only -----------------------------------------------------------------------------
 # Scoped to SSZ round-trip properties in `verity-types`. This is a deliberate, narrow exception
@@ -92,4 +122,18 @@ verity-types = { path = "crates/verity-types", version = "0.0.0" }
 # Kani, loom — is still introduced later, per its tool-to-zone mapping.
 proptest = "1.9"
 serde = { version = "1.0", features = ["derive"] }
+
+# YAML, for lean-quickstart's key manifest. A maintained fork of `serde_yaml`, which was
+# archived and now carries an unmaintained advisory that `deny.toml` refuses.
+serde_norway = "0.9.42"
 serde_json = "1.0"
+
+# Dependencies are optimized even in dev and test builds; workspace members are not.
+#
+# This is not a build-time preference. leanVM is a proving system written to be compiled with
+# optimizations: unoptimized, its recursion blows an 8 MB test thread's stack before it
+# finishes a single aggregation, so the aggregate-proof tests do not merely run slowly, they
+# abort. Optimizing only the `*` set keeps Verity's own crates debuggable, which is where a
+# backtrace is actually worth having.
+[profile.dev.package."*"]
+opt-level = 3
