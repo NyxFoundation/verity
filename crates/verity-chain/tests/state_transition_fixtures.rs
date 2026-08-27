@@ -6,9 +6,8 @@
 //! mismatch says which field moved rather than only that a root differs. A rejecting case
 //! carries `rejectionReason` and no post-state.
 //!
-//! The JSON containers are mirrored here rather than derived on the `verity-types` shapes.
-//! Consensus values travel as SSZ, never as JSON; the `{"data": [...]}` wrappers and camelCase
-//! names below are a test-generator convention, not part of any container's shape.
+//! The JSON containers this reads are mirrored in `common` rather than derived on the
+//! `verity-types` shapes — see that module for why.
 //!
 //! Source: leanSpec `tests/consensus/lstar/state_transition/`, filled into the
 //! `fixtures-prod-scheme.tar.gz` release asset that `crates/verity-types/fixtures.sha256`
@@ -16,13 +15,10 @@
 
 mod common;
 
+use common::{BlockJson, DataList, StateJson, ValidatorJson, compare, flags, hex};
 use serde::Deserialize;
 use verity_chain::{generate_genesis, hash_tree_root, process_block, state_transition};
-use verity_types::{
-    AggregatedAttestation, AggregatedAttestations, AggregationBits, AttestationData, Block,
-    BlockBody, BlockHeader, Bytes32, Bytes52, Checkpoint, GenesisConfig, HistoricalBlockHashes,
-    JustificationValidators, JustifiedSlots, Slot, State, Validator, ValidatorIndex, Validators,
-};
+use verity_types::State;
 
 /// Every suite under leanSpec's `state_transition` fixture directory.
 const SUITES: &[&str] = &[
@@ -232,165 +228,6 @@ struct Case {
     #[serde(rename = "_info")]
     #[allow(dead_code)]
     info: serde_json::Value,
-}
-
-/// leanSpec wraps every SSZ collection in a `data` key.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DataList<T> {
-    data: Vec<T>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StateJson {
-    config: GenesisConfigJson,
-    slot: u64,
-    latest_block_header: BlockHeaderJson,
-    latest_justified: CheckpointJson,
-    latest_finalized: CheckpointJson,
-    historical_block_hashes: DataList<String>,
-    justified_slots: DataList<bool>,
-    validators: DataList<ValidatorJson>,
-    justifications_roots: DataList<String>,
-    justifications_validators: DataList<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct GenesisConfigJson {
-    genesis_time: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BlockHeaderJson {
-    slot: u64,
-    proposer_index: u64,
-    parent_root: String,
-    state_root: String,
-    body_root: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CheckpointJson {
-    root: String,
-    slot: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ValidatorJson {
-    attestation_public_key: String,
-    proposal_public_key: String,
-    index: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BlockJson {
-    slot: u64,
-    proposer_index: u64,
-    parent_root: String,
-    state_root: String,
-    body: BlockBodyJson,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BlockBodyJson {
-    attestations: DataList<AggregatedAttestationJson>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AggregatedAttestationJson {
-    aggregation_bits: DataList<bool>,
-    data: AttestationDataJson,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AttestationDataJson {
-    slot: u64,
-    head: CheckpointJson,
-    target: CheckpointJson,
-    source: CheckpointJson,
-}
-
-impl StateJson {
-    fn build(&self) -> Result<State, String> {
-        Ok(State {
-            config: GenesisConfig {
-                genesis_time: self.config.genesis_time,
-            },
-            slot: Slot(self.slot),
-            latest_block_header: self.latest_block_header.build()?,
-            latest_justified: self.latest_justified.build()?,
-            latest_finalized: self.latest_finalized.build()?,
-            historical_block_hashes: roots(&self.historical_block_hashes)?,
-            justified_slots: bitlist::<JustifiedSlots>(&self.justified_slots.data)?,
-            validators: validators(&self.validators)?,
-            justifications_roots: roots(&self.justifications_roots)?,
-            justifications_validators: bitlist::<JustificationValidators>(
-                &self.justifications_validators.data,
-            )?,
-        })
-    }
-}
-
-impl BlockHeaderJson {
-    fn build(&self) -> Result<BlockHeader, String> {
-        Ok(BlockHeader {
-            slot: Slot(self.slot),
-            proposer_index: ValidatorIndex(self.proposer_index),
-            parent_root: bytes32(&self.parent_root)?,
-            state_root: bytes32(&self.state_root)?,
-            body_root: bytes32(&self.body_root)?,
-        })
-    }
-}
-
-impl CheckpointJson {
-    fn build(&self) -> Result<Checkpoint, String> {
-        Ok(Checkpoint {
-            root: bytes32(&self.root)?,
-            slot: Slot(self.slot),
-        })
-    }
-}
-
-impl BlockJson {
-    fn build(&self) -> Result<Block, String> {
-        let mut attestations = AggregatedAttestations::default();
-        for attestation in &self.body.attestations.data {
-            attestations
-                .push(attestation.build()?)
-                .map_err(|error| format!("attestations: {error:?}"))?;
-        }
-        Ok(Block {
-            slot: Slot(self.slot),
-            proposer_index: ValidatorIndex(self.proposer_index),
-            parent_root: bytes32(&self.parent_root)?,
-            state_root: bytes32(&self.state_root)?,
-            body: BlockBody { attestations },
-        })
-    }
-}
-
-impl AggregatedAttestationJson {
-    fn build(&self) -> Result<AggregatedAttestation, String> {
-        Ok(AggregatedAttestation {
-            aggregation_bits: bitlist::<AggregationBits>(&self.aggregation_bits.data)?,
-            data: AttestationData {
-                slot: Slot(self.data.slot),
-                head: self.data.head.build()?,
-                target: self.data.target.build()?,
-                source: self.data.source.build()?,
-            },
-        })
-    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -603,90 +440,4 @@ impl PostAssertions {
             compare(failures, "validators", Some(wanted), Some(actual));
         }
     }
-}
-
-/// Records a mismatch when the case asserts a value and it disagrees.
-fn compare<T: PartialEq + std::fmt::Debug>(
-    failures: &mut Vec<String>,
-    name: &str,
-    expected: Option<T>,
-    actual: Option<T>,
-) {
-    let (Some(expected), Some(actual)) = (expected, actual) else {
-        return;
-    };
-    if expected != actual {
-        failures.push(format!("{name}: got {actual:?}, expected {expected:?}"));
-    }
-}
-
-// ---------------------------------------------------------------------------------------
-// Primitive conversions
-// ---------------------------------------------------------------------------------------
-
-fn flags(length: usize, read: impl Fn(usize) -> Option<bool>) -> Vec<bool> {
-    (0..length)
-        .map(|index| read(index).unwrap_or(false))
-        .collect()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(2 + bytes.len() * 2);
-    out.push_str("0x");
-    for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
-}
-
-fn unhex(text: &str) -> Result<Vec<u8>, String> {
-    let body = text
-        .strip_prefix("0x")
-        .ok_or_else(|| format!("{text}: missing 0x prefix"))?;
-    (0..body.len())
-        .step_by(2)
-        .map(|index| {
-            u8::from_str_radix(&body[index..index + 2], 16)
-                .map_err(|error| format!("{text}: {error}"))
-        })
-        .collect()
-}
-
-fn bytes32(text: &str) -> Result<Bytes32, String> {
-    unhex(text)?
-        .try_into()
-        .map_err(|_| format!("{text}: not 32 bytes"))
-}
-
-fn bytes52(text: &str) -> Result<Bytes52, String> {
-    unhex(text)?
-        .try_into()
-        .map_err(|_| format!("{text}: not 52 bytes"))
-}
-
-fn roots(list: &DataList<String>) -> Result<HistoricalBlockHashes, String> {
-    let mut out = HistoricalBlockHashes::default();
-    for text in &list.data {
-        out.push(bytes32(text)?)
-            .map_err(|error| format!("roots: {error:?}"))?;
-    }
-    Ok(out)
-}
-
-fn validators(list: &DataList<ValidatorJson>) -> Result<Validators, String> {
-    let mut out = Validators::default();
-    for entry in &list.data {
-        out.push(Validator {
-            attestation_public_key: bytes52(&entry.attestation_public_key)?,
-            proposal_public_key: bytes52(&entry.proposal_public_key)?,
-            index: ValidatorIndex(entry.index),
-        })
-        .map_err(|error| format!("validators: {error:?}"))?;
-    }
-    Ok(out)
-}
-
-fn bitlist<T: TryFrom<Vec<bool>>>(bits: &[bool]) -> Result<T, String> {
-    T::try_from(bits.to_vec())
-        .map_err(|_| format!("bitlist of {} bits exceeds its limit", bits.len()))
 }

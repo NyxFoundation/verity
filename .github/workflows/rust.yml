@@ -101,9 +101,10 @@ jobs:
       # so a suite leanSpec renames or drops breaks the job here rather than quietly halving
       # the vector count downstream.
       #
-      # The state-transition tree is taken whole rather than suite by suite: its harness
-      # already names all fifteen suites and fails on any that matches no file, so listing
-      # them again here would only put the same list in two places.
+      # The state-transition and fork-choice trees are taken whole rather than suite by
+      # suite: each harness already names every suite it consumes and fails on any that
+      # matches no file, so listing them again here would only put the same list in two
+      # places.
       - name: Extract consumed fixture suites
         run: |
           mkdir -p fixtures-prod
@@ -112,7 +113,8 @@ jobs:
             '*/ssz/*/ssz/test_xmss_containers/*.json' \
             '*/justifiability/*/state_transition/test_justifiability/*.json' \
             '*/slot_clock/*/chain/test_slot_clock/*.json' \
-            '*/state_transition/*/state_transition/*/*.json'
+            '*/state_transition/*/state_transition/*/*.json' \
+            '*/fork_choice/*/fork_choice/*/*.json'
 
       # The whole workspace, so a crate that starts consuming fixtures is picked up without
       # editing this job. Every fixture test skips when VERITY_FIXTURES is unset, which is
