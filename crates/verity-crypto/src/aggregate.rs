@@ -23,11 +23,15 @@
 //!
 //! # Public keys travel separately from the proof
 //!
-//! The wire form omits them: a `SingleMessageAggregate` on the network is a participation
-//! bitfield plus proof bytes, and the verifier resolves the bitfield against the validator
-//! registry it already trusts. So decoding a proof takes the keys as a second argument, and
-//! a caller that cannot resolve the bitfield cannot decode the proof at all — which is the
-//! intended failure, not an inconvenience.
+//! The serialized form omits them: a `SingleMessageAggregate` on the network is a
+//! participation bitfield plus proof bytes, and the verifier resolves the bitfield against
+//! the validator registry it already trusts. So decoding a proof takes the keys as a second
+//! argument, and a caller that cannot resolve the bitfield cannot decode the proof at all —
+//! which is the intended failure, not an inconvenience.
+//!
+//! That asymmetry is why [`SingleMessageProof::to_proof_bytes`] is not named for
+//! compression, which is what leanVM calls it. Dropping the keys is the load-bearing half;
+//! the lz4 pass is incidental.
 
 use rec_aggregation::{
     MultiMessageAggregateSignature, SingleMessageAggregateSignature,
@@ -134,18 +138,22 @@ impl SingleMessageProof {
             .map_err(|_| AggregationError::InvalidProof)
     }
 
-    /// Compresses to the public-key-free bytes the consensus container carries.
+    /// The public-key-free bytes that fill `SingleMessageAggregate.proof`.
+    ///
+    /// Not a network message: this is one field's value, which the caller places in the
+    /// container and the container's own SSZ encoding then carries. The encoding is leanVM's
+    /// (postcard, lz4-compressed), opaque to SSZ, which sees only a byte list.
     ///
     /// Infallible here, and bounded elsewhere: `SingleMessageAggregate.proof` is a
     /// `ByteList512KiB`, so the 512 KiB ceiling is enforced when the caller builds that
     /// container, not here. Measured production aggregates run 155-236 KB, so a proof that
-    /// reaches the ceiling means the aggregation topology outgrew what the wire format was
+    /// reaches the ceiling means the aggregation topology outgrew what the container was
     /// sized for — a design question, not one proof being unlucky.
-    pub fn to_wire(&self) -> Vec<u8> {
+    pub fn to_proof_bytes(&self) -> Vec<u8> {
         self.0.compress_without_pubkeys()
     }
 
-    /// Parses the container's bytes back into a proof, given the participants' keys.
+    /// Parses `SingleMessageAggregate.proof` back into a proof, given the participants' keys.
     ///
     /// The keys come from the caller's validator registry, resolved from the aggregate's
     /// participation bitfield. leanVM sorts and deduplicates them itself, so the order handed
@@ -156,7 +164,10 @@ impl SingleMessageProof {
     /// [`AggregationError::MalformedPublicKey`] if a key does not parse, and
     /// [`AggregationError::MalformedProof`] if the bytes do not decompress into a proof of
     /// this shape.
-    pub fn from_wire(bytes: &[u8], participants: &[PublicKey]) -> Result<Self, AggregationError> {
+    pub fn from_proof_bytes(
+        bytes: &[u8],
+        participants: &[PublicKey],
+    ) -> Result<Self, AggregationError> {
         let keys = to_leansig_keys(participants)?;
         SingleMessageAggregateSignature::decompress_without_pubkeys(bytes, keys)
             .map(Self)
@@ -178,14 +189,15 @@ impl MultiMessageProof {
             .map_err(|_| AggregationError::InvalidProof)
     }
 
-    /// Compresses to the public-key-free bytes the block carries.
+    /// The public-key-free bytes that fill `MultiMessageAggregate.proof`.
     ///
-    /// Bounded where the container is built, like the single-message form above.
-    pub fn to_wire(&self) -> Vec<u8> {
+    /// One field's value, in leanVM's own encoding, bounded where the container is built —
+    /// as for the single-message form above.
+    pub fn to_proof_bytes(&self) -> Vec<u8> {
         self.0.compress_without_pubkeys()
     }
 
-    /// Parses a block's proof bytes, given each component's participants.
+    /// Parses `MultiMessageAggregate.proof`, given each component's participants.
     ///
     /// The outer slice runs parallel to the proof's components, in order: for a block, that
     /// is one entry per aggregated attestation followed by a single-element entry for the
@@ -196,7 +208,7 @@ impl MultiMessageProof {
     /// [`AggregationError::MalformedPublicKey`] if a key does not parse, and
     /// [`AggregationError::MalformedProof`] if the bytes do not decompress, or if the
     /// component count disagrees with the number of key sets supplied.
-    pub fn from_wire(
+    pub fn from_proof_bytes(
         bytes: &[u8],
         participants_per_component: &[Vec<PublicKey>],
     ) -> Result<Self, AggregationError> {

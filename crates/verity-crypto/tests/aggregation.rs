@@ -118,16 +118,17 @@ fn should_prove_and_verify_when_real_signatures_are_aggregated() {
         "every signer must appear in the proof"
     );
 
-    // The wire form drops the keys; a verifier resupplies them from its own registry.
-    let wire = proof.to_wire();
+    // The serialized form drops the keys; a verifier resupplies them from its own registry.
+    let proof_bytes = proof.to_proof_bytes();
     let participants: Vec<PublicKey> = keys.iter().map(|(public, _)| public.clone()).collect();
-    let decoded = verity_crypto::SingleMessageProof::from_wire(&wire, &participants)
-        .expect("proof does not survive the wire form");
+    let decoded = verity_crypto::SingleMessageProof::from_proof_bytes(&proof_bytes, &participants)
+        .expect("proof does not survive its serialized form");
     assert_eq!(decoded.verify(), Ok(()));
     assert_eq!(decoded.message(), message);
 
     // A key set that does not match the proof cannot rescue it.
-    let wrong = verity_crypto::SingleMessageProof::from_wire(&wire, &participants[..1]);
+    let wrong =
+        verity_crypto::SingleMessageProof::from_proof_bytes(&proof_bytes, &participants[..1]);
     assert!(
         wrong.is_err() || wrong.unwrap().verify().is_err(),
         "a proof must not verify against the wrong participant set"
@@ -159,10 +160,11 @@ fn should_prove_and_verify_when_real_signatures_are_aggregated() {
     let block_proof = merge_single_message_proofs(vec![proof, other_proof]).expect("merge failed");
     assert_eq!(block_proof.verify(), Ok(()));
 
-    let block_wire = block_proof.to_wire();
+    let block_proof_bytes = block_proof.to_proof_bytes();
     let per_component = vec![participants.clone(), participants[..1].to_vec()];
-    let decoded_block = verity_crypto::MultiMessageProof::from_wire(&block_wire, &per_component)
-        .expect("block proof does not survive the wire form");
+    let decoded_block =
+        verity_crypto::MultiMessageProof::from_proof_bytes(&block_proof_bytes, &per_component)
+            .expect("block proof does not survive its serialized form");
     assert_eq!(decoded_block.verify(), Ok(()));
 
     assert!(
