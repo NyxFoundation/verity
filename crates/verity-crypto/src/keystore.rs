@@ -39,7 +39,6 @@
 //! it was checking. The binding is taken on the generator's word, as it is in every other
 //! lean client.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -299,74 +298,26 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// A key directory reduced to what a caller can learn without loading 33.5 MB per key.
-///
-/// Reading the manifest alone answers "which validators does this directory cover, and what
-/// are their public keys" — which is what genesis construction and operator tooling want,
-/// and neither of them wants the secret material.
-///
-/// # Errors
-///
-/// The manifest-related variants of [`KeyLoadError`]; no key file is opened.
-pub fn read_public_keys(
-    key_directory: &Path,
-) -> Result<BTreeMap<ValidatorIndex, [PublicKey; 2]>, KeyLoadError> {
-    let manifest_path = key_directory.join(MANIFEST_FILE_NAME);
-    let manifest = Manifest::read(&manifest_path)?;
-
-    manifest
-        .validators
-        .iter()
-        .enumerate()
-        .map(|(position, entry)| {
-            let index = ValidatorIndex(position as u64);
-            let attestation = entry.public_key(Role::Attestation, &manifest_path, index)?;
-            let proposal = entry.public_key(Role::Proposal, &manifest_path, index)?;
-            if attestation == proposal {
-                return Err(KeyLoadError::DuplicateRoleKeys { index: index.0 });
-            }
-            Ok((index, [attestation, proposal]))
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::{Path, PathBuf};
 
     use libssz::SszEncode;
+    use tempfile::TempDir;
     use verity_types::ValidatorIndex;
 
-    use super::{MANIFEST_FILE_NAME, decode_hex, load, read_public_keys};
+    use super::{MANIFEST_FILE_NAME, decode_hex, load};
     use crate::containers::{Fp, HashDigest, Parameter, PublicKey};
     use crate::error::KeyLoadError;
     use crate::scheme::Role;
 
-    /// A temporary directory that removes itself, so a failing test leaves nothing behind.
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("verity-crypto-{name}"));
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-
-        fn write(&self, name: &str, contents: impl AsRef<[u8]>) {
-            fs::write(self.0.join(name), contents).unwrap();
-        }
+    /// A key directory that cleans itself up, so a failing test leaves nothing behind.
+    fn key_dir() -> TempDir {
+        TempDir::new().unwrap()
     }
 
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+    fn write(dir: &TempDir, name: &str, contents: impl AsRef<[u8]>) {
+        fs::write(dir.path().join(name), contents).unwrap();
     }
 
     fn public_key(seed: u32) -> PublicKey {
@@ -416,8 +367,9 @@ mod tests {
 
     #[test]
     fn should_refuse_when_the_manifest_declares_one_key_per_validator() {
-        let dir = TempDir::new("legacy-manifest");
-        dir.write(
+        let dir = key_dir();
+        write(
+            &dir,
             MANIFEST_FILE_NAME,
             "validators:\n  - pubkey_hex: \"0x00\"\n",
         );
@@ -430,8 +382,9 @@ mod tests {
 
     #[test]
     fn should_refuse_when_the_manifest_has_no_entry_for_a_requested_validator() {
-        let dir = TempDir::new("short-manifest");
-        dir.write(
+        let dir = key_dir();
+        write(
+            &dir,
             MANIFEST_FILE_NAME,
             dual_key_manifest(&[(public_key(1), public_key(2))]),
         );
@@ -444,9 +397,10 @@ mod tests {
 
     #[test]
     fn should_refuse_when_one_validator_uses_one_key_for_both_roles() {
-        let dir = TempDir::new("duplicate-roles");
+        let dir = key_dir();
         let shared = public_key(9);
-        dir.write(
+        write(
+            &dir,
             MANIFEST_FILE_NAME,
             dual_key_manifest(&[(shared.clone(), shared)]),
         );
@@ -459,8 +413,9 @@ mod tests {
 
     #[test]
     fn should_refuse_when_a_manifest_key_is_not_a_valid_public_key() {
-        let dir = TempDir::new("bad-manifest-key");
-        dir.write(
+        let dir = key_dir();
+        write(
+            &dir,
             MANIFEST_FILE_NAME,
             format!(
                 "validators:\n  - attester_key_pubkey_hex: \"0xdead\"\n    proposer_key_pubkey_hex: \"{}\"\n",
@@ -479,8 +434,9 @@ mod tests {
 
     #[test]
     fn should_refuse_when_a_key_file_is_missing() {
-        let dir = TempDir::new("missing-key-file");
-        dir.write(
+        let dir = key_dir();
+        write(
+            &dir,
             MANIFEST_FILE_NAME,
             dual_key_manifest(&[(public_key(1), public_key(2))]),
         );
@@ -493,13 +449,18 @@ mod tests {
 
     #[test]
     fn should_refuse_when_a_key_file_disagrees_with_the_manifest() {
-        let dir = TempDir::new("key-file-mismatch");
-        dir.write(
+        let dir = key_dir();
+        write(
+            &dir,
             MANIFEST_FILE_NAME,
             dual_key_manifest(&[(public_key(1), public_key(2))]),
         );
         // The manifest is authoritative, so a different-but-valid key on disk is a stop.
-        dir.write(&pk_file_name(0, Role::Attestation), public_key(3).to_ssz());
+        write(
+            &dir,
+            &pk_file_name(0, Role::Attestation),
+            public_key(3).to_ssz(),
+        );
 
         assert_eq!(
             load(dir.path(), &[ValidatorIndex(0)]).unwrap_err(),
@@ -512,32 +473,23 @@ mod tests {
 
     #[test]
     fn should_refuse_when_a_secret_key_file_does_not_decode() {
-        let dir = TempDir::new("bad-secret-key");
+        let dir = key_dir();
         let attester = public_key(1);
-        dir.write(
+        write(
+            &dir,
             MANIFEST_FILE_NAME,
             dual_key_manifest(&[(attester.clone(), public_key(2))]),
         );
-        dir.write(&pk_file_name(0, Role::Attestation), attester.to_ssz());
-        dir.write(&sk_file_name(0, Role::Attestation), b"not a secret key");
+        write(&dir, &pk_file_name(0, Role::Attestation), attester.to_ssz());
+        write(
+            &dir,
+            &sk_file_name(0, Role::Attestation),
+            b"not a secret key",
+        );
 
         assert!(matches!(
             load(dir.path(), &[ValidatorIndex(0)]),
             Err(KeyLoadError::MalformedKeyFile { .. })
         ));
-    }
-
-    #[test]
-    fn should_report_the_declared_keys_without_opening_a_key_file() {
-        let dir = TempDir::new("public-keys-only");
-        let entries = [
-            (public_key(1), public_key(2)),
-            (public_key(3), public_key(4)),
-        ];
-        dir.write(MANIFEST_FILE_NAME, dual_key_manifest(&entries));
-
-        let keys = read_public_keys(dir.path()).unwrap();
-        assert_eq!(keys.len(), 2);
-        assert_eq!(keys[&ValidatorIndex(1)], [public_key(3), public_key(4)]);
     }
 }

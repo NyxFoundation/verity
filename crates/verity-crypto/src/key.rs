@@ -214,18 +214,16 @@ impl SecretKey {
     /// cannot rest on it always making progress.
     pub fn advance_preparation_to(&mut self, slot: Slot) -> Result<(), SignatureError> {
         loop {
-            let stalled = match self.check_signable(slot) {
+            match self.check_signable(slot) {
                 Ok(_) => return Ok(()),
                 Err(error @ SignatureError::KeyNotPrepared { .. }) => {
                     let before = self.prepared_interval();
                     self.advance_preparation();
-                    (before == self.prepared_interval()).then_some(error)
+                    if before == self.prepared_interval() {
+                        return Err(error);
+                    }
                 }
                 Err(other) => return Err(other),
-            };
-
-            if let Some(error) = stalled {
-                return Err(error);
             }
         }
     }

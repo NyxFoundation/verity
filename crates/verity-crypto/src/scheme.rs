@@ -25,11 +25,10 @@ use verity_types::Slot;
 
 use crate::error::SignatureError;
 
+/// Base-two logarithm of the scheme lifetime in epochs.
+pub use leansig_wrapper::LOG_LIFETIME;
 /// Bytes of message the scheme signs: a `hash_tree_root`, always.
 pub use leansig_wrapper::MESSAGE_LENGTH;
-
-/// Base-two logarithm of the scheme lifetime in epochs.
-pub const LOG_LIFETIME: usize = leansig_wrapper::LOG_LIFETIME;
 
 /// Number of Winternitz chains in a one-time signature, leanSpec's `DIMENSION`.
 pub const DIMENSION: usize = leansig_wrapper::V;

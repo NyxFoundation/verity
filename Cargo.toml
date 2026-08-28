@@ -121,6 +121,10 @@ verity-crypto = { path = "crates/verity-crypto", version = "0.0.0" }
 # the shapes the spec happened to generate. The graduated harness of docs/design/model-check.md — bolero,
 # Kani, loom — is still introduced later, per its tool-to-zone mapping.
 proptest = "1.9"
+
+# Scratch directories for the key-loader tests. Already in the lockfile transitively, so this
+# only promotes it to a direct dependency.
+tempfile = "3.27"
 serde = { version = "1.0", features = ["derive"] }
 
 # YAML, for lean-quickstart's key manifest. A maintained fork of `serde_yaml`, which was

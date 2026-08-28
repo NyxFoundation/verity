@@ -17,7 +17,7 @@
 //! Transcribed from leanSpec `src/lean_spec/spec/crypto/xmss/`, read at commit
 //! `0588c2d215a955a516378677a92db2a5666802f3`.
 
-use libssz::{ContainerDecoder, ContainerEncoder, DecodeError, SszDecode, SszEncode};
+use libssz::{BYTES_PER_LENGTH_OFFSET, ContainerEncoder, DecodeError, SszDecode, SszEncode};
 use libssz_derive::{HashTreeRoot, SszDecode, SszEncode};
 use libssz_merkle::{HashTreeRoot, Node, Sha256Hasher};
 use libssz_types::{SszList, SszVector};
@@ -153,9 +153,11 @@ pub struct PublicKey {
 
 /// The three fields of a signature, in leanSpec's order.
 ///
-/// Split out from [`Signature`] so the derive can produce the container encoding while
-/// [`Signature`] overrides only what SSZ is told about its *size*. See that type's docs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, SszEncode, SszDecode, HashTreeRoot)]
+/// Exists only so [`Signature::from_ssz_bytes`] can borrow the derive's offset *parsing* —
+/// validating that two attacker-controlled offsets fall in bounds and in order is the part
+/// worth not hand-rolling. Encoding is written out by hand instead, because delegating it
+/// would mean cloning every field to build one of these on each call.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SszDecode)]
 struct SignatureFields {
     path: HashTreeOpening,
     rho: Randomness,
@@ -186,15 +188,11 @@ pub struct Signature {
     pub hashes: HashDigestList,
 }
 
-impl Signature {
-    fn as_fields(&self) -> SignatureFields {
-        SignatureFields {
-            path: self.path.clone(),
-            rho: self.rho.clone(),
-            hashes: self.hashes.clone(),
-        }
-    }
-}
+/// Bytes a signature's fixed region occupies: an offset for `path`, `rho` inline, an offset
+/// for `hashes`. The two lists are variable-size at the type level, so each costs an offset
+/// here and carries its own bytes in the variable region.
+const SIGNATURE_FIXED_PART: usize =
+    BYTES_PER_LENGTH_OFFSET + RAND_LENGTH_FIELD_ELEMENTS * 4 + BYTES_PER_LENGTH_OFFSET;
 
 impl SszEncode for Signature {
     fn is_fixed_size() -> bool {
@@ -205,12 +203,23 @@ impl SszEncode for Signature {
         SIGNATURE_BYTES
     }
 
+    /// The length this signature actually encodes to, not the constant it should be.
+    ///
+    /// For a signature that passed [`Signature::from_ssz_bytes`] the two agree, and
+    /// [`tests`] pins that. The fields are public, so a caller can build one whose lists are
+    /// off; reporting the real length keeps this honest with what [`Self::ssz_append`]
+    /// writes rather than letting the two disagree.
     fn encoded_len(&self) -> usize {
-        self.as_fields().encoded_len()
+        SIGNATURE_FIXED_PART + self.path.encoded_len() + self.hashes.encoded_len()
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        self.as_fields().ssz_append(buf);
+        let mut encoder =
+            ContainerEncoder::with_capacity(buf, SIGNATURE_FIXED_PART, self.encoded_len());
+        encoder.append_variable(&self.path);
+        encoder.append_fixed(&self.rho);
+        encoder.append_variable(&self.hashes);
+        encoder.finalize();
     }
 }
 
@@ -260,7 +269,7 @@ impl SszDecode for Signature {
 /// The gossip form: this is what arrives on the attestation subnets, before an aggregator
 /// folds the signatures into a proof. leanSpec derives it from `Attestation`, so the two
 /// vote fields come first, in that order.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, HashTreeRoot)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SszEncode, SszDecode, HashTreeRoot)]
 pub struct SignedAttestation {
     /// The index of the validator making the attestation.
     pub validator_index: ValidatorIndex,
@@ -268,55 +277,6 @@ pub struct SignedAttestation {
     pub data: AttestationData,
     /// The validator's signature over `hash_tree_root(data)`.
     pub signature: Signature,
-}
-
-impl SszEncode for SignedAttestation {
-    fn is_fixed_size() -> bool {
-        true
-    }
-
-    fn fixed_size() -> usize {
-        <ValidatorIndex as SszEncode>::fixed_size()
-            + <AttestationData as SszEncode>::fixed_size()
-            + <Signature as SszEncode>::fixed_size()
-    }
-
-    fn encoded_len(&self) -> usize {
-        <Self as SszEncode>::fixed_size()
-    }
-
-    fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let mut encoder = ContainerEncoder::new(buf, <Self as SszEncode>::fixed_size());
-        encoder.append_fixed(&self.validator_index);
-        encoder.append_fixed(&self.data);
-        encoder.append_fixed(&self.signature);
-        encoder.finalize();
-    }
-}
-
-impl SszDecode for SignedAttestation {
-    fn is_fixed_size() -> bool {
-        true
-    }
-
-    fn fixed_size() -> usize {
-        <ValidatorIndex as SszDecode>::fixed_size()
-            + <AttestationData as SszDecode>::fixed_size()
-            + <Signature as SszDecode>::fixed_size()
-    }
-
-    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut decoder = ContainerDecoder::new(bytes, <Self as SszDecode>::fixed_size())?;
-        let validator_index = decoder.decode_fixed()?;
-        let data = decoder.decode_fixed()?;
-        let signature = decoder.decode_fixed()?;
-        decoder.finish_fixed()?;
-        Ok(Self {
-            validator_index,
-            data,
-            signature,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -328,7 +288,7 @@ mod tests {
     use super::{
         DIMENSION, FIELD_MODULUS, Fp, HashDigest, HashDigestList, HashTreeLayer, HashTreeOpening,
         LOG_LIFETIME, Parameter, PublicKey, Randomness, SIGNATURE_BYTES, Signature,
-        SignatureFields, SignedAttestation,
+        SignedAttestation,
     };
 
     /// A digest whose elements are distinct, so a transposition would change the encoding.
@@ -345,8 +305,10 @@ mod tests {
         .unwrap()
     }
 
-    fn signature_fields(siblings: usize, hashes: usize) -> SignatureFields {
-        SignatureFields {
+    /// A signature with the given list lengths, so the rejection tests can build the
+    /// off-length values a hostile peer would send.
+    fn signature_with(siblings: usize, hashes: usize) -> Signature {
+        Signature {
             path: HashTreeOpening {
                 siblings: digests(siblings, 1),
             },
@@ -356,12 +318,7 @@ mod tests {
     }
 
     fn signature() -> Signature {
-        let fields = signature_fields(LOG_LIFETIME, DIMENSION);
-        Signature {
-            path: fields.path,
-            rho: fields.rho,
-            hashes: fields.hashes,
-        }
+        signature_with(LOG_LIFETIME, DIMENSION)
     }
 
     fn public_key() -> PublicKey {
@@ -420,7 +377,7 @@ mod tests {
 
     #[test]
     fn should_refuse_when_a_signature_carries_the_wrong_number_of_path_siblings() {
-        let encoded = signature_fields(LOG_LIFETIME - 1, DIMENSION).to_ssz();
+        let encoded = signature_with(LOG_LIFETIME - 1, DIMENSION).to_ssz();
         assert!(matches!(
             Signature::from_ssz_bytes(&encoded),
             Err(DecodeError::InvalidByteLength { .. })
@@ -429,7 +386,7 @@ mod tests {
 
     #[test]
     fn should_refuse_when_a_signature_carries_the_wrong_number_of_released_hashes() {
-        let encoded = signature_fields(LOG_LIFETIME, DIMENSION + 1).to_ssz();
+        let encoded = signature_with(LOG_LIFETIME, DIMENSION + 1).to_ssz();
         assert!(matches!(
             Signature::from_ssz_bytes(&encoded),
             Err(DecodeError::InvalidByteLength { .. })
@@ -440,7 +397,7 @@ mod tests {
     /// `SIGNATURE_BYTES`, so a decoder trusting the declared size alone would accept it.
     #[test]
     fn should_refuse_when_two_wrong_list_lengths_leave_the_total_size_unchanged() {
-        let encoded = signature_fields(LOG_LIFETIME + 1, DIMENSION - 1).to_ssz();
+        let encoded = signature_with(LOG_LIFETIME + 1, DIMENSION - 1).to_ssz();
         assert_eq!(encoded.len(), SIGNATURE_BYTES);
         assert!(Signature::from_ssz_bytes(&encoded).is_err());
     }

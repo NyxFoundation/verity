@@ -11,72 +11,20 @@
 //! Source: <https://github.com/leanEthereum/leansig-test-keys>, `prod_scheme.tar.gz`,
 //! sha256-pinned in `crates/verity-crypto/test-keys.sha256`.
 
-use std::fs;
-use std::path::PathBuf;
+mod common;
 
 use libssz::{SszDecode, SszEncode};
-use serde::Deserialize;
-use verity_crypto::containers::{PublicKey, Signature};
+use verity_crypto::containers::Signature;
 use verity_crypto::error::SignatureError;
 use verity_crypto::scheme::SIGNATURE_BYTES;
-use verity_crypto::{SecretKey, sign, verify};
+use verity_crypto::{sign, verify};
 use verity_types::Slot;
 
-/// One key file: leanSpec's tooling writes both halves as hex of their canonical SSZ.
-#[derive(Debug, Deserialize)]
-struct KeyFile {
-    attestation_keypair: KeyPair,
-}
+use common::TestKey;
 
-#[derive(Debug, Deserialize)]
-struct KeyPair {
-    public_key: String,
-    secret_key: String,
-}
-
-struct TestKey {
-    public: PublicKey,
-    secret: SecretKey,
-}
-
-/// Loads the `n`th key file in the directory, or `None` when the gate is off.
-fn test_key(nth: usize) -> Option<TestKey> {
-    let dir = PathBuf::from(std::env::var_os("VERITY_TEST_KEYS")?);
-    assert!(
-        dir.is_dir(),
-        "VERITY_TEST_KEYS is set but {} is not a directory",
-        dir.display()
-    );
-
-    let mut files: Vec<PathBuf> = fs::read_dir(&dir)
-        .unwrap_or_else(|error| panic!("cannot read {}: {error}", dir.display()))
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .collect();
-    files.sort();
-
-    let path = files.get(nth).unwrap_or_else(|| {
-        panic!(
-            "{} holds {} key files, needed at least {}",
-            dir.display(),
-            files.len(),
-            nth + 1
-        )
-    });
-
-    let text = fs::read_to_string(path).unwrap();
-    let parsed: KeyFile = serde_json::from_str(&text).unwrap();
-
-    let public_bytes: [u8; 52] = from_hex(&parsed.attestation_keypair.public_key)
-        .try_into()
-        .expect("public key is not 52 bytes");
-
-    Some(TestKey {
-        public: PublicKey::from_bytes52(&public_bytes).expect("public key does not parse"),
-        secret: SecretKey::from_ssz_bytes(&from_hex(&parsed.attestation_keypair.secret_key))
-            .expect("secret key does not parse"),
-    })
+/// The one key these tests sign with, or `None` when the gate is off.
+fn test_key() -> Option<TestKey> {
+    Some(common::test_keys(1)?.pop().expect("one key requested"))
 }
 
 /// A slot the key is prepared to sign, taken from the key itself rather than assumed.
@@ -88,17 +36,9 @@ fn message(byte: u8) -> [u8; 32] {
     [byte; 32]
 }
 
-fn from_hex(text: &str) -> Vec<u8> {
-    let text = text.strip_prefix("0x").unwrap_or(text);
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("invalid hex"))
-        .collect()
-}
-
 #[test]
 fn should_verify_when_a_signature_is_checked_against_the_key_that_made_it() {
-    let Some(key) = test_key(0) else {
+    let Some(key) = test_key() else {
         eprintln!("skipping: set VERITY_TEST_KEYS to run signing tests");
         return;
     };
@@ -110,7 +50,7 @@ fn should_verify_when_a_signature_is_checked_against_the_key_that_made_it() {
 
 #[test]
 fn should_survive_its_own_encoding_when_a_real_signature_is_round_tripped() {
-    let Some(key) = test_key(0) else {
+    let Some(key) = test_key() else {
         return;
     };
     let slot = signable_slot(&key);
@@ -129,7 +69,7 @@ fn should_survive_its_own_encoding_when_a_real_signature_is_round_tripped() {
 /// rather than relying on it.
 #[test]
 fn should_produce_identical_bytes_when_the_same_message_is_signed_twice_at_one_slot() {
-    let Some(key) = test_key(0) else {
+    let Some(key) = test_key() else {
         return;
     };
     let slot = signable_slot(&key);
@@ -141,12 +81,13 @@ fn should_produce_identical_bytes_when_the_same_message_is_signed_twice_at_one_s
 
 #[test]
 fn should_refuse_when_the_message_the_slot_or_the_key_is_not_the_one_signed() {
-    let Some(key) = test_key(0) else {
+    let Some(key) = test_key() else {
         return;
     };
-    let Some(other) = test_key(1) else {
+    let Some(mut both) = common::test_keys(2) else {
         return;
     };
+    let other = both.pop().expect("two keys requested");
     let slot = signable_slot(&key);
 
     let signature = sign(&key.secret, slot, &message(4)).expect("signing failed");
@@ -172,7 +113,7 @@ fn should_refuse_when_the_message_the_slot_or_the_key_is_not_the_one_signed() {
 /// on a slot it should merely have refused.
 #[test]
 fn should_return_a_typed_error_rather_than_panic_when_the_slot_is_unsignable() {
-    let Some(key) = test_key(0) else {
+    let Some(key) = test_key() else {
         return;
     };
 
@@ -196,7 +137,7 @@ fn should_return_a_typed_error_rather_than_panic_when_the_slot_is_unsignable() {
 
 #[test]
 fn should_reproduce_the_key_when_a_secret_key_is_duplicated_for_an_advance() {
-    let Some(key) = test_key(0) else {
+    let Some(key) = test_key() else {
         return;
     };
     let slot = signable_slot(&key);

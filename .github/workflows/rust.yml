@@ -63,9 +63,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # `--locked` for the same reason the `check` job passes it: cargo-deny walks the same
+      # crate graph, and letting it re-resolve would check a graph the rest of the workflow
+      # never built. The action's `arguments` default is `--all-features`, so restate it.
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+          arguments: --locked --all-features
 
   # Separate from the fast gate, because both of its inputs are large downloads: the
   # production-scheme fixture tarball (~147 MB), which is how we pin container encodings to

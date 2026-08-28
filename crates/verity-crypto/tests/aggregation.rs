@@ -11,74 +11,16 @@
 //! one at a time, which keeps it the only prover in the run. Splitting this into two
 //! `#[test]`s would reintroduce exactly the race the arena cannot survive.
 
-use std::fs;
-use std::path::PathBuf;
+mod common;
 
-use serde::Deserialize;
 use verity_crypto::aggregate::{MAX_XMSS_AGGREGATED, init_prover};
 use verity_crypto::containers::PublicKey;
-use verity_crypto::{SecretKey, aggregate_single_message, merge_single_message_proofs, sign};
+use verity_crypto::{aggregate_single_message, merge_single_message_proofs, sign};
 use verity_types::Slot;
-
-#[derive(Debug, Deserialize)]
-struct KeyFile {
-    attestation_keypair: KeyPair,
-}
-
-#[derive(Debug, Deserialize)]
-struct KeyPair {
-    public_key: String,
-    secret_key: String,
-}
-
-fn test_keys() -> Option<Vec<(PublicKey, SecretKey)>> {
-    let dir = PathBuf::from(std::env::var_os("VERITY_TEST_KEYS")?);
-    assert!(
-        dir.is_dir(),
-        "VERITY_TEST_KEYS is set but {} is not a directory",
-        dir.display()
-    );
-
-    let mut files: Vec<PathBuf> = fs::read_dir(&dir)
-        .unwrap_or_else(|error| panic!("cannot read {}: {error}", dir.display()))
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .collect();
-    files.sort();
-    assert!(files.len() >= 2, "aggregation needs at least two keys");
-
-    Some(
-        files
-            .iter()
-            .take(2)
-            .map(|path| {
-                let parsed: KeyFile =
-                    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-                let public: [u8; 52] = from_hex(&parsed.attestation_keypair.public_key)
-                    .try_into()
-                    .expect("public key is not 52 bytes");
-                (
-                    PublicKey::from_bytes52(&public).expect("public key does not parse"),
-                    SecretKey::from_ssz_bytes(&from_hex(&parsed.attestation_keypair.secret_key))
-                        .expect("secret key does not parse"),
-                )
-            })
-            .collect(),
-    )
-}
-
-fn from_hex(text: &str) -> Vec<u8> {
-    let text = text.strip_prefix("0x").unwrap_or(text);
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("invalid hex"))
-        .collect()
-}
 
 #[test]
 fn should_prove_and_verify_when_real_signatures_are_aggregated() {
-    let Some(keys) = test_keys() else {
+    let Some(keys) = common::test_keys(2) else {
         eprintln!("skipping: set VERITY_TEST_KEYS to run aggregation tests");
         return;
     };
@@ -89,7 +31,7 @@ fn should_prove_and_verify_when_real_signatures_are_aggregated() {
     // but taking the later start rather than assuming so keeps the test honest.
     let slot = Slot(
         keys.iter()
-            .map(|(_, secret)| secret.prepared_interval().start)
+            .map(|key| key.secret.prepared_interval().start)
             .max()
             .unwrap(),
     );
@@ -97,10 +39,10 @@ fn should_prove_and_verify_when_real_signatures_are_aggregated() {
 
     let signatures: Vec<(PublicKey, _)> = keys
         .iter()
-        .map(|(public, secret)| {
+        .map(|key| {
             (
-                public.clone(),
-                sign(secret, slot, &message).expect("signing failed"),
+                key.public.clone(),
+                sign(&key.secret, slot, &message).expect("signing failed"),
             )
         })
         .collect();
@@ -120,7 +62,7 @@ fn should_prove_and_verify_when_real_signatures_are_aggregated() {
 
     // The serialized form drops the keys; a verifier resupplies them from its own registry.
     let proof_bytes = proof.to_proof_bytes();
-    let participants: Vec<PublicKey> = keys.iter().map(|(public, _)| public.clone()).collect();
+    let participants: Vec<PublicKey> = keys.iter().map(|key| key.public.clone()).collect();
     let decoded = verity_crypto::SingleMessageProof::from_proof_bytes(&proof_bytes, &participants)
         .expect("proof does not survive its serialized form");
     assert_eq!(decoded.verify(), Ok(()));
@@ -146,10 +88,10 @@ fn should_prove_and_verify_when_real_signatures_are_aggregated() {
     let other_signatures: Vec<(PublicKey, _)> = keys
         .iter()
         .take(1)
-        .map(|(public, secret)| {
+        .map(|key| {
             (
-                public.clone(),
-                sign(secret, other_slot, &other_message).expect("signing failed"),
+                key.public.clone(),
+                sign(&key.secret, other_slot, &other_message).expect("signing failed"),
             )
         })
         .collect();
