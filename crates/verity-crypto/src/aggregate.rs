@@ -135,6 +135,12 @@ impl SingleMessageProof {
     }
 
     /// Compresses to the public-key-free bytes the consensus container carries.
+    ///
+    /// Infallible here, and bounded elsewhere: `SingleMessageAggregate.proof` is a
+    /// `ByteList512KiB`, so the 512 KiB ceiling is enforced when the caller builds that
+    /// container, not here. Measured production aggregates run 155-236 KB, so a proof that
+    /// reaches the ceiling means the aggregation topology outgrew what the wire format was
+    /// sized for — a design question, not one proof being unlucky.
     pub fn to_wire(&self) -> Vec<u8> {
         self.0.compress_without_pubkeys()
     }
@@ -173,6 +179,8 @@ impl MultiMessageProof {
     }
 
     /// Compresses to the public-key-free bytes the block carries.
+    ///
+    /// Bounded where the container is built, like the single-message form above.
     pub fn to_wire(&self) -> Vec<u8> {
         self.0.compress_without_pubkeys()
     }

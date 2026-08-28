@@ -267,17 +267,6 @@ pub enum AggregationError {
     /// verifier supplies them from the validator registry. A key that does not parse means
     /// the registry and the proof cannot be checked against each other at all.
     MalformedPublicKey,
-
-    /// The proof does not fit the 512 KiB the consensus container allows.
-    ///
-    /// Measured production aggregates run 155-236 KB, so reaching this means the aggregation
-    /// topology grew past what the wire format was sized for, not that one proof was unlucky.
-    ProofTooLarge {
-        /// Size the proof compressed to, in bytes.
-        size: usize,
-        /// Largest size the container admits.
-        limit: usize,
-    },
 }
 
 impl fmt::Display for AggregationError {
@@ -289,12 +278,6 @@ impl fmt::Display for AggregationError {
             Self::MalformedProof => f.write_str("proof bytes are not a valid aggregate proof"),
             Self::MalformedPublicKey => {
                 f.write_str("a public key supplied with the proof is not a valid XMSS key")
-            }
-            Self::ProofTooLarge { size, limit } => {
-                write!(
-                    f,
-                    "proof is {size} bytes, over the {limit}-byte container limit"
-                )
             }
         }
     }
