@@ -1,6 +1,6 @@
 ---
 title: Validator Key Management — XMSS Signing State
-last_updated: 2026-08-26
+last_updated: 2026-08-27
 tags:
   - xmss
   - key-management
@@ -166,16 +166,20 @@ window boundary) mark the two failure modes to design out.
   margin).
 - **Clone-advance-swap: signing never waits.** `advance_preparation` needs `&mut`; handing
   the live key to a worker (or locking it) would stall signing for the rebuild duration. So
-  the worker receives a **clone** (a ~33.5 MB memcpy), advances the clone off-thread while
-  the original keeps signing, and the validator task swaps the advanced clone in between
+  the worker receives a **copy**, advances it off-thread while
+  the original keeps signing, and the validator task swaps the advanced copy in between
   sign calls. The task is single-threaded, so the swap is a plain field replacement with no
-  torn state. **Why the original stays valid throughout:** the windows overlap. Advancing at
+  torn state. **The copy is not a memcpy.** leanSig's secret key does not implement `Clone`,
+  so `verity-crypto`'s `SecretKey::duplicate` goes through the canonical encoding: about
+  33.5 MB serialized and parsed again. Still far cheaper than the rebuild it runs alongside,
+  and paid about once every three days per key, but it is not the pointer-width copy the
+  shape suggests. **Why the original stays valid throughout:** the windows overlap. Advancing at
   the midpoint means the current slot sits in the old window's *second* bottom tree; the
   advance produces a window of that same second tree plus the next one. Old and new windows
   therefore share ≈ 3 days of coverage around the current slot — there is no moment at which
   either key object is unable to sign for "now", however long the rebuild takes within that
   margin. Both key objects are the same key; no-reuse is enforced by the watermark on the
-  signing path, independent of which clone signs.
+  signing path, independent of which copy signs.
 - **Persist the advanced key.** The `spawn_blocking` worker itself, as the final step of the
   advance job and *before* returning the advanced clone, rewrites the key file atomically
   (temp file + rename; public key verified against the manifest on load) — so a key the

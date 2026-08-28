@@ -45,26 +45,37 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      # `--locked` on every cargo invocation that resolves. leanSig is referenced by branch
+      # (it has to be: leanVM references it the same way, and two references to one URL make
+      # two packages), and Plonky3 by nothing at all. Both revisions are pinned in Cargo.lock
+      # and nowhere else, so a build that is allowed to re-resolve is a build that silently
+      # follows whatever those branches moved to. See the leanSig comment in Cargo.toml.
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --all-features --workspace
+        run: cargo test --locked --all-features --workspace
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --locked --workspace
 
   deny:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # `--locked` for the same reason the `check` job passes it: cargo-deny walks the same
+      # crate graph, and letting it re-resolve would check a graph the rest of the workflow
+      # never built. The action's `arguments` default is `--all-features`, so restate it.
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+          arguments: --locked --all-features
 
-  # Separate from the fast gate: the production-scheme tarball is ~147 MB and
-  # is how we pin container encodings to leanSpec. Local `cargo test` skips
-  # these vectors unless VERITY_FIXTURES points at an extracted tree.
+  # Separate from the fast gate, because both of its inputs are large downloads: the
+  # production-scheme fixture tarball (~147 MB), which is how we pin container encodings to
+  # leanSpec, and the pre-generated production-scheme keys (~152 MB), which are how signing
+  # is exercised against the parameters Verity actually runs. Local `cargo test` skips both
+  # unless VERITY_FIXTURES and VERITY_TEST_KEYS point at extracted trees.
   fixtures:
     runs-on: ubuntu-latest
     steps:
@@ -116,10 +127,36 @@ jobs:
             '*/state_transition/*/state_transition/*/*.json' \
             '*/fork_choice/*/fork_choice/*/*.json'
 
+      # Pre-generated production-scheme keys, so signing tests do not pay key generation.
+      # Pinned by sha256 the same way the fixtures are, and bumped by hand.
+      - name: Read the test-key pin
+        id: keys
+        run: echo "sha256=$(cut -d' ' -f1 crates/verity-crypto/test-keys.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache test keys
+        uses: actions/cache@v4
+        with:
+          path: prod_scheme.tar.gz
+          key: test-keys-archive-${{ steps.keys.outputs.sha256 }}
+
+      - name: Fetch test keys
+        run: |
+          if [ ! -f prod_scheme.tar.gz ]; then
+            curl -fL --retry 3 -o prod_scheme.tar.gz \
+              https://github.com/leanEthereum/leansig-test-keys/releases/download/latest/prod_scheme.tar.gz
+          fi
+          sha256sum -c crates/verity-crypto/test-keys.sha256
+
+      - name: Extract test keys
+        run: |
+          mkdir -p test-keys
+          tar -xzf prod_scheme.tar.gz -C test-keys --strip-components=1
+
       # The whole workspace, so a crate that starts consuming fixtures is picked up without
-      # editing this job. Every fixture test skips when VERITY_FIXTURES is unset, which is
-      # what keeps the fast gate fast.
+      # editing this job. Every fixture test skips when its environment variable is unset,
+      # which is what keeps the fast gate fast.
       - name: Fixture conformance
         env:
           VERITY_FIXTURES: ${{ github.workspace }}/fixtures-prod
-        run: cargo test --workspace -- --nocapture
+          VERITY_TEST_KEYS: ${{ github.workspace }}/test-keys
+        run: cargo test --locked --workspace -- --nocapture

@@ -10,6 +10,16 @@ ignore = [
     # ethereum_ssz, pulled in by leanSig) and netlink-packet-core (via libp2p-quic). There is no
     # vulnerability, only the unmaintained status. Revisit when either path drops it.
     "RUSTSEC-2024-0436",
+    # `ansi_term` is deprecated and unmaintained. It arrives through leanVM's tracing setup
+    # (`utils` -> `tracing-forest` -> `ansi_term`) and only colours log output. There is no
+    # vulnerability and no safe upgrade; the fix has to happen in `tracing-forest`. Revisit
+    # when leanVM's tracing dependency moves.
+    "RUSTSEC-2021-0139",
+    # `atomic-polyfill` is archived and unmaintained. It arrives through leanVM's proof
+    # serialization (`rec_aggregation` -> `postcard` -> `heapless` -> `atomic-polyfill`) and
+    # exists to emulate atomics on targets that lack them, which Verity's do not. There is no
+    # vulnerability and no safe upgrade. Revisit when `heapless` drops it.
+    "RUSTSEC-2023-0089",
 ]
 
 [licenses]
@@ -32,6 +42,118 @@ confidence-threshold = 0.9
 # resolves its Apache-2.0 LICENSE above this threshold. That scan is what satisfies the check, so a
 # `[[licenses.clarify]]` entry for leanSig changes nothing — do not add one.
 
+# leanVM is Apache-2.0, stated in a LICENSE file at its repository root. Its crates are
+# workspace members in subdirectories, none of which declares a `license` field or carries a
+# copy of that file, so neither the manifest scan nor the file scan finds anything and every
+# one of them reads as unlicensed. The clarifications below say what the repository says.
+#
+# This is the case the note above leanSig distinguishes: leanSig's package root *is* its
+# repository root, so its LICENSE is found and a clarification would be redundant. These have
+# no such file to find.
+#
+# `license-files` is empty on purpose. A hash entry would pin a file that does not exist in
+# these packages; the claim rests on the repository's LICENSE, not on a per-crate copy.
+
+[[licenses.clarify]]
+crate = "backend"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "lean_compiler"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "lean_prover"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "lean_vm"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "leansig_wrapper"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mt-air"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mt-fiat-shamir"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mt-field"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mt-koala-bear"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mt-poly"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mt-sumcheck"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mt-symetric"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mt-utils"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mt-whir"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "parallel"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "rec_aggregation"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "sub_protocols"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "system-info"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "utils"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "zk-alloc"
+expression = "Apache-2.0"
+license-files = []
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
@@ -46,5 +168,10 @@ unknown-git = "deny"
 # manifest).
 allow-git = [
     "https://github.com/leanEthereum/leanSig",
+    "https://github.com/leanEthereum/leanVM",
     "https://github.com/Plonky3/Plonky3.git",
+    # leanVM's `leansig_wrapper` depends on a fast-keygen fork of leanSig that upstream has not
+    # merged. It arrives transitively and is branch-tracked at its source, so its revision is
+    # pinned in Cargo.lock like Plonky3's, not in any manifest we control.
+    "https://github.com/TomWambsgans/leanSig",
 ]
