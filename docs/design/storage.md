@@ -140,12 +140,24 @@ automatically: an operator must select a new directory and explicitly checkpoint
 
 ## Writer, batches, and restart
 
-`verity-chain` — initially the chain module inside the single `verity-consensus` crate — owns the
-only write capability, with **no exceptions**: the discipline is one writer per database, not one
-writer per column family. P2P, RPC, validator duties, and maintenance submit requests to the chain
-writer rather than writing the backend directly. Read-only snapshot views may run concurrently.
-The rule is strong enough to express in the type system — the chain task holds the backend's only
-mutable handle — so it is enforced by ownership before any model checker is pointed at it.
+The chain writer — the single task that composes `verity-chain`'s decisions with the `Repository`
+described below — owns the only write capability, with **no exceptions**: the discipline is one
+writer per database, not one writer per column family. P2P, RPC, validator duties, and maintenance
+submit requests to it rather than writing the backend directly. Read-only snapshot views may run
+concurrently.
+
+The rule is strong enough to express in the type system, so it is enforced by ownership before any
+model checker is pointed at it. `Repository` owns its backend by value; reads borrow it shared and
+commits borrow it uniquely; a second writer cannot be constructed without moving the repository out
+of the first. Across processes the guarantee is RocksDB's own — it holds an exclusive lock on the
+directory, so a second node aimed at the same path fails to open rather than interleaving writes.
+
+`verity-chain` itself takes no storage dependency: it is pure decisions over container shapes, and
+`verity-db` knows nothing about consensus. The writer is the composition of the two, which is why
+neither crate can reach the other's capability on its own. The [target crate
+layout](../src/reference/architecture.md#crate-layout) folds that composition into `verity-chain`;
+until the crate grows its runtime side, the two halves are separate and the invariant is carried by
+`Repository`'s signatures.
 
 A processed block commits in one cross-column-family `WriteBatch`:
 

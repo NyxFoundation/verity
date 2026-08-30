@@ -56,6 +56,30 @@ The `Quality / pre-commit` job runs `pre-commit run --all-files` with `SKIP=fmt,
 the Rust hooks need the toolchain, so they run in the `Rust` workflow where the
 toolchain and build cache live.
 
+## Host build requirements
+
+Beyond the Rust toolchain, which `rust-toolchain.toml` pins and `rustup` installs on its own,
+a Rust build needs two things from the host. Both come from `verity-db`'s RocksDB dependency,
+which is compiled from source rather than linked against a system library:
+
+- **A C++ toolchain.** `librocksdb-sys` builds RocksDB itself, plus `lz4-sys`.
+- **libclang.** `librocksdb-sys` generates its FFI bindings with bindgen on every build, in
+  `bindgen-runtime` mode, which loads `libclang` dynamically. On Debian and Ubuntu this is
+  `libclang-dev`; CI runner images already carry it.
+
+The first Rust build after a clean checkout therefore takes several minutes longer than the
+crate count suggests, and is cached afterwards.
+
+If bindgen reports `couldn't find any valid shared libraries matching: ['libclang.so',
+'libclang-*.so']` while `libclang` is plainly installed, the library is present only under a
+versioned name that bindgen's search does not match. Point it at one it does:
+
+```bash
+mkdir -p ~/.local/lib/libclang
+ln -sf /usr/lib/llvm-19/lib/libclang-19.so.1 ~/.local/lib/libclang/libclang.so
+export LIBCLANG_PATH=~/.local/lib/libclang
+```
+
 ## Tooling versions
 
 Hook versions are pinned by `rev` in `.pre-commit-config.yaml` and kept current by

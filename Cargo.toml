@@ -103,7 +103,31 @@ libp2p = { version = "0.56", default-features = false, features = [
 
 # --- Storage -------------------------------------------------------------------------------
 # See docs/src/reference/architecture.md "Storage engine and retention" for why an LSM engine and not a B-tree one.
-rocksdb = "0.24"
+#
+# `default-features = false` drops snappy, zstd, zlib, and bzip2. `verity-db` writes exactly two
+# compression settings — LZ4 for every table, and none for `block_proofs`, whose values are
+# high-entropy cryptographic blobs that compress to nothing. The other codecs would be four more
+# C libraries built into every image to support a setting nothing may select. Adding one back is a
+# change here and in `column.rs` together, which is the point.
+#
+# `bindgen-runtime` is in rocksdb's default set, so it has to be named again here or dropping the
+# defaults drops it too. It is not optional in practice: `librocksdb-sys` generates its FFI
+# bindings with bindgen on every build, and with neither `bindgen-runtime` nor `bindgen-static`
+# selected the build resolves bindgen's own defaults instead of the mode this manifest chose.
+# Runtime, not static: it loads the host's `libclang` dynamically, which is what CI images and
+# distribution `libclang-dev` packages provide. A build host therefore needs libclang available —
+# on a machine where the library is installed only under a versioned name (`libclang-19.so.1`),
+# point `LIBCLANG_PATH` at a directory holding a `libclang.so` symlink to it.
+rocksdb = { version = "0.24", default-features = false, features = [
+    "lz4",
+    "bindgen-runtime",
+] }
+
+# --- Hashing -------------------------------------------------------------------------------
+# Not the SSZ hasher — that is `libssz-merkle`, and nothing may route a consensus root around
+# it. This is for `verity-db`'s stored-type manifest digest, which hashes a description of the
+# schema rather than any consensus value.
+sha2 = "0.10"
 
 # --- Workspace members ---------------------------------------------------------------------
 # Declared here so a member's path appears in one place, like every external dependency.
@@ -112,7 +136,9 @@ rocksdb = "0.24"
 # wildcard requirement, which `deny.toml` bans for the same reason it bans one on a git
 # dependency: nothing in the manifest then states what the dependent was built against.
 verity-types = { path = "crates/verity-types", version = "0.0.0" }
+verity-chain = { path = "crates/verity-chain", version = "0.0.0" }
 verity-crypto = { path = "crates/verity-crypto", version = "0.0.0" }
+verity-db = { path = "crates/verity-db", version = "0.0.0" }
 
 # --- Test-only -----------------------------------------------------------------------------
 # Scoped to SSZ round-trip properties in `verity-types`. This is a deliberate, narrow exception
