@@ -1,6 +1,6 @@
 ---
 title: Verity Concurrency Model
-last_updated: 2026-08-26
+last_updated: 2026-08-30
 tags:
   - concurrency
   - runtime
@@ -222,8 +222,15 @@ verification stage.
   by the **same slot clock** that feeds ① — one clock in the `verity` binary, two consumers —
   and never by callbacks from the chain task. At its duty interval a validator task reads the
   current `ChainView` snapshot (proposal head, attestation target), produces and signs, and
-  sends the product into ②; the chain task's sole involvement in production is the interval-2
-  aggregation handoff below. Aggregate-proof *production* — seconds of zk proving — follows
+  sends the product into ②. **Which interval that is follows leanSpec's duty loop**: block
+  production at interval 0 only, attestation at interval ≥ 1 so a proposal that outruns
+  interval 0 does not cost that slot's attestation. That shape is why signing needs no durable
+  state — interval 0 is reached once per slot, and the attestation branch, reachable on
+  intervals 1 through 4, is collapsed to one signature by an in-memory already-attested slot
+  set with 4-slot retention. Nothing about signing is persisted; see
+  [key-management.md](key-management.md#decision-1--no-persisted-signing-state-once-per-slot-duty-dedup).
+  The chain task's sole involvement in production is the interval-2 aggregation handoff
+  below. Aggregate-proof *production* — seconds of zk proving — follows
   the ethlambda pattern with the wiring explicit: the interval-2 tick action in the chain task
   determines that aggregation is due and hands the signature-pool snapshot to
   `verity-validator`'s aggregation worker; the worker runs on `spawn_blocking`, and the chain

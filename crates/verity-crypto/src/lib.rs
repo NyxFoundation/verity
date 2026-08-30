@@ -19,9 +19,10 @@
 //! key does not cost a penalty, it breaks the key. This crate refuses the preconditions
 //! leanSig would panic on — a slot outside the key's activation range or its prepared
 //! window — but it cannot refuse a second, different message at a slot it already signed,
-//! because a call carries no memory of the last one. That guarantee is a persisted signing
-//! watermark on the validator's signing path, checked and durably written before [`sign`] is
-//! reached. See `docs/design/key-management.md`, Decision 1.
+//! because a call carries no memory of the last one. That guarantee is the validator duty
+//! loop's structure: block production runs once per slot at interval 0, and attestation is
+//! collapsed to one signature per slot by an in-memory already-attested set. Nothing about
+//! signing is persisted. See `docs/design/key-management.md`, Decision 1.
 //!
 //! # Two SSZ libraries meet here
 //!

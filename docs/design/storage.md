@@ -1,6 +1,6 @@
 ---
 title: Storage Schema
-last_updated: 2026-08-26
+last_updated: 2026-08-30
 tags:
   - storage
   - rocksdb
@@ -63,12 +63,11 @@ corruption, not an absent value.
 | `fork_choice_blocks` | `slot_be ‖ block_root` | `parent_root` | Processed fork-choice tree; retained |
 | `known_votes` | `validator_index_be` | `SSZ(AttestationData)` | Latest counted vote per validator |
 | `pending_votes` | `validator_index_be` | `SSZ(AttestationData)` | Latest not-yet-counted vote per validator |
-| `signing_watermarks` | `validator_index_be ‖ role` | `SSZ(uint64)` last-signed slot | Local XMSS no-reuse state; retained; see [Key Management](key-management.md) |
 | `metadata` | fixed ASCII key | typed scalar or SSZ value | Database identity and current view pointers |
 
-`role` is one byte: `0x00` attestation, `0x01` proposal. `signing_watermarks` rows exist only
-for validators this node operates; they are never pruned and never touched by any range
-tombstone.
+No column family holds validator signing state. XMSS no-reuse is carried by the duty loop in
+memory and nothing about it is written — see
+[Key Management](key-management.md#decision-1--no-persisted-signing-state-once-per-slot-duty-dedup).
 
 Blocks are stored unsigned: header and body are separate rows, while the signed envelope's aggregate
 proof is the `block_proofs` row. `MultiMessageAggregate` is persisted as the entire SSZ container,
@@ -142,12 +141,11 @@ automatically: an operator must select a new directory and explicitly checkpoint
 ## Writer, batches, and restart
 
 `verity-chain` — initially the chain module inside the single `verity-consensus` crate — owns the
-only write capability, with **one documented exception**: `signing_watermarks` is written solely by
-the validator signing path, because its persist-before-sign ordering must stay synchronous inside
-that path (see [Key Management](key-management.md#decision-1--signing-watermark-persist-before-sign)).
-The discipline is one writer per column family, not one writer per database. Watermark writes always
-fsync. P2P, RPC, validator duties, and maintenance otherwise submit requests to the chain writer
-rather than writing the backend directly. Read-only snapshot views may run concurrently.
+only write capability, with **no exceptions**: the discipline is one writer per database, not one
+writer per column family. P2P, RPC, validator duties, and maintenance submit requests to the chain
+writer rather than writing the backend directly. Read-only snapshot views may run concurrently.
+The rule is strong enough to express in the type system — the chain task holds the backend's only
+mutable handle — so it is enforced by ownership before any model checker is pointed at it.
 
 A processed block commits in one cross-column-family `WriteBatch`:
 

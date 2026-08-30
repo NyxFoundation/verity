@@ -62,11 +62,12 @@ impl PublicKey {
 /// # Stateful, and the state is the whole point
 ///
 /// XMSS signs at most once per epoch. Signing two *different* messages at one epoch does not
-/// cost a penalty — the lean protocol has no slashing — it exposes enough one-time-chain
-/// state to forge. This type does not enforce that: the no-reuse guarantee is a persisted
-/// signing watermark on the validator's signing path, because a guarantee that lives in
-/// memory does not survive the crash-restart it exists to defend against. See
-/// `docs/design/key-management.md`, Decision 1.
+/// cost a penalty — the lean protocol has no slashing — it exposes that epoch's one-time-chain
+/// values, making a forgery possible at that one slot. Epochs are independent (each chain start
+/// comes from the PRF applied to its own epoch), so the rest of the key is untouched. This type
+/// does not enforce non-reuse: the guarantee is the validator duty loop's once-per-slot
+/// structure, held in memory and never persisted. See `docs/design/key-management.md`,
+/// Decision 1.
 ///
 /// What this type does enforce is the weaker precondition leanSig asserts on: that the slot
 /// is inside the key's activation range and its prepared window. leanSig panics on both, and
@@ -191,7 +192,8 @@ impl SecretKey {
     /// clone-advance-swap: hand a clone to a blocking worker, keep signing with the original,
     /// swap when the worker returns. The windows overlap by about three days around the
     /// current slot, so the original stays able to sign throughout. Both objects are the same
-    /// key; no-reuse is carried by the watermark, not by which clone signed.
+    /// key; no-reuse is carried by the duty loop's once-per-slot dedup, not by which clone
+    /// signed.
     ///
     /// Advancing past the end of the activation interval does nothing, which is why this
     /// returns no error and why [`Self::advance_preparation_to`] bounds its own loop instead

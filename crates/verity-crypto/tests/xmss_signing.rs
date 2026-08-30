@@ -65,8 +65,8 @@ fn should_survive_its_own_encoding_when_a_real_signature_is_round_tripped() {
 }
 
 /// leanSig derandomizes signing, so the same triple yields the identical signature. That is
-/// what makes an idempotent re-sign harmless — and why the watermark refuses *equality*
-/// rather than relying on it.
+/// what makes an idempotent re-sign harmless: the prohibition is two *different* messages at
+/// one `(key, slot)`, never a retry of the same one.
 #[test]
 fn should_produce_identical_bytes_when_the_same_message_is_signed_twice_at_one_slot() {
     let Some(key) = test_key() else {
