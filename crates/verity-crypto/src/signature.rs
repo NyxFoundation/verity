@@ -1,9 +1,9 @@
 //! Signing and verification of one validator's XMSS signature.
 //!
 //! Two functions and the bridge between the wire shape and the library's own. Everything
-//! that decides *whether* a signature should be produced — duty scheduling, the persisted
-//! signing watermark, key preparation — lives above this crate; what is here is the
-//! operation itself, with leanSig's two panicking preconditions turned into typed errors.
+//! that decides *whether* a signature should be produced — duty scheduling, the once-per-slot
+//! dedup, key preparation — lives above this crate; what is here is the operation itself, with
+//! leanSig's two panicking preconditions turned into typed errors.
 
 use leansig::serialization::Serializable;
 use leansig::signature::SignatureScheme;
@@ -41,10 +41,10 @@ impl Signature {
 /// # This function does not prevent key reuse
 ///
 /// Determinism means re-signing the *same* message at the same slot returns the identical
-/// signature and is harmless. Signing a *different* message at that slot breaks the key.
-/// Nothing here can tell the two apart, because a second call carries no memory of the
-/// first. The guarantee is the persisted watermark on the validator's signing path, checked
-/// and durably written *before* this is called — see `docs/design/key-management.md`.
+/// signature and is harmless. Signing a *different* message at that slot exposes that epoch's
+/// one-time-chain values. Nothing here can tell the two apart, because a second call carries no
+/// memory of the first. The guarantee is the validator duty loop's once-per-slot structure —
+/// see `docs/design/key-management.md`, Decision 1.
 ///
 /// # Errors
 ///
