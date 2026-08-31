@@ -60,7 +60,7 @@ impl<B: StorageBackend> Repository<B> {
 
         let (low, high) = key::slot_and_root_bounds(Slot(0), cutoff);
         let mut batch = WriteBatch::new();
-        batch.delete_range(ColumnFamily::BlockProofs, low.to_vec(), high.to_vec());
+        batch.queue_delete_range(ColumnFamily::BlockProofs, low.to_vec(), high.to_vec());
         self.commit(batch, Durability::Buffered)?;
         Ok(Some(cutoff))
     }
@@ -92,7 +92,7 @@ impl<B: StorageBackend> Repository<B> {
                 if self.vote_is_relevant(vote.head, finalized)? {
                     continue;
                 }
-                batch.delete(table, key::validator(validator));
+                batch.queue_delete(table, key::validator(validator));
                 pruned += 1;
             }
         }

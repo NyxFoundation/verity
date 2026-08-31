@@ -78,8 +78,14 @@ pub enum Op {
 
 /// A set of mutations that apply all or none.
 ///
+/// The `queue_` prefix on every method is the point: they mutate this batch and nothing else,
+/// and no key moves until the batch is handed to [`StorageBackend::write`]. A commit is one
+/// batch, so a crash between two of these calls cannot leave half a block on disk.
+///
 /// Ops are applied in insertion order, so a later put over an earlier key in the same batch
-/// wins, and a range delete does not remove a put issued after it.
+/// wins, and a range delete does not remove a put issued after it. A reorg to a block at a
+/// slot the old branch also occupied relies on exactly that: the delete is queued first and
+/// the new root's put lands after it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WriteBatch {
     ops: Vec<Op>,
@@ -92,8 +98,12 @@ impl WriteBatch {
         Self { ops: Vec::new() }
     }
 
-    /// Queues a value write.
-    pub fn put(&mut self, table: ColumnFamily, key: impl Into<Vec<u8>>, value: Vec<u8>) {
+    /// Writes `value` at `key`, replacing whatever the key already held.
+    ///
+    /// `key` is generic because callers build one from a root, a slot, a validator index, or
+    /// a fixed ASCII name; `value` is not, because every value in this crate is already the
+    /// `Vec<u8>` that `to_ssz` returned.
+    pub fn queue_put(&mut self, table: ColumnFamily, key: impl Into<Vec<u8>>, value: Vec<u8>) {
         self.ops.push(Op::Put {
             table,
             key: key.into(),
@@ -101,16 +111,16 @@ impl WriteBatch {
         });
     }
 
-    /// Queues a single-key removal.
-    pub fn delete(&mut self, table: ColumnFamily, key: impl Into<Vec<u8>>) {
+    /// Removes `key`. A key that is not present is not an error.
+    pub fn queue_delete(&mut self, table: ColumnFamily, key: impl Into<Vec<u8>>) {
         self.ops.push(Op::Delete {
             table,
             key: key.into(),
         });
     }
 
-    /// Queues a half-open range removal.
-    pub fn delete_range(
+    /// Removes every key in `[start, end)`, leaving `end` itself in place.
+    pub fn queue_delete_range(
         &mut self,
         table: ColumnFamily,
         start: impl Into<Vec<u8>>,

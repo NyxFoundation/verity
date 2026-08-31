@@ -180,34 +180,34 @@ impl<B: StorageBackend> Repository<B> {
             &(slot.0 * INTERVALS_PER_SLOT),
         );
 
-        batch.put(
+        batch.queue_put(
             ColumnFamily::BlockHeaders,
             key::root(anchor.block_root),
             header.to_ssz(),
         );
         if let Some(body) = anchor.body {
-            batch.put(
+            batch.queue_put(
                 ColumnFamily::BlockBodies,
                 key::root(anchor.block_root),
                 body.to_ssz(),
             );
         }
-        batch.put(
+        batch.queue_put(
             ColumnFamily::StateSnapshots,
             key::root(anchor.block_root),
             anchor.state.to_ssz(),
         );
-        batch.put(
+        batch.queue_put(
             ColumnFamily::StateRoots,
             key::root(state_root),
             anchor.block_root.to_vec(),
         );
-        batch.put(
+        batch.queue_put(
             ColumnFamily::CanonicalBlocks,
             key::slot(slot),
             anchor.block_root.to_vec(),
         );
-        batch.put(
+        batch.queue_put(
             ColumnFamily::ForkChoiceBlocks,
             key::slot_and_root(slot, anchor.block_root),
             header.parent_root.to_vec(),
@@ -234,35 +234,35 @@ impl<B: StorageBackend> Repository<B> {
         let root = commit.block_root;
 
         let mut batch = WriteBatch::new();
-        batch.put(ColumnFamily::BlockHeaders, key::root(root), header.to_ssz());
-        batch.put(
+        batch.queue_put(ColumnFamily::BlockHeaders, key::root(root), header.to_ssz());
+        batch.queue_put(
             ColumnFamily::BlockBodies,
             key::root(root),
             commit.body.to_ssz(),
         );
-        batch.put(
+        batch.queue_put(
             ColumnFamily::BlockProofs,
             key::slot_and_root(slot, root),
             commit.proof.to_ssz(),
         );
-        batch.put(
+        batch.queue_put(
             ColumnFamily::StateDiffs,
             key::root(root),
             StateDiff::of(commit.post_state).to_ssz(),
         );
         if crosses_snapshot_boundary(commit.parent_slot, slot) {
-            batch.put(
+            batch.queue_put(
                 ColumnFamily::StateSnapshots,
                 key::root(root),
                 commit.post_state.to_ssz(),
             );
         }
-        batch.put(
+        batch.queue_put(
             ColumnFamily::StateRoots,
             key::root(header.state_root),
             root.to_vec(),
         );
-        batch.put(
+        batch.queue_put(
             ColumnFamily::ForkChoiceBlocks,
             key::slot_and_root(slot, root),
             header.parent_root.to_vec(),
@@ -295,7 +295,7 @@ impl<B: StorageBackend> Repository<B> {
             if stored.is_some_and(|stored| !supersedes(vote, &stored)) {
                 continue;
             }
-            batch.put(
+            batch.queue_put(
                 ColumnFamily::PendingVotes,
                 key::validator(*validator),
                 vote.to_ssz(),
@@ -396,10 +396,10 @@ impl<B: StorageBackend> Repository<B> {
             },
         };
         for slot in switch.leaving {
-            batch.delete(ColumnFamily::CanonicalBlocks, key::slot(slot));
+            batch.queue_delete(ColumnFamily::CanonicalBlocks, key::slot(slot));
         }
         for (slot, root) in switch.joining {
-            batch.put(
+            batch.queue_put(
                 ColumnFamily::CanonicalBlocks,
                 key::slot(slot),
                 root.to_vec(),
@@ -459,13 +459,13 @@ impl<B: StorageBackend> Repository<B> {
         for (validator, vote) in self.pending_votes()? {
             let stored = self.known_vote(validator)?;
             if stored.is_none_or(|stored| supersedes(&vote, &stored)) {
-                batch.put(
+                batch.queue_put(
                     ColumnFamily::KnownVotes,
                     key::validator(validator),
                     vote.to_ssz(),
                 );
             }
-            batch.delete(ColumnFamily::PendingVotes, key::validator(validator));
+            batch.queue_delete(ColumnFamily::PendingVotes, key::validator(validator));
         }
         Ok(())
     }

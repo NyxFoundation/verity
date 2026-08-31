@@ -83,7 +83,7 @@ fn should_refuse_a_populated_database_missing_an_identity_value() {
     // database, and must not be adopted as one.
     let mut backend = MemoryBackend::new();
     let mut batch = WriteBatch::new();
-    batch.put(
+    batch.queue_put(
         ColumnFamily::Metadata,
         MetadataKey::ChainFingerprint.as_bytes().to_vec(),
         identity.chain_fingerprint.to_vec(),
@@ -105,7 +105,7 @@ fn should_refuse_a_database_whose_stored_containers_changed_shape() {
     // Stand in for a container whose SSZ shape moved between builds. The bytes still decode;
     // only the manifest digest says they no longer mean the same thing.
     let mut batch = WriteBatch::new();
-    batch.put(
+    batch.queue_put(
         ColumnFamily::Metadata,
         MetadataKey::SszSchemaDigest.as_bytes().to_vec(),
         [1u8; 32].to_vec(),

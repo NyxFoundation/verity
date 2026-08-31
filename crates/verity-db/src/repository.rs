@@ -269,5 +269,5 @@ impl<B: StorageBackend> Repository<B> {
 /// Free function rather than a method so a caller assembling one cross-table batch does not
 /// need a second mutable borrow of the repository while holding the batch.
 pub(crate) fn put_metadata<T: SszEncode>(batch: &mut WriteBatch, key: MetadataKey, value: &T) {
-    batch.put(ColumnFamily::Metadata, key.as_bytes(), value.to_ssz());
+    batch.queue_put(ColumnFamily::Metadata, key.as_bytes(), value.to_ssz());
 }

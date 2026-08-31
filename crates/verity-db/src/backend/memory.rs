@@ -105,7 +105,7 @@ mod tests {
         let mut backend = MemoryBackend::new();
         let mut batch = WriteBatch::new();
         for slot in 0u64..8 {
-            batch.put(
+            batch.queue_put(
                 ColumnFamily::CanonicalBlocks,
                 slot.to_be_bytes().to_vec(),
                 vec![u8::try_from(slot).unwrap()],
@@ -146,7 +146,7 @@ mod tests {
     fn should_apply_a_range_delete_to_exactly_the_half_open_interval() {
         let mut backend = seeded();
         let mut batch = WriteBatch::new();
-        batch.delete_range(
+        batch.queue_delete_range(
             ColumnFamily::CanonicalBlocks,
             0u64.to_be_bytes().to_vec(),
             3u64.to_be_bytes().to_vec(),
@@ -167,8 +167,8 @@ mod tests {
     fn should_let_a_later_op_in_a_batch_win_over_an_earlier_one() {
         let mut backend = MemoryBackend::new();
         let mut batch = WriteBatch::new();
-        batch.put(ColumnFamily::Metadata, b"head".to_vec(), vec![1]);
-        batch.put(ColumnFamily::Metadata, b"head".to_vec(), vec![2]);
+        batch.queue_put(ColumnFamily::Metadata, b"head".to_vec(), vec![1]);
+        batch.queue_put(ColumnFamily::Metadata, b"head".to_vec(), vec![2]);
         backend.write(batch, Durability::Synced).unwrap();
         assert_eq!(
             backend.get(ColumnFamily::Metadata, b"head").unwrap(),
