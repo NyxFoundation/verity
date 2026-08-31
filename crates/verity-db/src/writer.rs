@@ -27,7 +27,7 @@ use crate::merkle::hash_tree_root;
 use crate::metadata::MetadataKey;
 use crate::repository::{Repository, put_metadata};
 use crate::schema::{SCHEMA_VERSION, ssz_schema_digest};
-use crate::votes::replaces;
+use crate::votes;
 
 use libssz::SszEncode;
 
@@ -292,7 +292,7 @@ impl<B: StorageBackend> Repository<B> {
         let mut batch = WriteBatch::new();
         for (validator, vote) in votes {
             let stored = self.pending_vote(*validator)?;
-            if !replaces(vote, stored.as_ref()) {
+            if !votes::replaces(vote, stored.as_ref()) {
                 continue;
             }
             batch.queue_put(
@@ -458,7 +458,7 @@ impl<B: StorageBackend> Repository<B> {
     fn queue_vote_merge(&self, batch: &mut WriteBatch) -> Result<(), StorageError> {
         for (validator, vote) in self.pending_votes()? {
             let stored = self.known_vote(validator)?;
-            if replaces(&vote, stored.as_ref()) {
+            if votes::replaces(&vote, stored.as_ref()) {
                 batch.queue_put(
                     ColumnFamily::KnownVotes,
                     key::validator(validator),
