@@ -18,6 +18,12 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+# Exhaustiveness policy: matches must not hide variants. `manual_let_else` folds the
+# `if let ... else { return }` shape into `let-else`; `match_wildcard_for_single_variants`
+# flags a `_` arm that silently absorbs exactly one remaining variant, which would also
+# absorb any variant leanSpec adds later. Plain `if` on booleans is untouched by both.
+manual_let_else = "warn"
+match_wildcard_for_single_variants = "warn"
 
 # Every external dependency is declared once here and inherited by members with
 # `workspace = true`, so a version appears in exactly one place in the tree.
