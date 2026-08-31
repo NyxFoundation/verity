@@ -83,11 +83,7 @@ impl<B: StorageBackend> Repository<B> {
         let mut batch = WriteBatch::new();
         let mut pruned = 0;
         for table in [ColumnFamily::KnownVotes, ColumnFamily::PendingVotes] {
-            let votes = if table == ColumnFamily::KnownVotes {
-                self.known_votes()?
-            } else {
-                self.pending_votes()?
-            };
+            let votes = self.all_votes(table)?;
             for (validator, vote) in votes {
                 if self.vote_is_relevant(vote.head, finalized)? {
                     continue;
