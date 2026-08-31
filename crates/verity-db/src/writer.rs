@@ -248,7 +248,7 @@ impl<B: StorageBackend> Repository<B> {
         batch.queue_put(
             ColumnFamily::StateDiffs,
             key::root(root),
-            StateDiff::of(commit.post_state).to_ssz(),
+            StateDiff::from_post_state(commit.post_state).to_ssz(),
         );
         if crosses_snapshot_boundary(commit.parent_slot, slot) {
             batch.queue_put(

@@ -53,10 +53,15 @@ pub struct StateDiff {
 impl StateDiff {
     /// The diff that reproduces `post` from the state of its parent block.
     ///
+    /// This drops most of a state rather than converting one, which is why it is a named
+    /// constructor and not a `From` implementation: `config`, the validator registry, the
+    /// latest header, and the historical roots are all left behind for the snapshot and for
+    /// `reconstruct` to supply.
+    ///
     /// The base is taken from `post.latest_block_header.parent_root` rather than being passed
     /// in, so a diff cannot be built claiming a base the state does not actually descend from.
     #[must_use = "this builds the row; it does not store it"]
-    pub fn of(post: &State) -> Self {
+    pub fn from_post_state(post: &State) -> Self {
         Self {
             base_block_root: post.latest_block_header.parent_root,
             slot: post.slot,
