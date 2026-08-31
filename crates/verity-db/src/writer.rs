@@ -388,7 +388,7 @@ impl<B: StorageBackend> Repository<B> {
         new_head: Bytes32,
     ) -> Result<(), StorageError> {
         let switch = match previous {
-            Some(previous) => self.divergence(previous, new_head)?,
+            Some(previous) => self.canonical_switch(previous, new_head)?,
             // No previous head: nothing to unwind, and the anchor already wrote its own slot.
             None => CanonicalSwitch {
                 leaving: Vec::new(),
@@ -408,11 +408,12 @@ impl<B: StorageBackend> Repository<B> {
         Ok(())
     }
 
-    /// Walks both heads back to their common ancestor.
+    /// The edits moving the head from `previous` to `new_head` implies, found by walking both
+    /// back to their common ancestor.
     ///
     /// The walk is bounded by the chain itself: each step moves one of the two pointers
     /// strictly backwards, and a missing header stops it as corruption rather than looping.
-    fn divergence(
+    fn canonical_switch(
         &self,
         previous: Bytes32,
         new_head: Bytes32,
