@@ -1,0 +1,39 @@
+[package]
+name = "verity-db"
+description = "The consensus repository: what is persisted, how it is keyed, and which transitions commit together, over a swappable byte-level backend."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# The Runtime Shell's storage layer. It depends on `verity-types` for the shapes it stores and
+# on the SSZ family to encode them, and on nothing else from the workspace: a repository that
+# depended on `verity-chain` would be a repository that could make a consensus decision, and
+# the write discipline of `docs/design/storage.md` rests on it not being able to.
+#
+# `libssz-merkle` is here for the integrity checks — a batch is refused unless the header roots
+# to the block root and the state roots to the header — not to compute anything new.
+#
+# `sha2` hashes exactly one thing: the stored-type manifest of `schema.rs`. It is not the SSZ
+# hasher; that stays behind `libssz-merkle`.
+[dependencies]
+libssz.workspace = true
+libssz-derive.workspace = true
+libssz-merkle.workspace = true
+libssz-types.workspace = true
+rocksdb.workspace = true
+sha2.workspace = true
+verity-types.workspace = true
+
+# `verity-chain` is a *test* dependency only, and the direction matters: the repository must
+# not be able to reach a consensus decision, but a test of the repository is worth nothing
+# unless the states it stores are ones the real state transition produced.
+[dev-dependencies]
+tempfile.workspace = true
+verity-chain.workspace = true
+
+[lints]
+workspace = true
