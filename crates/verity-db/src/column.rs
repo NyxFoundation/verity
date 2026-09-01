@@ -82,7 +82,19 @@ impl ColumnFamily {
     /// SSZ and takes LZ4 well.
     #[must_use]
     pub const fn compressed(self) -> bool {
-        !matches!(self, Self::BlockProofs)
+        match self {
+            Self::BlockProofs => false,
+            Self::BlockHeaders
+            | Self::BlockBodies
+            | Self::StateSnapshots
+            | Self::StateDiffs
+            | Self::CanonicalBlocks
+            | Self::StateRoots
+            | Self::ForkChoiceBlocks
+            | Self::KnownVotes
+            | Self::PendingVotes
+            | Self::Metadata => true,
+        }
     }
 
     /// The fixed key width of this table, or `None` where keys are variable-width.

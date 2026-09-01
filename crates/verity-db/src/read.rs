@@ -216,7 +216,7 @@ impl<B: StorageBackend> Repository<B> {
         self.all_votes(ColumnFamily::PendingVotes)
     }
 
-    fn all_votes(
+    pub(crate) fn all_votes(
         &self,
         table: ColumnFamily,
     ) -> Result<Vec<(ValidatorIndex, AttestationData)>, StorageError> {

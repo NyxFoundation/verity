@@ -138,7 +138,10 @@ impl StorageBackend for RocksBackend {
         }
 
         let mut write_options = WriteOptions::default();
-        write_options.set_sync(durability == Durability::Synced);
+        write_options.set_sync(match durability {
+            Durability::Synced => true,
+            Durability::Buffered => false,
+        });
         self.db
             .write_opt(rocks_batch, &write_options)
             .map_err(backend)
