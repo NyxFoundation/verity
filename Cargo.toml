@@ -107,6 +107,26 @@ libp2p = { version = "0.56", default-features = false, features = [
     "secp256k1",
 ] }
 
+# The async runtime for the I/O Edge. Only `verity-p2p` consumes it today; the feature set is
+# what the network service actually uses — `rt` to spawn the swarm task, `sync` for the
+# command/event channels, `macros` for `select!`, `time` for request timeouts — plus
+# `rt-multi-thread` so integration tests can drive two nodes on one runtime.
+# Required to implement `libp2p::request_response::Codec`, whose trait definition uses
+# `#[async_trait]` — this is upstream's shape, not a choice made here.
+async-trait = "0.1"
+tokio = { version = "1", default-features = false, features = [
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "macros",
+    "time",
+] }
+futures = "0.3"
+
+# Snappy, in both of its formats. leanSpec uses the raw block format for gossip payloads and
+# the CRC-framed format for req/resp chunks; `snap` exposes both (`raw`, `read`/`write`).
+snap = "1.1"
+
 # --- Storage -------------------------------------------------------------------------------
 # See docs/src/reference/architecture.md "Storage engine and retention" for why an LSM engine and not a B-tree one.
 #
@@ -145,6 +165,7 @@ verity-types = { path = "crates/verity-types", version = "0.0.0" }
 verity-chain = { path = "crates/verity-chain", version = "0.0.0" }
 verity-crypto = { path = "crates/verity-crypto", version = "0.0.0" }
 verity-db = { path = "crates/verity-db", version = "0.0.0" }
+verity-p2p = { path = "crates/verity-p2p", version = "0.0.0" }
 
 # --- Test-only -----------------------------------------------------------------------------
 # Scoped to SSZ round-trip properties in `verity-types`. This is a deliberate, narrow exception
