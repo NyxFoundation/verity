@@ -1,0 +1,42 @@
+[package]
+name = "verity-p2p"
+description = "The I/O Edge network service: gossipsub and req/resp over libp2p QUIC, speaking leanSpec's wire protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# Thin glue over upstream rust-libp2p (kickoff decision: no fork). The crate owns the wire
+# protocol — topics, message IDs, snappy formats, req/resp framing — and nothing above it:
+# no SSZ decode of gossip payloads, no signature verification, no peer scoring, no sync
+# state machine. Those belong to the verification stage and the sync service
+# (docs/design/concurrency.md, docs/design/sync.md); gossip leaves this crate as raw bytes.
+#
+# `sha2` computes the gossip message ID (SHA-256 truncated to 20 bytes), a transport
+# identifier — not a consensus root, which stays behind `libssz-merkle` elsewhere.
+#
+# `verity-types` supplies the two shapes the wire protocol itself owns a copy of: the
+# `Checkpoint` pair inside `Status`, and the `Slot` in `BlocksByRangeRequest`. Response
+# chunks (blocks) are deliberately NOT decoded here — they cross the API as raw SSZ bytes.
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+libp2p.workspace = true
+libssz.workspace = true
+libssz-derive.workspace = true
+libssz-merkle.workspace = true
+libssz-types.workspace = true
+sha2.workspace = true
+snap.workspace = true
+tokio.workspace = true
+verity-types.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

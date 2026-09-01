@@ -122,6 +122,8 @@ jobs:
           tar -xzf fixtures-prod-scheme.tar.gz -C fixtures-prod \
             --wildcards '*/ssz/*/ssz/test_consensus_containers/*.json' \
             '*/ssz/*/ssz/test_xmss_containers/*.json' \
+            '*/ssz/*/ssz/test_networking_containers/*.json' \
+            '*/networking_codec/*/networking/*/*.json' \
             '*/justifiability/*/state_transition/test_justifiability/*.json' \
             '*/slot_clock/*/chain/test_slot_clock/*.json' \
             '*/state_transition/*/state_transition/*/*.json' \
