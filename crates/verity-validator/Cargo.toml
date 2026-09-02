@@ -1,0 +1,29 @@
+[package]
+name = "verity-validator"
+description = "Validator duties: block and vote production, XMSS signing, key preparation, and attestation aggregation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# Duties only. This crate decides *when* a signature should exist and produces it; it does not
+# decide whether one is valid (`verity-chain`), how it reaches a peer (`verity-p2p`), or what
+# is written down (`verity-db`). Its products leave over a channel the wiring owns, so it takes
+# no dependency on the node it runs inside.
+#
+# `libssz` is here for the two directions the store's uninterpreted signature bytes have to be
+# read in: a pooled attestation signature arrives as bytes and an aggregate proof leaves as
+# them.
+[dependencies]
+libssz.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+verity-chain.workspace = true
+verity-crypto.workspace = true
+verity-types.workspace = true
+
+[lints]
+workspace = true

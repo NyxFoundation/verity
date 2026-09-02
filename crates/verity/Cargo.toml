@@ -1,0 +1,23 @@
+[package]
+name = "verity"
+description = "The Verity consensus client: the executable a validator runs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# The binary, and nothing else. Argument parsing, log setup, signal handling, and the call
+# that starts the node: everything with an opinion about consensus lives in `verity-node` and
+# below, where it can be tested without a process.
+[dependencies]
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+verity-node.workspace = true
+
+[lints]
+workspace = true

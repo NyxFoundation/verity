@@ -1,6 +1,6 @@
 ---
 title: Verity Architecture
-last_updated: 2026-08-26
+last_updated: 2026-09-02
 tags:
   - architecture
   - verification-boundary
@@ -139,11 +139,11 @@ sequenceDiagram
 
 ## Crate layout
 
-This layout is the **target** shape, not the day-one scaffold. Implementation starts with a
-single `verity-consensus` crate (kickoff decision, 2026-07-22): the zone boundaries below
-begin as module boundaries inside that crate, holding the same inward invariant, and split
-into separate crates only when a second crate earns its existence. The workspace description
-that follows is what that split grows into.
+This layout is the **target** shape. The kickoff decision of 2026-07-22 was to start from a
+single `verity-consensus` crate and split only when a second crate earned its existence; that
+split has since happened, crate by crate, and the workspace now holds `verity-types`,
+`verity-chain`, `verity-crypto`, `verity-db`, `verity-p2p`, `verity-validator`, `verity-node`,
+and the `verity` binary. What is still ahead is named as such below.
 
 The Rust runtime is a Cargo workspace. Crates map onto the zones, and **calls and dependencies flow
 inward, from higher-effect / lower-assurance toward lower-effect / higher-assurance — Verified Core never calls
@@ -170,12 +170,23 @@ upstream Lean library name per Rust's `-sys` convention.
   swappable backend behind the
   [capability contracts](#capability-contracts): its exported function set is exactly *whatever Verified Core
   currently hosts*, and is expected to expand or contract as the frontier moves.
-- `verity-chain` — the single writer that owns the consensus state and the fork-choice store, and
-  coordinates the `State` and `Store` aggregates under one consistency boundary. The only caller of
-  Verity Consensus; wraps `verity-consensus-sys` behind a safe API. Reads and writes through `verity-db`.
-- `verity-validator` — validator duties (production only): block and vote production, signing, and
-  aggregation.
-- `verity` (binary) — the executable validators run: orchestrator, slot clock, wiring, backpressure.
+- `verity-chain` — the consensus decisions themselves: the state transition, fork choice,
+  justification candidacy, proposer selection, block building, the slot-clock arithmetic, and the
+  `ChainView` snapshot readers answer from. Pure functions over `verity-types` shapes — nothing
+  here reads a clock, a socket, or a database, which is what keeps the transition a candidate to
+  move into Verified Core whole. It will be the only caller of Verity Consensus, wrapping
+  `verity-consensus-sys` behind a safe API.
+- `verity-validator` — validator duties (production only): block and vote production, XMSS signing,
+  key preparation, and the aggregation round. Serialises every proof the process builds, because
+  leanVM's prover is one arena per process.
+- `verity-node` — the runtime that makes those libraries a process: the **single writer**, one task
+  owning `Store`, `State` and the repository under one consistency boundary; the verification stage
+  in front of it, where `Verified*` values are the only things that can reach it; the interval
+  clock; and the wiring to the network, the database, and validator duties. The consistency
+  boundary lives here because it is a *runtime* property — ownership by one task — while the
+  decisions it applies stay in `verity-chain`.
+- `verity` (binary) — the executable validators run: argument parsing, log setup, signal handling,
+  and the call that starts the node.
 
 **Thin glue over existing libraries**
 
@@ -192,12 +203,13 @@ upstream Lean library name per Rust's `-sys` convention.
 
 Layer mapping: **Verified Core** = Verity Consensus (the compiled export subset of formal-leanSpec, not a Cargo crate); **Runtime Shell** = `verity-consensus-sys`,
 `verity-types`, `verity-chain`, `verity-crypto`, `verity-db`; **I/O Edge** = `verity-p2p`,
-`verity-validator`, `verity-rpc`, `verity-metrics`, `verity` (binary).
+`verity-validator`, `verity-node`, `verity-rpc`, `verity-metrics`, `verity` (binary).
 
 ```mermaid
 flowchart TB
     subgraph ZC["I/O Edge"]
         BIN["verity (bin)"]
+        NODE["verity-node"]
         VAL["verity-validator"]
         RPC["verity-rpc"]
         MET["verity-metrics"]
@@ -213,16 +225,17 @@ flowchart TB
     subgraph ZA["Verified Core · Verity Consensus"]
         LEAN["Verity Consensus<br/>(Lean repo)"]
     end
-    BIN --> VAL
-    BIN --> RPC
-    BIN --> MET
-    BIN --> P2P
-    BIN --> CHAIN
+    BIN --> NODE
+    NODE --> VAL
+    NODE --> RPC
+    NODE --> MET
+    NODE --> P2P
+    NODE --> CHAIN
+    NODE --> DB
     VAL --> CHAIN
     VAL --> CRYPTO
     RPC --> CHAIN
     MET --> CHAIN
-    P2P --> CHAIN
     CHAIN --> SYS
     SYS ==> LEAN
     CHAIN --> DB

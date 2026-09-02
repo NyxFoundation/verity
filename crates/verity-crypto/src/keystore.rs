@@ -165,6 +165,39 @@ fn load_role(
     Ok(RoleKeys { public, secret })
 }
 
+/// Rewrites one role's secret key file, atomically.
+///
+/// This is how an advanced key becomes durable. It is written to a temporary file beside the
+/// original and renamed over it, so a crash mid-write leaves the previous key intact rather
+/// than a truncated one: a stale key costs preparation work after a restart, a truncated one
+/// costs the validator its duties.
+///
+/// The layout is the loader's, so the writer lives beside it — a caller that had to spell the
+/// file name itself would be a second place the naming convention is known.
+///
+/// # Errors
+///
+/// [`KeyLoadError::Unwritable`] when the temporary file cannot be written or renamed. The
+/// caller should log it and carry on: the advanced key in memory is unaffected, and nothing
+/// about the no-reuse guarantee is written to disk in the first place.
+pub fn persist_secret_key(
+    key_directory: &Path,
+    index: ValidatorIndex,
+    role: Role,
+    secret: &SecretKey,
+) -> Result<(), KeyLoadError> {
+    let path = key_file(key_directory, index, role, "sk");
+    let temporary = path.with_extension("ssz.tmp");
+
+    let unwritable = |path: &Path, error: std::io::Error| KeyLoadError::Unwritable {
+        path: path.to_path_buf(),
+        reason: error.to_string(),
+    };
+
+    fs::write(&temporary, secret.to_ssz_bytes()).map_err(|error| unwritable(&temporary, error))?;
+    fs::rename(&temporary, &path).map_err(|error| unwritable(&path, error))
+}
+
 fn key_file(key_directory: &Path, index: ValidatorIndex, role: Role, half: &str) -> PathBuf {
     key_directory.join(format!(
         "validator_{}_{}_key_{half}.ssz",

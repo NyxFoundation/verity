@@ -54,6 +54,6 @@ pub use containers::{
 };
 pub use error::{AggregationError, KeyLoadError, SignatureError};
 pub use key::SecretKey;
-pub use keystore::{RoleKeys, ValidatorKeys};
+pub use keystore::{RoleKeys, ValidatorKeys, persist_secret_key};
 pub use scheme::{Role, epoch_for_slot};
 pub use signature::{sign, verify};

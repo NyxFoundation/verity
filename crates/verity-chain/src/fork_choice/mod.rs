@@ -43,7 +43,7 @@ pub use attestation::{
     validate_attestation_signer,
 };
 pub use block::{on_block, update_head};
-pub use duties::attestation_target;
+pub use duties::{attestation_data, attestation_target};
 pub use prune::prune_stale_attestation_data;
 pub use store::{AttestationSignature, AttestationSignatureEntry, Store};
 pub use timeline::{accept_new_attestations, on_tick, update_safe_target};

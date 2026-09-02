@@ -127,6 +127,18 @@ pub enum KeyLoadError {
         reason: String,
     },
 
+    /// An advanced key could not be written back to its file.
+    ///
+    /// Never fatal on its own: persisting an advanced key only bounds how much preparation a
+    /// restart owes, and carries no part of the no-reuse guarantee
+    /// (`docs/design/key-management.md`, Decision 3).
+    Unwritable {
+        /// The file that could not be written.
+        path: PathBuf,
+        /// The operating system's reason, rendered.
+        reason: String,
+    },
+
     /// The manifest is not the YAML shape the loader expects.
     MalformedManifest {
         /// The manifest that failed to parse.
@@ -193,6 +205,9 @@ impl fmt::Display for KeyLoadError {
         match self {
             Self::Unreadable { path, reason } => {
                 write!(f, "cannot read {}: {reason}", path.display())
+            }
+            Self::Unwritable { path, reason } => {
+                write!(f, "cannot write {}: {reason}", path.display())
             }
             Self::MalformedManifest { path, reason } => {
                 write!(f, "malformed key manifest {}: {reason}", path.display())
