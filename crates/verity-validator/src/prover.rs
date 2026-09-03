@@ -4,11 +4,22 @@
 //!
 //! leanVM's prover allocates from a single arena per process: two proofs built concurrently
 //! corrupt each other's buffers, however many cores are free (`verity_crypto::aggregate`).
-//! The node has two producers of proofs — block production at interval 0 and the aggregation
-//! worker at interval 2 — and nothing about the slot schedule prevents a slow aggregation
-//! from still running when the next slot's proposal starts. Serialization is therefore a
-//! correctness requirement, not a throughput policy, and it has to live somewhere both
-//! producers pass through.
+//! The invariant to hold is therefore *per process* — never two proofs at once — and not
+//! anything about which validator is doing what.
+//!
+//! The node has two producers of proofs, block production at interval 0 and the aggregation
+//! worker at interval 2, and they reach the prover together for two independent reasons:
+//!
+//! - **Across slots.** Proving takes seconds and a slot is four, so an aggregation started at
+//!   slot N's interval 2 can still be running when slot N+1's interval 0 starts proposing.
+//! - **Within one slot.** A node runs whatever validators `validators.yaml` assigns it, and
+//!   aggregation is a static node-level role rather than a per-slot selection — leanSpec is
+//!   explicit that "aggregator selection is static (node-level flag), not VRF-based
+//!   rotation". So an aggregating node aggregates in every slot, including the ones it also
+//!   proposes in, whether or not the same validator holds both.
+//!
+//! Serialization is a correctness requirement, not a throughput policy, and it has to live
+//! somewhere both producers pass through.
 //!
 //! # Where the work runs
 //!
