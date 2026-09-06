@@ -1,0 +1,35 @@
+[package]
+name = "verity-node"
+description = "The node runtime: the chain task that owns consensus state, the verification stage in front of it, and the wiring that joins them to the network, the database, and validator duties."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# The wiring crate. Everything below it is a component with one job; this is where the
+# components are joined, which is why it is the only crate that depends on all of them.
+#
+# `serde_norway` and `hex` read the cross-client genesis and validator-assignment files;
+# `libssz` decodes gossip payloads, which arrive as raw bytes by design.
+[dependencies]
+hex.workspace = true
+libssz.workspace = true
+serde.workspace = true
+serde_norway.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+verity-chain.workspace = true
+verity-crypto.workspace = true
+verity-db.workspace = true
+verity-p2p.workspace = true
+verity-types.workspace = true
+verity-validator.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

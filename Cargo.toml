@@ -107,12 +107,12 @@ libp2p = { version = "0.56", default-features = false, features = [
     "secp256k1",
 ] }
 
-# The async runtime for the I/O Edge. Only `verity-p2p` consumes it today; the feature set is
-# what the network service actually uses — `rt` to spawn the swarm task, `sync` for the
-# command/event channels, `macros` for `select!`, `time` for request timeouts — plus
-# `rt-multi-thread` so integration tests can drive two nodes on one runtime.
-# Required to implement `libp2p::request_response::Codec`, whose trait definition uses
-# `#[async_trait]` — this is upstream's shape, not a choice made here.
+# The async runtime for the I/O Edge. The feature set is what the node actually uses — `rt`
+# and `rt-multi-thread` to spawn the swarm, chain, verification and duty tasks, `sync` for the
+# channels between them, `macros` for `select!`, `time` for request timeouts and the slot
+# clock's sleeps, and `signal` for the binary's one shutdown trigger.
+# `async-trait` is required to implement `libp2p::request_response::Codec`, whose trait
+# definition uses `#[async_trait]` — this is upstream's shape, not a choice made here.
 async-trait = "0.1"
 tokio = { version = "1", default-features = false, features = [
     "rt",
@@ -120,6 +120,7 @@ tokio = { version = "1", default-features = false, features = [
     "sync",
     "macros",
     "time",
+    "signal",
 ] }
 futures = "0.3"
 
@@ -149,6 +150,23 @@ rocksdb = { version = "0.24", default-features = false, features = [
     "bindgen-runtime",
 ] }
 
+# --- Node runtime --------------------------------------------------------------------------
+# Argument parsing for the `verity` binary, derive-based so the grammar is one struct and
+# `--help` is generated from it rather than maintained beside it.
+clap = { version = "4.6", features = ["derive"] }
+
+# Structured logging. `tracing` is the facade the crates record through; the subscriber is the
+# binary's alone, because a library that installs one takes the choice from its consumer.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "ansi",
+    "env-filter",
+] }
+
+# Hex, for the public keys the cross-client genesis file carries as strings.
+hex = "0.4"
+
 # --- Hashing -------------------------------------------------------------------------------
 # Not the SSZ hasher — that is `libssz-merkle`, and nothing may route a consensus root around
 # it. This is for `verity-db`'s stored-type manifest digest, which hashes a description of the
@@ -166,6 +184,8 @@ verity-chain = { path = "crates/verity-chain", version = "0.0.0" }
 verity-crypto = { path = "crates/verity-crypto", version = "0.0.0" }
 verity-db = { path = "crates/verity-db", version = "0.0.0" }
 verity-p2p = { path = "crates/verity-p2p", version = "0.0.0" }
+verity-validator = { path = "crates/verity-validator", version = "0.0.0" }
+verity-node = { path = "crates/verity-node", version = "0.0.0" }
 
 # --- Test-only -----------------------------------------------------------------------------
 # Scoped to SSZ round-trip properties in `verity-types`. This is a deliberate, narrow exception

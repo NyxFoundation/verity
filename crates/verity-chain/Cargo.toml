@@ -14,9 +14,12 @@ publish = false
 #
 # `libssz-merkle` is here for one reason: the state transition commits to `hash_tree_root` of
 # the state, the parent header, and the block body, so the decision cannot be expressed
-# without it. It is the same Serialization capability `verity-types` already depends on, not
-# a new supplier.
+# without it. `libssz` is here for a second: leanSpec breaks a proof-selection tie on the
+# candidates' canonical encodings, so block building cannot be expressed without one either.
+# Both are the same Serialization capability `verity-types` already depends on, not a new
+# supplier.
 [dependencies]
+libssz.workspace = true
 libssz-merkle.workspace = true
 libssz-types.workspace = true
 verity-types.workspace = true

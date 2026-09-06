@@ -20,8 +20,8 @@ use libssz_types::SszBitlist;
 use verity_types::config::MAX_ATTESTATIONS_DATA;
 use verity_types::primitives::{Bytes32, Slot, ZERO_HASH};
 use verity_types::{
-    AggregatedAttestation, AggregationBits, AttestationData, Checkpoint, HistoricalBlockHashes,
-    JustificationRoots, JustificationValidators, JustifiedSlots, State,
+    AggregatedAttestation, AggregationBits, AttestationData, Checkpoint, JustificationRoots,
+    JustificationValidators, JustifiedSlots, State,
 };
 
 use crate::error::RejectionReason;
@@ -275,7 +275,11 @@ impl JustificationState {
 }
 
 /// Whether every checkpoint in the data points at the chain view's block for its slot.
-fn is_on_chain(data: &AttestationData, chain: &HistoricalBlockHashes) -> bool {
+///
+/// The view is a slice rather than the state's own list because a proposer checks candidate
+/// votes against the chain as it *will* look once its block lands — history, the parent, and
+/// a zero hash per skipped slot (see [`crate::block_production`]).
+pub(crate) fn is_on_chain(data: &AttestationData, chain: &[Bytes32]) -> bool {
     // Empty slots carry the zero hash, so a vote recording one is meaningless.
     if data.source.root == ZERO_HASH || data.target.root == ZERO_HASH || data.head.root == ZERO_HASH
     {

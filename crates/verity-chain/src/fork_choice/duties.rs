@@ -1,14 +1,17 @@
 //! What a validator should vote for, given the store's view.
 //!
-//! Only the target selection lives here. Producing and signing the attestation itself needs
-//! a key and a signature library, neither of which this crate has (see the crate docs).
+//! Target selection and the vote built around it. Signing that vote needs a key and a
+//! signature library, neither of which this crate has (see the crate docs), so the duty stops
+//! at the unsigned [`AttestationData`].
 //!
 //! Transcribed from leanSpec `src/lean_spec/spec/forks/lstar/validator_duties.py`, read at
 //! commit `0588c2d215a955a516378677a92db2a5666802f3`.
 
 use verity_types::config::JUSTIFICATION_LOOKBACK_SLOTS;
-use verity_types::{Bytes32, Checkpoint, Slot};
+use verity_types::primitives::ZERO_HASH;
+use verity_types::{AttestationData, Bytes32, Checkpoint, Slot};
 
+use crate::error::RejectionReason;
 use crate::fork_choice::store::Store;
 use crate::justification::is_justifiable_after;
 
@@ -59,6 +62,53 @@ pub fn attestation_target(store: &Store) -> Checkpoint {
         root: target_root,
         slot: slot_of(store, target_root).unwrap_or(finalized_slot),
     }
+}
+
+/// The vote a validator should cast at `slot`.
+///
+/// The head is named as observed, the target comes from [`attestation_target`], and the
+/// source is the *head chain's* own justified checkpoint rather than the store's. The store
+/// can advance its justified checkpoint from a minority fork the head never extended, and a
+/// vote sourced there would name a checkpoint off the chain it is extending.
+///
+/// A genesis state carries the zero hash as its justified root, which names no block. The
+/// head stands in for it, which at that point is the anchor at slot 0 — the block the
+/// checkpoint means.
+///
+/// # Errors
+///
+/// [`RejectionReason::SourceAfterTarget`] when the source ends up ahead of the target.
+/// leanSpec asserts here; Runtime Shell code must not panic, so the impossible vote is
+/// returned as a rejection instead of being cast.
+#[must_use = "this produces the vote; signing it is the validator client's job"]
+pub fn attestation_data(store: &Store, slot: Slot) -> Result<AttestationData, RejectionReason> {
+    let head = Checkpoint {
+        root: store.head,
+        slot: slot_of(store, store.head).unwrap_or(store.latest_finalized.slot),
+    };
+    let target = attestation_target(store);
+
+    let mut source = store
+        .states
+        .get(&store.head)
+        .map_or(store.latest_justified, |state| state.latest_justified);
+    if source.root == ZERO_HASH {
+        source = Checkpoint {
+            root: store.head,
+            slot: source.slot,
+        };
+    }
+
+    if source.slot.0 > target.slot.0 {
+        return Err(RejectionReason::SourceAfterTarget);
+    }
+
+    Ok(AttestationData {
+        slot,
+        head,
+        target,
+        source,
+    })
 }
 
 /// The slot of a known block, or `None` where the root is not in the local view.

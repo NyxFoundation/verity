@@ -176,6 +176,31 @@ impl SingleMessageProof {
 }
 
 impl MultiMessageProof {
+    /// What each component covers, in component order: the message, and the slot it was
+    /// signed at.
+    ///
+    /// # Why a verifier needs this
+    ///
+    /// The proof holds neither public keys nor the claim that the messages are the right
+    /// ones. It proves only that *these* keys, signing *these* messages, produced this
+    /// aggregate — so a verifier that resolved the keys but not the messages would accept a
+    /// block whose proposer had folded in honest signatures over entirely different data.
+    /// Binding is the caller's step: reconstruct the expected pairs from the block and
+    /// compare them against these, in order.
+    #[must_use = "the bindings are what a verifier compares against; reading them proves nothing"]
+    pub fn bindings(&self) -> Vec<(Bytes32, Slot)> {
+        self.0
+            .info
+            .iter()
+            .map(|component| {
+                (
+                    component.without_pubkeys.message,
+                    Slot(u64::from(component.without_pubkeys.slot)),
+                )
+            })
+            .collect()
+    }
+
     /// Checks the proof.
     ///
     /// # Errors
