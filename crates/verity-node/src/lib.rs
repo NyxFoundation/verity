@@ -40,7 +40,7 @@ pub mod clock;
 pub mod config;
 pub mod error;
 pub mod network;
-pub mod startup;
+pub mod store_open;
 pub mod verification;
 
 use std::path::PathBuf;
@@ -140,7 +140,7 @@ impl Node {
         // The store carries one validator index, which is only ever used to attribute the
         // node's own votes; the keyring below is what actually decides which duties run.
         let backend = RocksBackend::open(&config.data_directory)?;
-        let (repository, store) = startup::open(
+        let (repository, store) = store_open::open(
             backend,
             &genesis_state,
             config.validator_indices.first().copied(),
