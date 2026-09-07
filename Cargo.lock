@@ -5971,6 +5971,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "verity-chain",
  "verity-crypto",
  "verity-db",
