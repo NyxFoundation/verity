@@ -70,7 +70,11 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
         keypair: Keypair::generate_secp256k1(),
         validator_indices: vec![ValidatorIndex(0)],
         key_directory: Some(key_base.join("hash-sig-keys")),
-        is_aggregator: true,
+        // Not an aggregator, deliberately. The interval-2 round is a zk proof per slot and
+        // has nothing to do with what this test claims; leaving it on made the producer prove
+        // continuously underneath the follower's catch-up, and the two together do not fit in
+        // a CI runner's memory. `single_node.rs` covers the aggregating path.
+        is_aggregator: false,
         checkpoint_sync_url: None,
     })
     .await
