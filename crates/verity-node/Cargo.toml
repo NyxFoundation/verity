@@ -34,9 +34,12 @@ verity-types.workspace = true
 verity-validator.workspace = true
 
 # `serde_json` reads the leanSpec fixture files; consensus values never travel as JSON.
+# `tracing-subscriber` is what makes `RUST_LOG` work in these harnesses: a library installs no
+# subscriber, so without it an end-to-end test that misbehaves is silent.
 [dev-dependencies]
 serde_json.workspace = true
 tempfile.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

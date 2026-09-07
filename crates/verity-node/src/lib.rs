@@ -317,13 +317,21 @@ impl Node {
 
     /// The addresses the network service actually bound.
     ///
-    /// Empty until the swarm reports its first listener. With port 0 in the configuration
-    /// this is the only place the bound port appears, so a caller that needs a dialable
-    /// address — an operator, or a second node in a test — reads it here rather than from a
-    /// log line.
+    /// Empty until the swarm reports its first listener, which happens shortly *after*
+    /// `start` returns: binding is synchronous but the address arrives as an event. A caller
+    /// that needs a dialable address should await [`Node::listening`] rather than read this
+    /// once. With port 0 in the configuration this is the only place the bound port appears,
+    /// so it is read here rather than from a log line.
     #[must_use]
     pub fn listen_addresses(&self) -> Vec<Multiaddr> {
         self.listening.borrow().clone()
+    }
+
+    /// The channel the bound addresses are published on, for a caller that has to wait for
+    /// one.
+    #[must_use]
+    pub fn listening(&self) -> watch::Receiver<Vec<Multiaddr>> {
+        self.listening.clone()
     }
 
     /// Whether the node considers itself caught up with the network.

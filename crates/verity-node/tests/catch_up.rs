@@ -1,10 +1,24 @@
-//! Two nodes, one gap: does a node that starts late reach the chain the first one built?
+//! One gap, three nodes' worth of work: does a node that starts late reach the chain that was
+//! built before it existed?
 //!
 //! This is the only test that exercises both halves of sync at once, and it exercises them
-//! against each other. For B to catch up, A has to answer block requests out of its own
-//! database — the responder — and B has to notice the gap, ask for what it is missing, and
-//! feed the answers through its verification stage — the client. Neither half can pass this
-//! alone, and neither is reachable from a unit test.
+//! against each other. For the follower to catch up, the server has to answer block requests
+//! out of a database — the responder — and the follower has to notice the gap, ask for what
+//! it is missing, and feed the answers through its verification stage — the client. Neither
+//! half can pass this alone, and neither is reachable from a unit test.
+//!
+//! # Why the chain is built by a node that is then shut down
+//!
+//! The producer holds validator keys, so it proves: a block proof per slot it proposes in.
+//! Leaving it running underneath the follower's catch-up means proving and verifying
+//! concurrently in one process for as long as the catch-up takes — which on a four-core CI
+//! runner is where this test spent 75 minutes and most of its memory.
+//!
+//! Nothing about the claim needs it. Serving is a database read, so the server is started on
+//! the producer's data directory *without keys*: it restores the chain, answers requests, and
+//! proves nothing. That also makes the test stricter than it was — the blocks the follower
+//! receives come out of persisted history through a restart, not out of the memory of the
+//! node that just made them.
 //!
 //! # Gated, and slow on purpose
 //!
@@ -21,11 +35,15 @@ use verity_node::{GenesisFile, Multiaddr, Node, NodeConfig, identity::Keypair};
 use verity_types::ValidatorIndex;
 use verity_types::config::SECONDS_PER_SLOT;
 
-/// How long the pair is given to build a chain and then close the gap.
+/// How long the producer is given to put a block on the chain.
 ///
-/// Bounded by proving on A's side and by verification on B's: every block B accepts costs it
-/// the same aggregate-proof check a gossiped block would.
-const BUDGET: Duration = Duration::from_secs(900);
+/// Bounded by proving: one block proof is seconds of zk work, more on a slow machine.
+const BUILD_BUDGET: Duration = Duration::from_secs(900);
+
+/// How long the follower is given to close the gap once it has a server to ask.
+///
+/// Bounded by verification, not by proving: nothing in this phase produces a block.
+const CATCH_UP_BUDGET: Duration = Duration::from_secs(300);
 
 /// How many blocks A puts on the chain before B is started.
 ///
@@ -38,6 +56,7 @@ const GAP_BLOCKS: u64 = 1;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_catch_up_to_a_running_node_when_started_after_it() {
+    common::init_logging();
     let Some(keys) = common::test_keys() else {
         eprintln!("skipping: set VERITY_TEST_KEYS to run the catch-up test");
         return;
@@ -60,20 +79,20 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
     let (genesis_path, key_base) = common::write_configuration(root.path(), &keys, genesis_time);
     let genesis = GenesisFile::read(&genesis_path).expect("the genesis file");
 
-    // A is the whole validator set: it proposes every slot it can sign for.
+    let chain_directory = root.path().join("chain-db");
+
+    // The producer is the whole validator set, and it exists only to put history on disk.
     let producer = Node::start(NodeConfig {
         genesis: genesis.clone(),
-        data_directory: root.path().join("producer-db"),
+        data_directory: chain_directory.clone(),
         listen: "/ip4/127.0.0.1/udp/0/quic-v1".parse().expect("an address"),
         bootnodes: Vec::new(),
         network_name: "00000000".to_string(),
         keypair: Keypair::generate_secp256k1(),
         validator_indices: vec![ValidatorIndex(0)],
         key_directory: Some(key_base.join("hash-sig-keys")),
-        // Not an aggregator, deliberately. The interval-2 round is a zk proof per slot and
-        // has nothing to do with what this test claims; leaving it on made the producer prove
-        // continuously underneath the follower's catch-up, and the two together do not fit in
-        // a CI runner's memory. `single_node.rs` covers the aggregating path.
+        // Not an aggregator: the interval-2 round is another zk proof per slot and has
+        // nothing to do with what this test claims. `single_node.rs` covers that path.
         is_aggregator: false,
         checkpoint_sync_url: None,
     })
@@ -82,11 +101,24 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
 
     // Let a gap open before the follower exists. Everything below this point is history the
     // follower can only get by asking for it: gossip carries the current slot, not the past.
+    //
+    // The wait does not end at the head: it ends one tick later. A block is made durable by
+    // its own commit, but the head pointer and the canonical index that a restart reads back
+    // are written by the interval tick that follows it. Stopping in between leaves a database
+    // holding the block and still pointing at genesis — correct, and useless to serve from.
     let mut producer_view = producer.view();
-    let built = tokio::time::timeout(BUDGET, async {
+    let built = tokio::time::timeout(BUILD_BUDGET, async {
+        let mut head_seen_at = None;
         loop {
-            if producer_view.borrow_and_update().head_checkpoint().slot.0 >= GAP_BLOCKS {
-                return;
+            {
+                let view = producer_view.borrow_and_update();
+                match head_seen_at {
+                    None if view.head_checkpoint().slot.0 >= GAP_BLOCKS => {
+                        head_seen_at = Some(view.time());
+                    }
+                    Some(interval) if view.time().0 > interval.0 => return,
+                    _ => {}
+                }
             }
             producer_view
                 .changed()
@@ -97,14 +129,41 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
     .await;
     assert!(
         built.is_ok(),
-        "the producer did not reach slot {GAP_BLOCKS} within {BUDGET:?}; it is at slot {}",
+        "the producer did not reach slot {GAP_BLOCKS} within {BUILD_BUDGET:?}; it is at slot {}",
         producer_view.borrow().head_checkpoint().slot.0
     );
 
     let target = producer_view.borrow().head_checkpoint();
-    let bootnode = dialable(&producer);
+    drop(producer_view);
+    // The database has the chain now, and the keys have done their job. Everything after this
+    // point is reads.
+    producer.shutdown().await;
 
-    // B holds no keys: it follows, and everything it ends up with came from A.
+    // The server: the producer's history, no keys, nothing to prove.
+    let server = Node::start(NodeConfig {
+        genesis: genesis.clone(),
+        data_directory: chain_directory,
+        listen: "/ip4/127.0.0.1/udp/0/quic-v1".parse().expect("an address"),
+        bootnodes: Vec::new(),
+        network_name: "00000000".to_string(),
+        keypair: Keypair::generate_secp256k1(),
+        validator_indices: Vec::new(),
+        key_directory: None,
+        is_aggregator: false,
+        checkpoint_sync_url: None,
+    })
+    .await
+    .expect("the server starts on the producer's database");
+    assert_eq!(
+        server.view().borrow().head_checkpoint().slot,
+        target.slot,
+        "the server restored a different head than the producer left"
+    );
+
+    let bootnode = dialable(&server).await;
+
+    // The follower holds no keys: it follows, and everything it ends up with came from the
+    // server.
     let follower = Node::start(NodeConfig {
         genesis,
         data_directory: root.path().join("follower-db"),
@@ -121,7 +180,7 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
     .expect("the follower starts");
 
     let mut follower_view = follower.view();
-    let caught_up = tokio::time::timeout(BUDGET, async {
+    let caught_up = tokio::time::timeout(CATCH_UP_BUDGET, async {
         loop {
             if follower_view
                 .borrow_and_update()
@@ -141,11 +200,11 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
     let reached = follower_view.borrow().head_checkpoint();
     let fetched = follower.sync_counters().fetched();
     let (served_requests, served_blocks) = {
-        let counters = producer.sync_counters();
+        let counters = server.sync_counters();
         (counters.served_requests(), counters.served_blocks())
     };
     follower.shutdown().await;
-    producer.shutdown().await;
+    server.shutdown().await;
 
     assert!(
         caught_up.is_ok(),
@@ -165,18 +224,26 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
     );
     assert!(
         served_blocks > 0,
-        "the producer answered {served_requests} block request(s) and served no blocks"
+        "the server answered {served_requests} block request(s) and served no blocks"
     );
 }
 
-/// The producer's bound address, with its peer id appended so it can be dialled.
-fn dialable(producer: &Node) -> Multiaddr {
-    let address = producer
-        .listen_addresses()
-        .into_iter()
-        .next()
-        .expect("the producer is listening");
+/// A node's bound address, with its peer id appended so it can be dialled.
+///
+/// Awaited rather than read: binding happens during `start`, but the address it produced
+/// arrives on the event stream a moment later.
+async fn dialable(node: &Node) -> Multiaddr {
+    let mut listening = node.listening();
+    let address = loop {
+        if let Some(address) = listening.borrow_and_update().first().cloned() {
+            break address;
+        }
+        listening
+            .changed()
+            .await
+            .expect("the network bridge is running");
+    };
     address
-        .with_p2p(producer.peer_id())
+        .with_p2p(node.peer_id())
         .expect("an address with a peer id")
 }

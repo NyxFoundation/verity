@@ -100,6 +100,17 @@ impl<B: StorageBackend> ChainTask<B> {
     /// each stopped producer drops its sender, and this loop ends once all three are gone.
     /// Duty products are drained to the end — they are never dropped, shutdown included.
     pub async fn run(mut self) {
+        // The clock's current interval is already in the watch when this task starts, and
+        // `changed()` below waits for the *next* one. Consuming it here is what stops a node
+        // that starts mid-chain from spending its first interval believing it is still at
+        // genesis: for those few hundred milliseconds every block the sync service fetches is
+        // ahead of the store's own clock, and a block refused as too far in the future is
+        // gone — nothing re-requests it, because it failed after the verification stage
+        // rather than in it.
+        let start = *self.clock.borrow_and_update();
+        self.on_clock(start).await;
+        self.publish();
+
         let mut clock_open = true;
         let mut local_open = true;
         let mut network_open = true;

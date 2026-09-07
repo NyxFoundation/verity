@@ -14,6 +14,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use verity_crypto::SecretKey;
 use verity_crypto::containers::PublicKey;
 
+/// Installs a log subscriber when `RUST_LOG` asks for one.
+///
+/// A library installs none, so without this an end-to-end test that misbehaves says nothing
+/// about why. Idempotent: a second call in the same process is a no-op.
+pub fn init_logging() {
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .try_init();
+    }
+}
+
 /// A key pair as `leansig-test-keys` ships it.
 pub struct TestKey {
     pub public: PublicKey,
