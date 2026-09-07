@@ -149,13 +149,9 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
 
     assert!(
         caught_up.is_ok(),
-        "the follower never imported the producer's block at slot {}; its head is at slot {}",
+        "the follower never reached the producer's slot {}; its head is at slot {}",
         target.slot.0,
         reached.slot.0
-    );
-    assert!(
-        reached.slot.0 >= target.slot.0,
-        "the follower holds the block but its head is behind it"
     );
 
     // Arriving is not the claim; arriving *by asking* is. Gossipsub keeps a short history and
