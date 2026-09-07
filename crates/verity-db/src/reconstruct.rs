@@ -16,7 +16,7 @@ use verity_types::primitives::{Bytes32, ZERO_HASH};
 use verity_types::state::HistoricalBlockHashes;
 use verity_types::{BlockHeader, State};
 
-use crate::backend::StorageBackend;
+use crate::backend::StorageReader;
 use crate::column::ColumnFamily;
 use crate::diff::{SNAPSHOT_INTERVAL_SLOTS, StateDiff};
 use crate::error::StorageError;
@@ -24,7 +24,7 @@ use crate::key;
 use crate::merkle::hash_tree_root;
 use crate::repository::Repository;
 
-impl<B: StorageBackend> Repository<B> {
+impl<B: StorageReader> Repository<B> {
     /// The state a block produced, rebuilt from stored data.
     ///
     /// Returns the snapshot directly when the block is a snapshot base; otherwise walks back

@@ -108,6 +108,24 @@ impl ChainView {
         self.store.blocks.get(&root)
     }
 
+    /// The highest slot of any block in view, canonical or not.
+    ///
+    /// Only verified blocks enter the store, so this is an authenticated lower bound on where
+    /// the network's tip is. A value far below the current slot means the network is not
+    /// producing rather than that this node is behind, which is the distinction the validator
+    /// duty gate turns on (`verity-validator`'s `serves_duties`).
+    ///
+    /// Falls back to the head's slot when the snapshot holds nothing but its anchor.
+    #[must_use]
+    pub fn max_known_block_slot(&self) -> Slot {
+        self.store
+            .blocks
+            .values()
+            .map(|block| block.slot)
+            .max_by_key(|slot| slot.0)
+            .unwrap_or_else(|| self.head_checkpoint().slot)
+    }
+
     /// Every block root in view — what a proposer may stand behind a vote for.
     #[must_use]
     pub fn known_block_roots(&self) -> HashSet<Bytes32> {

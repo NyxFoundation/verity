@@ -24,8 +24,13 @@
 //! them is punished, because gossipsub forwards before anyone verifies and the peer that
 //! delivered it may be an honest relay (`docs/design/sync.md`, Decision 3).
 //!
-//! Overflow evicts the oldest arrival, silently. Nothing re-requests it: an evicted block is
-//! what range sync is for, and an evicted vote comes back inside an aggregate or a block.
+//! Overflow evicts the oldest arrival. Both parking and eviction emit a gap signal — the
+//! root the item was waiting for, and the waiting item's own slot — to the sync service,
+//! which is the concrete mechanism behind `docs/design/concurrency.md`'s "range sync closes
+//! the gap when the chain notices the missing ancestry" (`docs/design/sync.md`, Decision 2).
+//! The noticing happens here, where an unknown parent is first discovered, not in the chain
+//! task. The signal is a `try_send` on a bounded channel: a full channel means the sync
+//! service is already busy closing gaps, and the next park re-raises the same one.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -40,9 +45,11 @@ use verity_crypto::containers::SignedAttestation;
 use verity_p2p::GossipKind;
 use verity_types::{
     AttestationData, Block, Bytes32, MultiMessageAggregate, SignedAggregatedAttestation,
-    SignedBlock, ValidatorIndex, Validators,
+    SignedBlock, Slot, ValidatorIndex, Validators,
 };
 use verity_validator::proofs;
+
+use crate::sync::fetch::Gap;
 
 /// A block whose proof has been checked against the registry its parent fixed.
 ///
@@ -204,6 +211,27 @@ impl Decoded {
             Self::Aggregate(signed) => signed.data.target.root,
         }
     }
+
+    /// The waiting item's own slot, which upper-bounds the head-side edge of the gap.
+    ///
+    /// The awaited block is known only by root, so its slot is exactly what this node does
+    /// not have; the child's slot is the nearest bound available and is what decides whether
+    /// the gap is chased by root or walked by range.
+    const fn slot(&self) -> Slot {
+        match self {
+            Self::Block(signed) => signed.block.slot,
+            Self::Attestation(signed) => signed.data.slot,
+            Self::Aggregate(signed) => signed.data.slot,
+        }
+    }
+
+    /// The gap this item's arrival reveals.
+    const fn gap(&self) -> Gap {
+        Gap {
+            awaited_root: self.awaited_root(),
+            waiting_slot: self.slot(),
+        }
+    }
 }
 
 /// The verification stage: decode, resolve, verify, forward.
@@ -211,6 +239,7 @@ pub struct VerificationStage {
     inbound: mpsc::Receiver<GossipPayload>,
     verified: mpsc::Sender<Verified>,
     view: watch::Receiver<Arc<ChainView>>,
+    gaps: mpsc::Sender<Gap>,
     pending: VecDeque<Decoded>,
     pending_capacity: usize,
     counters: Arc<StageCounters>,
@@ -223,6 +252,7 @@ impl VerificationStage {
         inbound: mpsc::Receiver<GossipPayload>,
         verified: mpsc::Sender<Verified>,
         view: watch::Receiver<Arc<ChainView>>,
+        gaps: mpsc::Sender<Gap>,
         pending_capacity: usize,
         counters: Arc<StageCounters>,
     ) -> Self {
@@ -230,6 +260,7 @@ impl VerificationStage {
             inbound,
             verified,
             view,
+            gaps,
             pending: VecDeque::with_capacity(pending_capacity),
             pending_capacity,
             counters,
@@ -344,12 +375,26 @@ impl VerificationStage {
     }
 
     /// Parks an item, evicting the oldest arrival when the buffer is full.
+    ///
+    /// Both the arriving item and any item displaced to make room for it raise a gap signal:
+    /// the arrival because nothing has been asked for yet, and the eviction because what was
+    /// asked for is now the only way that item comes back.
     fn park(&mut self, decoded: Decoded) {
-        if self.pending.len() >= self.pending_capacity {
-            self.pending.pop_front();
+        if self.pending.len() >= self.pending_capacity
+            && let Some(evicted) = self.pending.pop_front()
+        {
             self.counters.evicted.fetch_add(1, Ordering::Relaxed);
+            self.signal_gap(&evicted);
         }
+        self.signal_gap(&decoded);
         self.pending.push_back(decoded);
+    }
+
+    /// Tells the sync service about a missing ancestor, if it is listening and not saturated.
+    fn signal_gap(&self, decoded: &Decoded) {
+        if self.gaps.try_send(decoded.gap()).is_err() {
+            tracing::trace!("a gap signal was dropped; the next park raises it again");
+        }
     }
 
     fn reject(&self, kind: &GossipKind, failure: VerificationFailure) {

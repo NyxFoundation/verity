@@ -1,6 +1,6 @@
 ---
 title: Verity Architecture
-last_updated: 2026-09-02
+last_updated: 2026-09-07
 tags:
   - architecture
   - verification-boundary
@@ -182,9 +182,13 @@ upstream Lean library name per Rust's `-sys` convention.
 - `verity-node` — the runtime that makes those libraries a process: the **single writer**, one task
   owning `Store`, `State` and the repository under one consistency boundary; the verification stage
   in front of it, where `Verified*` values are the only things that can reach it; the interval
-  clock; and the wiring to the network, the database, and validator duties. The consistency
+  clock; the **sync service** — the peer table, the catch-up state machine and the block responder
+  of [sync.md](https://github.com/NyxFoundation/verity/blob/develop/docs/design/sync.md) — and the
+  wiring that joins all of them to the network, the database, and validator duties. The consistency
   boundary lives here because it is a *runtime* property — ownership by one task — while the
-  decisions it applies stay in `verity-chain`.
+  decisions it applies stay in `verity-chain`. The responder reads the same open database as the
+  writer through a read-only handle (`verity-db`'s `StorageReader`), which is how a request for a
+  thousand proof-bearing blocks is served without touching the writer's thread.
 - `verity` (binary) — the executable validators run: argument parsing, log setup, signal handling,
   and the call that starts the node.
 
@@ -196,8 +200,11 @@ upstream Lean library name per Rust's `-sys` convention.
   (formerly leanMultisig) for aggregation and aggregate-proof verification. One capability
   contract, two suppliers behind it.
 - `verity-db` — persistence (Repository): blocks, states, aggregate proofs, and the finalized anchor.
-  Keeps the storage concern out of the single-writer aggregate coordinator. See
-  [Storage engine and retention](#storage-engine-and-retention).
+  Keeps the storage concern out of the single-writer aggregate coordinator. The one-writer rule is
+  carried by the type system in two layers: writes take `&mut self`, and the backend trait splits
+  into `StorageReader` (point and range reads) and `StorageBackend` (those plus `write`), so a
+  reader sharing the writer's open database is a handle with no `write` on it rather than one
+  trusted not to call it. See [Storage engine and retention](#storage-engine-and-retention).
 - `verity-rpc` — HTTP API surface.
 - `verity-metrics` — implementation of the leanMetrics contract.
 

@@ -15,7 +15,7 @@
 use verity_types::Checkpoint;
 use verity_types::primitives::{Bytes32, Slot};
 
-use crate::backend::{Durability, StorageBackend, WriteBatch};
+use crate::backend::{Durability, StorageBackend, StorageReader, WriteBatch};
 use crate::column::ColumnFamily;
 use crate::error::StorageError;
 use crate::key;
@@ -127,7 +127,11 @@ impl<B: StorageBackend> Repository<B> {
             cursor = header.parent_root;
         }
     }
+}
 
+/// The serving window, which a reader answers as readily as the writer does: the range-sync
+/// responder runs in its own task, over a read-only handle on the same database.
+impl<B: StorageReader> Repository<B> {
     /// The lowest slot this node will answer a `BlocksByRange` request from.
     ///
     /// It is the higher of the spec's sliding four-hour floor and the first slot this node

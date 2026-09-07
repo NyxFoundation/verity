@@ -16,6 +16,11 @@
 //! here. That rule is expressible in the type system, so it is enforced by ownership: reads
 //! borrow shared, writes borrow unique, and a second writer cannot be constructed without
 //! moving the backend out of the first.
+//!
+//! The split between [`StorageReader`] and [`StorageBackend`] carries the same rule across
+//! *tasks*, where ownership alone cannot: the range-sync responder runs beside the chain
+//! writer and reads the same open database, so it holds a [`RocksReader`] — a handle with no
+//! `write` at all — rather than a second backend it is trusted not to write through.
 
 pub mod memory;
 pub mod rocks;
@@ -24,7 +29,7 @@ use crate::column::ColumnFamily;
 use crate::error::StorageError;
 
 pub use memory::MemoryBackend;
-pub use rocks::RocksBackend;
+pub use rocks::{RocksBackend, RocksReader};
 
 /// Key-value pairs read from one table, in ascending key order.
 ///
@@ -152,11 +157,17 @@ impl WriteBatch {
     }
 }
 
-/// A key-value engine the repository can be built on.
+/// The read half of a key-value engine the repository can be built on.
 ///
 /// Implementors own no consensus meaning: keys and values are opaque bytes, and the ordering
 /// guarantee below is the only structure the repository is allowed to rely on.
-pub trait StorageBackend {
+///
+/// The read half is a trait of its own so that a handle which *cannot* write is expressible.
+/// One database has exactly one writer (`docs/design/storage.md`), and readers that share it
+/// — the range-sync responder today, RPC later — hold a `Repository` over an implementor of
+/// this trait alone. A `Repository` built on a read-only backend has only the read half of
+/// the API, checked by the compiler rather than by a runtime refusal.
+pub trait StorageReader {
     /// Reads the value at `key`, or `None` when the table holds no such key.
     ///
     /// # Errors
@@ -175,7 +186,10 @@ pub trait StorageBackend {
     ///
     /// [`StorageError::Backend`] when the engine fails.
     fn range(&self, table: ColumnFamily, start: &[u8], end: &[u8]) -> Result<Rows, StorageError>;
+}
 
+/// A key-value engine that can also be written to: the one handle the chain writer holds.
+pub trait StorageBackend: StorageReader {
     /// Applies every op in `batch` atomically, or none of them.
     ///
     /// # Errors
