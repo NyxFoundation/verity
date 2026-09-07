@@ -127,7 +127,9 @@ jobs:
             '*/justifiability/*/state_transition/test_justifiability/*.json' \
             '*/slot_clock/*/chain/test_slot_clock/*.json' \
             '*/state_transition/*/state_transition/*/*.json' \
-            '*/fork_choice/*/fork_choice/*/*.json'
+            '*/fork_choice/*/fork_choice/*/*.json' \
+            '*/sync/*/sync/test_checkpoint_verify/*.json' \
+            '*/sync/*/sync/test_checkpoint_verify_advanced/*.json'
 
       # Pre-generated production-scheme keys, so signing tests do not pay key generation.
       # Pinned by sha256 the same way the fixtures are, and bumped by hand.

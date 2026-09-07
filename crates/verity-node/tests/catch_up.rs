@@ -29,8 +29,12 @@ const BUDGET: Duration = Duration::from_secs(900);
 
 /// How many blocks A puts on the chain before B is started.
 ///
-/// Two rather than one, so B has to walk more than a single parent link to get home.
-const GAP_BLOCKS: u64 = 2;
+/// One, and the reason is the cost of the second. A proposal is bounded by the slots its XMSS
+/// key is prepared for; going past that window makes the producer advance the key first, which
+/// is minutes of work and dominated this test's CI time by an order of magnitude. One block is
+/// enough for the claim: it exists before B does, so B can only have it by asking, and the
+/// counters at the end say whether it did.
+const GAP_BLOCKS: u64 = 1;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_catch_up_to_a_running_node_when_started_after_it() {
