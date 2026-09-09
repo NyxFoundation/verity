@@ -9,6 +9,10 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+default = []
+lean-ssz = ["verity-chain/lean-ssz"]
+
 # The wiring crate. Everything below it is a component with one job; this is where the
 # components are joined, which is why it is the only crate that depends on all of them.
 #

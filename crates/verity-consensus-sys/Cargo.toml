@@ -1,0 +1,25 @@
+[package]
+name = "verity-consensus-sys"
+description = "Experimental FFI boundary for Lean-compiled Verity consensus capabilities."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+links = "verity_ssz_pr132"
+build = "build.rs"
+
+[features]
+default = []
+lean-ssz = []
+
+[build-dependencies]
+cc.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

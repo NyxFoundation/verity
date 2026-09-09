@@ -9,6 +9,12 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+default = []
+# Feasibility path for ethereum/ssz-specs#132. If Lean 4.33.1 is unavailable at build time,
+# the adapter remains on libssz so workspace `--all-features` checks need no CI toolchain change.
+lean-ssz = ["dep:verity-consensus-sys", "verity-consensus-sys/lean-ssz"]
+
 # Pure decisions over `verity-types` shapes. No storage, no networking, no cryptography, and
 # no wall clock: every function here takes the time it should reason about as an argument.
 #
@@ -22,11 +28,17 @@ publish = false
 libssz.workspace = true
 libssz-merkle.workspace = true
 libssz-types.workspace = true
+verity-consensus-sys = { workspace = true, optional = true }
 verity-types.workspace = true
 
 [dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true
+
+[[bench]]
+name = "hash_tree_root"
+harness = false
+required-features = ["lean-ssz"]
 
 [lints]
 workspace = true

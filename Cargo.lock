@@ -5653,7 +5653,15 @@ dependencies = [
  "libssz-types",
  "serde",
  "serde_json",
+ "verity-consensus-sys",
  "verity-types",
+]
+
+[[package]]
+name = "verity-consensus-sys"
+version = "0.0.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

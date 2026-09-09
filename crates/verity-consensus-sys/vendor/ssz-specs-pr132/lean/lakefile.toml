@@ -1,0 +1,29 @@
+name = "ssz"
+defaultTargets = ["Ssz", "VeritySsz", "conformance", "regressions"]
+
+# No third-party dependencies: proofs use Lean's standard logical axioms.
+
+[leanOptions]
+# An unfinished proof is a warning by default, which would let one ship silently.
+warningAsError = true
+# An undeclared identifier becomes a silent new variable by default.
+autoImplicit = false
+relaxedAutoImplicit = false
+
+[[lean_lib]]
+name = "Ssz"
+
+[[lean_lib]]
+name = "VeritySsz"
+roots = ["VeritySsz"]
+
+[[lean_lib]]
+name = "Conformance"
+
+[[lean_exe]]
+name = "conformance"
+root = "Main"
+
+[[lean_exe]]
+name = "regressions"
+root = "Tests"
