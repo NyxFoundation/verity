@@ -25,7 +25,7 @@ pub enum DutyError {
     Signing(SignatureError),
     /// Aggregating or merging proofs failed.
     Aggregation(AggregationError),
-    /// The block or vote this node would have produced is one no peer would accept.
+    /// The block this node would have produced is one no peer would accept.
     Rejected(RejectionReason),
     /// The chain view holds no post-state for its own head, so no duty can be resolved
     /// against a registry. Transient, and only around startup.

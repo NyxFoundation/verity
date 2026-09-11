@@ -288,9 +288,7 @@ impl DutyService {
             return Ok(());
         }
 
-        // The vote is produced before the slot is marked, so a view that cannot yet answer
-        // leaves the slot open for the next interval to retry.
-        let data = view.attestation_data(slot)?;
+        let data = view.attestation_data(slot);
         self.attested.insert(slot);
         self.attested
             .retain(|attested| attested.0 + ATTESTED_SLOT_RETENTION > slot.0);
@@ -314,7 +312,12 @@ impl DutyService {
             }
         }
 
-        tracing::debug!(slot = slot.0, target = data.target.slot.0, "attested");
+        tracing::debug!(
+            slot = slot.0,
+            source = data.source.slot.0,
+            target = data.target.slot.0,
+            "attested"
+        );
         Ok(())
     }
 
