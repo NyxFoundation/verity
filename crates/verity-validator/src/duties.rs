@@ -52,6 +52,22 @@ use crate::prover::Prover;
 /// longer be re-reached by this loop.
 const ATTESTED_SLOT_RETENTION: u64 = 4;
 
+/// Head lag, in slots, beyond which duties stop: this node's view is stale.
+///
+/// leanSpec `node/validator/constants.py::SYNC_LAG_THRESHOLD`, the same value ethlambda uses
+/// in `crates/blockchain/src/sync_status.rs`. See [`DutyService::serves_duties`].
+const DUTY_LAG_THRESHOLD: u64 = 4;
+
+/// Lag of the freshest block *seen* beyond which the network, not this node, is the one that
+/// stopped — and duties keep running so the chain can recover.
+///
+/// leanSpec `NETWORK_STALL_THRESHOLD`, likewise shared with ethlambda.
+const NETWORK_STALL_THRESHOLD: u64 = 8;
+
+/// Recovery band that stops the gate flapping at the threshold: once closed it reopens at
+/// `DUTY_LAG_THRESHOLD - DUTY_LAG_HYSTERESIS`.
+const DUTY_LAG_HYSTERESIS: u64 = 2;
+
 /// The validator client: keys, the duties they owe, and the products they yield.
 pub struct DutyService {
     keyring: Keyring,
@@ -59,6 +75,8 @@ pub struct DutyService {
     products: mpsc::Sender<LocalProduct>,
     view: watch::Receiver<Arc<ChainView>>,
     ticks: watch::Receiver<Interval>,
+    /// The lag gate. See [`DutyService::serves_duties`].
+    gate: LagGate,
     attested: BTreeSet<Slot>,
     advancing: AdvancesInFlight,
 }
@@ -83,6 +101,7 @@ impl DutyService {
             products,
             view,
             ticks,
+            gate: LagGate::default(),
             attested: BTreeSet::new(),
             advancing: AdvancesInFlight::default(),
         }
@@ -119,8 +138,46 @@ impl DutyService {
 
         while self.ticks.changed().await.is_ok() {
             let interval = *self.ticks.borrow_and_update();
+            if !self.serves_duties(slot_of(interval)) {
+                continue;
+            }
             self.on_interval(interval).await;
         }
+    }
+
+    /// Whether duties may run for `slot`: the third serving gate.
+    ///
+    /// # Why lag and not the sync state
+    ///
+    /// A validator that signs while behind votes for a stale head and spends a one-time XMSS
+    /// signature to do it, and unlike a missed duty that spend is not recoverable
+    /// (`docs/design/key-management.md`). What the gate must answer is therefore "is this
+    /// node's view stale", and the honest measure of that is the node's own head against the
+    /// wall clock — not whether it has peers. A node alone at genesis is not behind anything;
+    /// a node with fifty peers and a head twenty slots old is.
+    ///
+    /// This is what every surveyed client does. leanSpec
+    /// (`node/validator/service.py::_is_synced_for_duties`), ethlambda
+    /// (`crates/blockchain/src/sync_status.rs`) and ream (`chain/lean/src/service.rs`) all
+    /// gate on head-versus-clock lag and none of them consults a peer count; the three
+    /// constants below are leanSpec's and ethlambda's, which agree exactly.
+    ///
+    /// # The stall override, and why it is not optional
+    ///
+    /// If every node stops signing whenever it is behind, a network that pauses can never
+    /// restart: every node is behind, so nobody proposes, so every node stays behind. The
+    /// freshest block this node has *seen* separates the two cases. Blocks reach the store
+    /// only after verification, so a stale maximum is authenticated evidence that the network
+    /// is not producing, and the gate opens rather than closing.
+    ///
+    /// The hysteresis band is what stops the gate flapping around the threshold: once closed
+    /// it reopens at `DUTY_LAG_THRESHOLD - DUTY_LAG_HYSTERESIS`, not at the threshold itself.
+    fn serves_duties(&mut self, slot: Slot) -> bool {
+        let view = self.view.borrow();
+        let head_slot = view.head_checkpoint().slot;
+        let max_seen = view.max_known_block_slot();
+        drop(view);
+        self.gate.admits(slot, head_slot, max_seen)
     }
 
     /// Brings every key far enough forward to sign for `slot`, off the async threads.
@@ -301,6 +358,47 @@ impl DutyService {
 }
 
 /// The slot an interval count since genesis falls in.
+/// The duty gate's decision, separated from the service so it can be exercised directly.
+///
+/// One bit of state — whether the gate is currently closed — which is what makes the
+/// hysteresis band expressible: reopening asks a different question from closing.
+#[derive(Debug, Default)]
+struct LagGate {
+    closed: bool,
+}
+
+impl LagGate {
+    /// Whether duties may run, given the wall-clock slot, this node's head, and the freshest
+    /// block it has seen from anyone.
+    fn admits(&mut self, slot: Slot, head_slot: Slot, max_seen: Slot) -> bool {
+        // Saturating, both of them: a head ahead of the wall clock is local clock drift, not
+        // a reason to trust a chain from the future.
+        let head_lag = slot.0.saturating_sub(head_slot.0);
+        let network_lag = slot.0.saturating_sub(max_seen.0);
+        let was_closed = self.closed;
+
+        self.closed = if network_lag > NETWORK_STALL_THRESHOLD {
+            false
+        } else if self.closed {
+            head_lag > DUTY_LAG_THRESHOLD - DUTY_LAG_HYSTERESIS
+        } else {
+            head_lag > DUTY_LAG_THRESHOLD
+        };
+
+        if self.closed != was_closed {
+            tracing::info!(
+                slot = slot.0,
+                head_slot = head_slot.0,
+                head_lag,
+                network_lag,
+                closed = self.closed,
+                "validator duty gate changed"
+            );
+        }
+        !self.closed
+    }
+}
+
 const fn slot_of(interval: Interval) -> Slot {
     Slot(interval.0 / INTERVALS_PER_SLOT)
 }
@@ -351,5 +449,68 @@ impl BlockProofJob {
         )?);
 
         proofs::to_multi_container(&merge_single_message_proofs(components)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use verity_types::Slot;
+
+    use super::{DUTY_LAG_THRESHOLD, LagGate, NETWORK_STALL_THRESHOLD};
+
+    /// A node whose head keeps up with the clock, which is also the case of a node alone on
+    /// the network at genesis: nothing is behind anything.
+    #[test]
+    fn should_serve_duties_while_the_head_keeps_up() {
+        let mut gate = LagGate::default();
+        for lag in 0..=DUTY_LAG_THRESHOLD {
+            let slot = Slot(100 + lag);
+            assert!(
+                gate.admits(slot, Slot(100), slot),
+                "lag {lag} is within the threshold"
+            );
+        }
+    }
+
+    #[test]
+    fn should_serve_duties_with_no_peers_at_genesis() {
+        let mut gate = LagGate::default();
+        assert!(gate.admits(Slot(0), Slot(0), Slot(0)));
+    }
+
+    #[test]
+    fn should_stop_signing_once_the_head_falls_behind() {
+        let mut gate = LagGate::default();
+        let slot = Slot(100 + DUTY_LAG_THRESHOLD + 1);
+        assert!(!gate.admits(slot, Slot(100), slot));
+    }
+
+    #[test]
+    fn should_reopen_only_below_the_hysteresis_band() {
+        let mut gate = LagGate::default();
+        // Close it.
+        assert!(!gate.admits(Slot(110), Slot(100), Slot(110)));
+        // Three slots behind: inside the threshold, but not yet inside the band.
+        assert!(!gate.admits(Slot(103), Slot(100), Slot(103)));
+        // Two slots behind: the band, so the gate reopens.
+        assert!(gate.admits(Slot(102), Slot(100), Slot(102)));
+    }
+
+    /// A network-wide stall is the case the gate must not make worse: if every node stopped
+    /// signing because every node is behind, nothing would ever propose again.
+    #[test]
+    fn should_keep_signing_when_the_network_itself_has_stopped() {
+        let mut gate = LagGate::default();
+        let slot = Slot(100 + NETWORK_STALL_THRESHOLD + 1);
+        // The head is far behind the clock, but so is the freshest block anyone has produced.
+        assert!(gate.admits(slot, Slot(100), Slot(100)));
+    }
+
+    /// The same lag, with the network visibly producing, is this node's problem.
+    #[test]
+    fn should_stop_signing_when_the_network_moves_and_this_node_does_not() {
+        let mut gate = LagGate::default();
+        let slot = Slot(100 + NETWORK_STALL_THRESHOLD + 1);
+        assert!(!gate.admits(slot, Slot(100), slot));
     }
 }

@@ -128,6 +128,30 @@ futures = "0.3"
 # the CRC-framed format for req/resp chunks; `snap` exposes both (`raw`, `read`/`write`).
 snap = "1.1"
 
+# The HTTP client, for checkpoint sync and nothing else. `default-features = false` drops the
+# native-TLS stack and the JSON and compression layers: the two endpoints return raw SSZ bytes,
+# so nothing here parses JSON. rustls rather than native-TLS is the choice ethlambda and ream
+# both made, and it reuses the rustls already in the tree behind `libp2p-quic`.
+#
+# `rustls-no-provider` rather than reqwest's `rustls`, and the difference is a C toolchain.
+# reqwest's `rustls` feature expands to `__rustls-aws-lc-rs`, which pulls `aws-lc-sys` — a C
+# library needing cmake and a C compiler on every build host — and leaves the tree with two
+# crypto providers, because libp2p-quic already brought `ring`. Selecting no provider here and
+# installing `ring` as the process default (see `verity-node`'s checkpoint module) keeps one
+# provider and adds no C dependency, which is the same reasoning that trims rocksdb's codecs
+# below.
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-no-provider",
+] }
+
+# Named directly only to install the process-wide crypto provider `rustls-no-provider` leaves
+# unset. Already in the tree behind libp2p-quic, with the same feature.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# Score-weighted peer selection (`docs/design/sync.md`, Decision 3). Nothing consensus-critical
+# depends on it: the draw decides who is asked for blocks, never what is believed.
+rand = "0.10"
+
 # --- Storage -------------------------------------------------------------------------------
 # See docs/src/reference/architecture.md "Storage engine and retention" for why an LSM engine and not a B-tree one.
 #

@@ -1,6 +1,6 @@
 ---
 title: Sync Pipeline
-last_updated: 2026-08-26
+last_updated: 2026-09-07
 tags:
   - sync
   - networking
@@ -9,7 +9,9 @@ tags:
 
 # Sync Pipeline
 
-> Status: pre-implementation. Decisions ratified 2026-08-16. This document settles how Verity
+> Status: implemented in `crates/verity-node/src/sync/`. Decisions ratified 2026-08-16;
+> three of them were corrected against the code and the surveyed clients on 2026-09-07 and
+> are marked **Revised** below. This document settles how Verity
 > joins the network and catches up: the sync mode lifecycle, the block-fetch pipeline, and
 > peer management. It plugs into the runtime model of [concurrency.md](concurrency.md) and
 > pays two debts recorded there and in [key-management.md](key-management.md): the mechanism
@@ -80,12 +82,31 @@ Verity adopts the reference node's three-state machine, with the surveyed refine
 - **The condition is evaluated continuously.** Status is re-exchanged periodically rather
   than once per connection, and the trigger is re-checked on every Status update — the
   ethlambda/qlean-mini once-per-connection design is the named counterexample.
-- **Duties require `SYNCED`.** The sync service publishes its state over a small `watch`
-  channel; the validator duty loop reads it as its **third serving gate**, joining the two
-  from [key-management.md](key-management.md) (first `ChainView` observed, keys prepared) —
-  an application of concurrency.md's necessary-not-sufficient rule. A validator that
-  attests while behind broadcasts votes for a stale head and burns one-time signatures
-  (key-management.md) for nothing.
+- **Duties are gated on head lag, not on this state machine.** *(Revised 2026-09-07 — the
+  original text made `SYNCED` the third serving gate.)* The duty gate's job is to answer "is
+  this node's view stale", and the peer-derived state machine answers a different question.
+  A node alone at genesis has met nobody, so it is honestly `IDLE` — but it is not behind
+  anything, and gating on the machine would stop the first node of a devnet from ever
+  proposing. Conversely a node with many peers and a twenty-slot-old head *is* stale.
+  The gate is therefore this node's head against the wall clock, with hysteresis and a
+  network-stall override, and the state machine drives fetching only:
+
+  | | closes duties when | reopens when | override |
+  |---|---|---|---|
+  | value | head lag > 4 slots | head lag ≤ 2 slots | freshest block *seen* lags > 8 slots → duties stay open |
+
+  This is what every surveyed client does and none of them consults a peer count: leanSpec
+  `node/validator/service.py::_is_synced_for_duties`, ethlambda
+  `crates/blockchain/src/sync_status.rs`, and ream `chain/lean/src/service.rs`, whose
+  `unwrap_or(current_head_slot)` makes "no peers" read as "not behind". The three constants
+  above are leanSpec's `SYNC_LAG_THRESHOLD`, `HYSTERESIS_BAND` and `NETWORK_STALL_THRESHOLD`,
+  which ethlambda copies exactly. The stall override is not optional: without it a paused
+  network can never restart, because every node is behind and so no node proposes.
+  It remains the **third serving gate** of the two in [key-management.md](key-management.md)
+  (first `ChainView` observed, keys prepared) — the reason is unchanged, a validator that
+  signs while stale burns one-time signatures (key-management.md) for nothing. Implemented as
+  `LagGate` in `verity-validator`; the sync state stays observable on the node for operators
+  and metrics.
 - **The entry decision tree, exhaustively.** Before the machine starts, the anchor is chosen
   by exactly one of three mutually exclusive paths:
   1. `--checkpoint-sync-url` **given** → checkpoint entry (below). The database and genesis
@@ -96,11 +117,19 @@ Verity adopts the reference node's three-state machine, with the surveyed refine
 - **Checkpoint entry.** Fetch the finalized state and block over HTTP and verify at the
   strictest surveyed depth (ethlambda's): genesis-time match, validator-registry match
   against local genesis config, slot-ordering invariants
-  (`finalized ≤ justified ≤ state slot`), checkpoint-root consistency — meaning
-  (a) `hash_tree_root(anchor_block) == state.latest_finalized.root` (the fetched block *is*
-  the state's finalized block) and (b) when `latest_justified.slot == latest_finalized.slot`
-  their roots are equal — and `hash_tree_root(state) == anchor_block.state_root`. Failures
-  split in two:
+  (`finalized ≤ justified ≤ state slot`), and anchor-pairing consistency. *(Revised
+  2026-09-07: the original text required `hash_tree_root(anchor_block) ==
+  state.latest_finalized.root` unconditionally. That is circular and unsatisfiable — the
+  block commits to this very state, so this state cannot also be one the block descends
+  from — and it is not what ethlambda, the implementation being copied, actually does.)*
+  The pairing is: (a) the fetched block **is** the block the state's own
+  `latest_block_header` describes (same slot, proposer, parent and body root), (b)
+  `hash_tree_root(state) == anchor_block.state_root`, which is the equality leanSpec's state
+  transition itself asserts when it accepts a block, (c) `latest_block_header.slot ≤
+  state.slot`, (d) **when** `latest_block_header.slot == latest_finalized.slot`, that block
+  root equals `latest_finalized.root` — the finalized root is checked exactly where it is
+  meaningful and nowhere else — and (e) when `latest_justified.slot ==
+  latest_finalized.slot`, their roots are equal. Failures split in two:
   **transient fetch failures** (timeout, connection refused, HTTP 5xx) are retried within a
   bounded budget (attempt counts and backoff are tunables); **definitive failures** (SSZ
   decode failure, any verification check failing, HTTP 4xx) exit immediately with no retry.
@@ -158,10 +187,17 @@ flowchart LR
   they are distinct from signature verification, which stays in the stage.
 - **Gossip during SYNCING**: the block topic stays subscribed — gossip blocks are the input
   that reveals the head-side edge of the gap (the reference's `fill_gap_above_head`
-  pattern). Attestation and aggregation processing is **paused** while SYNCING: their
-  target states cannot be resolved yet, so they would only churn the pending buffer and
-  burn aggregate-proof verification CPU on messages that cannot be imported. This is the
-  translation of the reference's `accepts_gossip` gate into the staged pipeline.
+  pattern). Attestations and aggregates whose target state is not in view **park in the
+  verification stage's existing pending buffer** and are retried when a snapshot resolves
+  them. *(Revised 2026-09-07 — the original text said this processing is "paused" while
+  SYNCING.)* Parking is what the staged pipeline already does with any item whose state is
+  missing, so it is the behaviour that costs no code at all: a synced-state gate inside the
+  stage would be an addition, not a saving. It is also what the reference node does —
+  `MAX_PENDING_ATTESTATIONS = 1024` in leanSpec's `node/sync/config.py` is that buffer.
+  The one cost is that blocks and attestations share one bounded buffer, so a catch-up can
+  evict a block waiting on its parent; eviction raises a gap signal like parking does, so
+  the block is re-requested rather than lost. If measurement shows the churn matters, the
+  next step is leanSpec's shape — a separate cap per kind — not a gate.
 
 ## Decision 3 — peer management
 

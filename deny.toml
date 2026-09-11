@@ -35,6 +35,11 @@ allow = [
     "Unicode-3.0",
     # foldhash, reached through hashbrown and alloy-primitives.
     "Zlib",
+    # webpki-root-certs, reached through rustls-platform-verifier, which reqwest's rustls
+    # feature pulls in whichever provider is selected. The licence covers Mozilla's root
+    # certificate *data* rather than code: permissive, no copyleft, no attribution beyond the
+    # disclaimer.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 # leanSig declares no `license` field in its manifest, so cargo-deny emits a standing

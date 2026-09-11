@@ -2,7 +2,9 @@
 //!
 //! [`NetworkBridge`] carries gossip inward: raw bytes to the verification stage, and nothing
 //! else — no decode, no crypto, so the swarm's own liveness never waits on a proof. It also
-//! answers the one request this node can answer from a snapshot.
+//! sorts the rest of the event stream to the task that owns each concern: the status
+//! handshake it answers itself from the snapshot, block requests go to the responder, and
+//! connection changes go to the sync service.
 //!
 //! [`ProductRelay`] carries this node's own duty products outward, and inward to the chain
 //! task, from the single channel the validator client sends on.
@@ -18,6 +20,7 @@ use verity_p2p::{ErrorCode, GossipKind, NetworkEvent, NetworkHandle, Request, Re
 use verity_types::SubnetId;
 use verity_validator::LocalProduct;
 
+use crate::sync::{BlockRequest, BlockRequestKind, PeerEvent};
 use crate::verification::GossipPayload;
 
 /// The subnet this node's votes are published on.
@@ -42,10 +45,28 @@ impl BridgeCounters {
     }
 }
 
+/// Where the bridge sorts the event stream to.
+///
+/// One value rather than four parameters, because they are one thing: the set of tasks the
+/// wire is fanned out to, decided once when the node is wired.
+pub struct BridgeChannels {
+    /// Raw gossip payloads, to the verification stage.
+    pub gossip: mpsc::Sender<GossipPayload>,
+    /// Inbound block requests, to the responder.
+    pub blocks: mpsc::Sender<BlockRequest>,
+    /// Connection changes, to the sync service.
+    pub peers: mpsc::Sender<PeerEvent>,
+    /// The addresses the swarm bound, published for whoever needs a dialable one.
+    pub listening: watch::Sender<Vec<verity_p2p::Multiaddr>>,
+}
+
 /// Drains the network task's event stream.
 pub struct NetworkBridge {
     events: mpsc::Receiver<NetworkEvent>,
     inbound: mpsc::Sender<GossipPayload>,
+    blocks: mpsc::Sender<BlockRequest>,
+    peers: mpsc::Sender<PeerEvent>,
+    listening: watch::Sender<Vec<verity_p2p::Multiaddr>>,
     handle: NetworkHandle,
     view: watch::Receiver<Arc<ChainView>>,
     counters: Arc<BridgeCounters>,
@@ -56,14 +77,17 @@ impl NetworkBridge {
     #[must_use = "a bridge does nothing until it is run"]
     pub fn new(
         events: mpsc::Receiver<NetworkEvent>,
-        inbound: mpsc::Sender<GossipPayload>,
+        channels: BridgeChannels,
         handle: NetworkHandle,
         view: watch::Receiver<Arc<ChainView>>,
         counters: Arc<BridgeCounters>,
     ) -> Self {
         Self {
             events,
-            inbound,
+            inbound: channels.gossip,
+            blocks: channels.blocks,
+            peers: channels.peers,
+            listening: channels.listening,
             handle,
             view,
             counters,
@@ -83,17 +107,33 @@ impl NetworkBridge {
                     request,
                     channel,
                 } => {
-                    let response = self.answer(&request);
-                    if self.handle.respond(channel, response).await.is_err() {
+                    if !self.dispatch(peer, request, channel).await {
                         break;
                     }
-                    tracing::trace!(%peer, "answered a request");
                 }
                 NetworkEvent::NewListenAddr(address) => {
                     tracing::info!(%address, "listening");
+                    // Published rather than only logged: with port 0 in the configuration
+                    // this event is the only place the bound port exists.
+                    self.listening.send_modify(|bound| bound.push(address));
                 }
-                NetworkEvent::PeerConnected(peer) => tracing::info!(%peer, "peer connected"),
-                NetworkEvent::PeerDisconnected(peer) => tracing::info!(%peer, "peer disconnected"),
+                NetworkEvent::PeerConnected(peer) => {
+                    tracing::info!(%peer, "peer connected");
+                    if self.peers.send(PeerEvent::Connected(peer)).await.is_err() {
+                        break;
+                    }
+                }
+                NetworkEvent::PeerDisconnected(peer) => {
+                    tracing::info!(%peer, "peer disconnected");
+                    if self
+                        .peers
+                        .send(PeerEvent::Disconnected(peer))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -112,28 +152,65 @@ impl NetworkBridge {
         }
     }
 
-    /// Answers a peer's request.
+    /// Sends one inbound request to whoever owns the data it asks for.
     ///
-    /// Status is answerable from the snapshot alone. The two block protocols are not: a
-    /// response chunk is a `SignedBlock`, proof included, and the proofs live in the database
-    /// behind the chain task's single writer. Serving them — with the retention window and
-    /// the refusal floor that go with it — arrives with the sync service
-    /// (`docs/design/sync.md`). Until then this node refuses them in the protocol's own
-    /// terms rather than leaving the peer to time out.
-    fn answer(&self, request: &Request) -> Response {
-        match request {
+    /// Status is answerable from the snapshot alone, so it is answered here and costs the
+    /// bridge nothing. A block request is hundreds of megabytes of disk read in the worst
+    /// case, so it goes to the responder's own task — by `try_send`, because a bridge that
+    /// waits for the responder is a bridge that stops draining gossip. A full queue is
+    /// answered `SERVER_ERROR` at once: telling a peer this node is saturated is better than
+    /// letting its request time out.
+    ///
+    /// Returns whether the bridge can carry on.
+    async fn dispatch(
+        &self,
+        peer: verity_p2p::PeerId,
+        request: Request,
+        channel: verity_p2p::ResponseChannel,
+    ) -> bool {
+        let kind = match request {
             Request::Status(_) => {
-                let view = self.view.borrow();
-                Response::Status(Status {
-                    finalized: view.latest_finalized(),
-                    head: view.head_checkpoint(),
-                })
+                let response = Response::Status(status_of(&self.view));
+                let answered = self.handle.respond(channel, response).await.is_ok();
+                tracing::trace!(%peer, "answered a status handshake");
+                return answered;
             }
-            Request::BlocksByRoot(_) | Request::BlocksByRange(_) => Response::Error {
-                code: ErrorCode::ResourceUnavailable,
-                message: "this node does not serve blocks yet".to_string(),
-            },
+            Request::BlocksByRoot(roots) => BlockRequestKind::ByRoot(roots),
+            Request::BlocksByRange(range) => BlockRequestKind::ByRange(range),
+        };
+
+        let Err(returned) = self.blocks.try_send(BlockRequest {
+            peer,
+            kind,
+            channel,
+        }) else {
+            return true;
+        };
+
+        match returned {
+            mpsc::error::TrySendError::Full(request) => {
+                let response = Response::Error {
+                    code: ErrorCode::ServerError,
+                    message: "the block responder is saturated".to_string(),
+                };
+                self.handle.respond(request.channel, response).await.is_ok()
+            }
+            // The responder is gone, which means the node is shutting down.
+            mpsc::error::TrySendError::Closed(_) => false,
         }
+    }
+}
+
+/// This node's checkpoints, as a peer sees them.
+///
+/// One function rather than one per caller: the bridge answers handshakes with it and the
+/// sync service opens them with it, and a `Status` that differed between the two would be
+/// this node describing itself two ways.
+pub fn status_of(view: &watch::Receiver<Arc<ChainView>>) -> Status {
+    let view = view.borrow();
+    Status {
+        finalized: view.latest_finalized(),
+        head: view.head_checkpoint(),
     }
 }
 

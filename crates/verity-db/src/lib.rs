@@ -57,7 +57,9 @@ pub mod schema;
 pub mod votes;
 pub mod writer;
 
-pub use backend::{Durability, MemoryBackend, RocksBackend, StorageBackend, WriteBatch};
+pub use backend::{
+    Durability, MemoryBackend, RocksBackend, RocksReader, StorageBackend, StorageReader, WriteBatch,
+};
 pub use column::ColumnFamily;
 pub use diff::{SNAPSHOT_INTERVAL_SLOTS, StateDiff};
 pub use error::{IdentityMismatch, StorageError};

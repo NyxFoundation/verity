@@ -10,7 +10,7 @@ use libssz::SszDecode;
 use verity_types::primitives::{Bytes32, Slot, ValidatorIndex};
 use verity_types::{AttestationData, BlockBody, BlockHeader, MultiMessageAggregate, State};
 
-use crate::backend::StorageBackend;
+use crate::backend::StorageReader;
 use crate::column::ColumnFamily;
 use crate::diff::StateDiff;
 use crate::error::StorageError;
@@ -28,7 +28,7 @@ pub struct ForkChoiceEntry {
     pub parent_root: Bytes32,
 }
 
-impl<B: StorageBackend> Repository<B> {
+impl<B: StorageReader> Repository<B> {
     /// The header of a processed block.
     ///
     /// # Errors

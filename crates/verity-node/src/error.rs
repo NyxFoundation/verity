@@ -11,7 +11,10 @@ use std::path::PathBuf;
 use verity_chain::RejectionReason;
 use verity_db::StorageError;
 use verity_p2p::BuildError;
+use verity_types::Slot;
 use verity_validator::DutyError;
+
+use crate::sync::checkpoint::CheckpointError;
 
 /// A configuration file the node cannot start from.
 #[derive(Debug)]
@@ -93,6 +96,20 @@ pub enum NodeError {
     /// Validator keys could not be loaded, which is always fatal
     /// (`docs/design/key-management.md`, Decision 2).
     Validator(DutyError),
+    /// A checkpoint start was asked for and could not be completed.
+    ///
+    /// Fatal by design: falling back to genesis or to a stale database would start the node
+    /// from an anchor the operator did not choose (`docs/design/sync.md`, Decision 1).
+    Checkpoint(CheckpointError),
+    /// A checkpoint start was asked for on a directory that already holds a chain.
+    ///
+    /// The two anchors cannot both be true, and neither may be picked silently: resuming
+    /// would ignore the flag, and anchoring would leave a hole below the checkpoint. The
+    /// operator points the node at an empty directory, or drops the flag.
+    CheckpointOverPopulated {
+        /// The slot of the anchor that was fetched.
+        slot: Slot,
+    },
 }
 
 impl fmt::Display for NodeError {
@@ -111,6 +128,14 @@ impl fmt::Display for NodeError {
             }
             Self::Network(error) => write!(f, "network: {error}"),
             Self::Validator(error) => write!(f, "{error}"),
+            Self::Checkpoint(error) => write!(f, "{error}"),
+            Self::CheckpointOverPopulated { slot } => write!(
+                f,
+                "checkpoint sync was asked for at slot {}, but this data directory already \
+                 holds a chain; point --data-dir at an empty directory or drop \
+                 --checkpoint-sync-url",
+                slot.0
+            ),
         }
     }
 }
@@ -144,5 +169,11 @@ impl From<BuildError> for NodeError {
 impl From<DutyError> for NodeError {
     fn from(error: DutyError) -> Self {
         Self::Validator(error)
+    }
+}
+
+impl From<CheckpointError> for NodeError {
+    fn from(error: CheckpointError) -> Self {
+        Self::Checkpoint(error)
     }
 }

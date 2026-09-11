@@ -13,7 +13,7 @@ use libssz::{SszDecode, SszEncode};
 use verity_types::Checkpoint;
 use verity_types::primitives::{Bytes32, Interval, Slot};
 
-use crate::backend::{Durability, Rows, StorageBackend, WriteBatch};
+use crate::backend::{Durability, Rows, StorageBackend, StorageReader, WriteBatch};
 use crate::column::ColumnFamily;
 use crate::error::{IdentityMismatch, StorageError};
 use crate::metadata::MetadataKey;
@@ -24,13 +24,19 @@ use crate::schema::{Identity, SCHEMA_VERSION, ssz_schema_digest};
 /// Reads borrow shared and writes borrow unique, so the one-writer-per-database rule of
 /// `docs/design/storage.md` is carried by ownership: P2P, RPC, and validator duties can hold
 /// a `&Repository` and read, and only the chain writer can hold the `&mut` that commits.
+///
+/// Across tasks the same rule is carried by the backend's type. Everything in this file and
+/// in `read.rs` needs only [`StorageReader`], so a repository over a read-only handle — what
+/// the range-sync responder holds — compiles with the read half of the API and nothing else;
+/// the committing half lives in `writer.rs` and `retention.rs` behind
+/// [`crate::StorageBackend`].
 #[derive(Debug)]
-pub struct Repository<B: StorageBackend> {
+pub struct Repository<B> {
     backend: B,
     identity: Identity,
 }
 
-impl<B: StorageBackend> Repository<B> {
+impl<B: StorageReader> Repository<B> {
     /// Opens `backend` as the repository of the chain described by `identity`.
     ///
     /// An empty database — one carrying none of the four identity values — opens and waits
@@ -163,18 +169,6 @@ impl<B: StorageBackend> Repository<B> {
         self.backend.range(table, start, end)
     }
 
-    /// Applies a batch. The only path by which anything becomes durable.
-    pub(crate) fn commit(
-        &mut self,
-        batch: WriteBatch,
-        durability: Durability,
-    ) -> Result<(), StorageError> {
-        if batch.is_empty() {
-            return Ok(());
-        }
-        self.backend.write(batch, durability)
-    }
-
     // --- Metadata -------------------------------------------------------------------------
 
     fn raw_metadata(&self, key: MetadataKey) -> Result<Option<Vec<u8>>, StorageError> {
@@ -261,6 +255,20 @@ impl<B: StorageBackend> Repository<B> {
         Ok(self
             .metadata::<u64>(MetadataKey::LastProcessedInterval)?
             .map(Interval))
+    }
+}
+
+impl<B: StorageBackend> Repository<B> {
+    /// Applies a batch. The only path by which anything becomes durable.
+    pub(crate) fn commit(
+        &mut self,
+        batch: WriteBatch,
+        durability: Durability,
+    ) -> Result<(), StorageError> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        self.backend.write(batch, durability)
     }
 }
 

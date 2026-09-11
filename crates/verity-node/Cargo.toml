@@ -13,10 +13,15 @@ publish = false
 # components are joined, which is why it is the only crate that depends on all of them.
 #
 # `serde_norway` and `hex` read the cross-client genesis and validator-assignment files;
-# `libssz` decodes gossip payloads, which arrive as raw bytes by design.
+# `libssz` decodes gossip payloads, which arrive as raw bytes by design. `reqwest` and `rand`
+# belong to the sync service alone: the checkpoint-sync fetch and score-weighted peer
+# selection respectively (`docs/design/sync.md`).
 [dependencies]
 hex.workspace = true
 libssz.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_norway.workspace = true
 tokio.workspace = true
@@ -28,8 +33,13 @@ verity-p2p.workspace = true
 verity-types.workspace = true
 verity-validator.workspace = true
 
+# `serde_json` reads the leanSpec fixture files; consensus values never travel as JSON.
+# `tracing-subscriber` is what makes `RUST_LOG` work in these harnesses: a library installs no
+# subscriber, so without it an end-to-end test that misbehaves is silent.
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

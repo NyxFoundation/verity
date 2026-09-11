@@ -10,6 +10,7 @@
 //! whether that log is fsynced before the call returns.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rocksdb::{
     ColumnFamilyDescriptor, DB, DBCompressionType, IteratorMode, Options, ReadOptions,
@@ -19,13 +20,44 @@ use rocksdb::{
 use crate::column::ColumnFamily;
 use crate::error::StorageError;
 
-use super::{Durability, Op, Rows, StorageBackend, WriteBatch};
+use super::{Durability, Op, Rows, StorageBackend, StorageReader, WriteBatch};
+
+/// A read-only handle on an open database, shareable across tasks.
+///
+/// RocksDB takes an exclusive lock on its directory, so a second reader cannot simply open
+/// the same path: it has to share the handle the writer opened. `DB` is `Sync` and its reads
+/// take `&self`, so sharing one behind an `Arc` is the engine's own supported arrangement,
+/// and a read here is consistent with whatever the writer has already committed.
+///
+/// The type carries no `write`, which is what keeps `docs/design/storage.md`'s one-writer
+/// rule true across tasks rather than only across owners.
+#[derive(Debug, Clone)]
+pub struct RocksReader {
+    db: Arc<DB>,
+    path: PathBuf,
+}
+
+impl RocksReader {
+    /// The directory this database lives in.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn handle(&self, table: ColumnFamily) -> Result<&rocksdb::ColumnFamily, StorageError> {
+        self.db.cf_handle(table.name()).ok_or_else(|| {
+            StorageError::Backend(format!(
+                "column family {table} is absent from {}",
+                self.path.display()
+            ))
+        })
+    }
+}
 
 /// A RocksDB database with one column family per logical table.
 #[derive(Debug)]
 pub struct RocksBackend {
-    db: DB,
-    path: PathBuf,
+    reader: RocksReader,
 }
 
 impl RocksBackend {
@@ -51,7 +83,12 @@ impl RocksBackend {
             .map(|table| ColumnFamilyDescriptor::new(table.name(), table_options(table)));
 
         let db = DB::open_cf_descriptors(&db_options, &path, descriptors).map_err(backend)?;
-        Ok(Self { db, path })
+        Ok(Self {
+            reader: RocksReader {
+                db: Arc::new(db),
+                path,
+            },
+        })
     }
 
     /// The directory this database lives in.
@@ -60,16 +97,13 @@ impl RocksBackend {
     /// operator has to be told where to look.
     #[must_use]
     pub fn path(&self) -> &Path {
-        &self.path
+        self.reader.path()
     }
 
-    fn handle(&self, table: ColumnFamily) -> Result<&rocksdb::ColumnFamily, StorageError> {
-        self.db.cf_handle(table.name()).ok_or_else(|| {
-            StorageError::Backend(format!(
-                "column family {table} is absent from {}",
-                self.path.display()
-            ))
-        })
+    /// A read-only handle on the same open database, for a task that must not write.
+    #[must_use]
+    pub fn reader(&self) -> RocksReader {
+        self.reader.clone()
     }
 }
 
@@ -93,7 +127,7 @@ fn backend(error: rocksdb::Error) -> StorageError {
     StorageError::Backend(error.to_string())
 }
 
-impl StorageBackend for RocksBackend {
+impl StorageReader for RocksReader {
     fn get(&self, table: ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
         self.db.get_cf(self.handle(table)?, key).map_err(backend)
     }
@@ -120,19 +154,31 @@ impl StorageBackend for RocksBackend {
         }
         Ok(rows)
     }
+}
 
+impl StorageReader for RocksBackend {
+    fn get(&self, table: ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+        self.reader.get(table, key)
+    }
+
+    fn range(&self, table: ColumnFamily, start: &[u8], end: &[u8]) -> Result<Rows, StorageError> {
+        self.reader.range(table, start, end)
+    }
+}
+
+impl StorageBackend for RocksBackend {
     fn write(&mut self, batch: WriteBatch, durability: Durability) -> Result<(), StorageError> {
         let mut rocks_batch = RocksBatch::default();
         for op in batch.ops() {
             match op {
                 Op::Put { table, key, value } => {
-                    rocks_batch.put_cf(self.handle(*table)?, key, value);
+                    rocks_batch.put_cf(self.reader.handle(*table)?, key, value);
                 }
                 Op::Delete { table, key } => {
-                    rocks_batch.delete_cf(self.handle(*table)?, key);
+                    rocks_batch.delete_cf(self.reader.handle(*table)?, key);
                 }
                 Op::DeleteRange { table, start, end } => {
-                    rocks_batch.delete_range_cf(self.handle(*table)?, start, end);
+                    rocks_batch.delete_range_cf(self.reader.handle(*table)?, start, end);
                 }
             }
         }
@@ -142,7 +188,8 @@ impl StorageBackend for RocksBackend {
             Durability::Synced => true,
             Durability::Buffered => false,
         });
-        self.db
+        self.reader
+            .db
             .write_opt(rocks_batch, &write_options)
             .map_err(backend)
     }

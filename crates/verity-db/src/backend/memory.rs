@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use crate::column::ColumnFamily;
 use crate::error::StorageError;
 
-use super::{Durability, Op, Rows, StorageBackend, WriteBatch};
+use super::{Durability, Op, Rows, StorageBackend, StorageReader, WriteBatch};
 
 /// A volatile backend holding every table in a sorted map.
 #[derive(Debug, Clone, Default)]
@@ -65,7 +65,7 @@ impl MemoryBackend {
     }
 }
 
-impl StorageBackend for MemoryBackend {
+impl StorageReader for MemoryBackend {
     fn get(&self, table: ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
         Ok(self
             .tables
@@ -86,7 +86,9 @@ impl StorageBackend for MemoryBackend {
                 .collect()
         }))
     }
+}
 
+impl StorageBackend for MemoryBackend {
     fn write(&mut self, batch: WriteBatch, _durability: Durability) -> Result<(), StorageError> {
         // Atomicity is free: nothing observes the map between two ops of one `write` call,
         // because the writer holds the only mutable handle.
@@ -99,7 +101,9 @@ impl StorageBackend for MemoryBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{ColumnFamily, Durability, MemoryBackend, StorageBackend, WriteBatch};
+    use super::{
+        ColumnFamily, Durability, MemoryBackend, StorageBackend, StorageReader, WriteBatch,
+    };
 
     fn seeded() -> MemoryBackend {
         let mut backend = MemoryBackend::new();
