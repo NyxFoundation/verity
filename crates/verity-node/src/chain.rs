@@ -291,6 +291,14 @@ impl<B: StorageBackend> ChainTask<B> {
     /// thing that can reject, and it leaves the store untouched when it does, so nothing
     /// unacceptable ever reaches a batch.
     fn import(&mut self, root: Bytes32, block: Block, proof: MultiMessageAggregate) {
+        // The verification stage drops what the snapshot already holds, but a block verified
+        // just before this import's own snapshot was published slips past it. `on_block` is
+        // a no-op for a known root; the commit and the log would not be.
+        if self.store.blocks.contains_key(&root) {
+            tracing::debug!(slot = block.slot.0, "block already imported");
+            return;
+        }
+
         let parent_slot = self
             .store
             .blocks
