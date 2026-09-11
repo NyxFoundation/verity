@@ -47,3 +47,10 @@ pub const JUSTIFICATION_VALIDATORS_LIMIT: usize = HISTORICAL_ROOTS_LIMIT * VALID
 
 /// Maximum length in bytes of a serialized aggregation proof.
 pub const BYTE_LIST_512_KIB_LIMIT: usize = 512 * 1024;
+
+/// The network segment of every gossip topic, `/leanconsensus/<digest>/<name>/ssz_snappy`.
+///
+/// leanSpec names it `GOSSIP_DIGEST` in `spec/forks/lstar/spec.py`, and every lean client on a
+/// devnet spells it the same way. A node with a different value subscribes to topics nobody
+/// publishes on and hears nothing, so this is a constant of the fork, not an operator choice.
+pub const GOSSIP_DIGEST: &str = "12345678";

@@ -45,6 +45,29 @@ pub enum ConfigError {
         /// How many the file names.
         count: usize,
     },
+    /// A bootnode entry is neither a signed ENR nor a multiaddr.
+    MalformedBootnode {
+        /// Where the entry came from: the file, or the flag.
+        source: String,
+        /// The entry as written.
+        entry: String,
+        /// What was wrong with it.
+        reason: String,
+    },
+    /// The node key file does not hold a secp256k1 secret.
+    MalformedNodeKey {
+        /// The file that was read.
+        path: PathBuf,
+        /// What was wrong with its contents.
+        reason: String,
+    },
+    /// A setting the deployment asked for that this build does not implement.
+    UnsupportedSetting {
+        /// The setting, named for the operator.
+        setting: &'static str,
+        /// Why it is refused.
+        reason: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -55,6 +78,17 @@ impl fmt::Display for ConfigError {
             }
             Self::Malformed { path, reason } => {
                 write!(f, "malformed {}: {reason}", path.display())
+            }
+            Self::MalformedBootnode {
+                source,
+                entry,
+                reason,
+            } => write!(f, "bad bootnode {entry:?} in {source}: {reason}"),
+            Self::MalformedNodeKey { path, reason } => {
+                write!(f, "node key {} is unusable: {reason}", path.display())
+            }
+            Self::UnsupportedSetting { setting, reason } => {
+                write!(f, "unsupported {setting}: {reason}")
             }
             Self::MalformedKey { index, role } => write!(
                 f,

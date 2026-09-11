@@ -107,6 +107,14 @@ libp2p = { version = "0.56", default-features = false, features = [
     "secp256k1",
 ] }
 
+# Decodes the ENR records lean-quickstart hands every node in `nodes.yaml`. Verity runs no
+# discovery — the peer set is known at configuration time — so this is a reader for a static
+# bootnode list, not a discovery dependency: RLP decoding, the secp256k1 signature check, and
+# the `ip` / `quic` fields, nothing else. `k256` is the identity scheme (`v4`) every lean
+# client signs its record with; `k256`, `alloy-rlp` and `sha3` were already in the lockfile
+# through leanSig, so this adds no new source tree.
+enr = { version = "0.13", default-features = false, features = ["k256"] }
+
 # The async runtime for the I/O Edge. The feature set is what the node actually uses — `rt`
 # and `rt-multi-thread` to spawn the swarm, chain, verification and duty tasks, `sync` for the
 # channels between them, `macros` for `select!`, `time` for request timeouts and the slot

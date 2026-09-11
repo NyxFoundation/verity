@@ -18,6 +18,11 @@
 //!       proposal_public_key: 0x51c8...
 //!   ```
 //!
+//!   The generator lean-quickstart runs (`generate-genesis.sh`) writes the same two keys as
+//!   `attestation_pubkey` / `proposal_pubkey`, bare hex, and adds `ATTESTATION_COMMITTEE_COUNT`,
+//!   `VALIDATOR_COUNT` and `ACTIVE_EPOCH` beside them. One format with two live writers, so
+//!   both spellings are accepted; the extra keys are informational and ignored.
+//!
 //! - **The assignment file** (`validators.yaml`, beside the keys) maps each node's identifier
 //!   to the validator indices it runs. A node whose identifier is absent runs none, which is
 //!   a legitimate configuration — it follows the chain without signing.
@@ -64,8 +69,10 @@ pub struct GenesisFile {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GenesisValidator {
     /// XMSS public key for signing attestations, hex, `0x` prefix optional.
+    #[serde(alias = "attestation_pubkey")]
     pub attestation_public_key: String,
     /// XMSS public key the proposer signs the block root with.
+    #[serde(alias = "proposal_pubkey")]
     pub proposal_public_key: String,
 }
 
@@ -204,6 +211,21 @@ mod tests {
         let validators = genesis.to_validators().expect("one validator");
 
         assert_eq!(validators[0].attestation_public_key, [0x11u8; 52]);
+    }
+
+    #[test]
+    fn should_read_the_generator_spelling_and_ignore_its_extra_keys() {
+        let file = write(&format!(
+            "GENESIS_TIME: 1763712794\nATTESTATION_COMMITTEE_COUNT: 1\nACTIVE_EPOCH: 10\nVALIDATOR_COUNT: 1\nGENESIS_VALIDATORS:\n  - attestation_pubkey: \"{}\"\n    proposal_pubkey: \"{}\"\n",
+            "11".repeat(52),
+            "22".repeat(52)
+        ));
+        let genesis = GenesisFile::read(file.path()).expect("the generator's file");
+        let validators = genesis.to_validators().expect("one validator");
+
+        assert_eq!(genesis.genesis_time, 1_763_712_794);
+        assert_eq!(validators[0].attestation_public_key, [0x11u8; 52]);
+        assert_eq!(validators[0].proposal_public_key, [0x22u8; 52]);
     }
 
     #[test]

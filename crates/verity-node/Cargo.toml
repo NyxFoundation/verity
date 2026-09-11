@@ -12,11 +12,12 @@ publish = false
 # The wiring crate. Everything below it is a component with one job; this is where the
 # components are joined, which is why it is the only crate that depends on all of them.
 #
-# `serde_norway` and `hex` read the cross-client genesis and validator-assignment files;
-# `libssz` decodes gossip payloads, which arrive as raw bytes by design. `reqwest` and `rand`
-# belong to the sync service alone: the checkpoint-sync fetch and score-weighted peer
-# selection respectively (`docs/design/sync.md`).
+# `serde_norway` and `hex` read the cross-client genesis and validator-assignment files, and
+# `enr` the bootnode records beside them; `libssz` decodes gossip payloads, which arrive as raw
+# bytes by design. `reqwest` and `rand` belong to the sync service alone: the checkpoint-sync
+# fetch and score-weighted peer selection respectively (`docs/design/sync.md`).
 [dependencies]
+enr.workspace = true
 hex.workspace = true
 libssz.workspace = true
 rand.workspace = true

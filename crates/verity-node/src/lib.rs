@@ -40,6 +40,7 @@
 //! inputs run out. Duty products are drained to the end: they are the one thing in the
 //! pipeline no peer can give back.
 
+pub mod bootstrap;
 pub mod chain;
 pub mod clock;
 pub mod config;
@@ -72,12 +73,18 @@ use crate::sync::responder::BlockResponder;
 use crate::sync::{SyncCounters, SyncService};
 use crate::verification::{StageCounters, VerificationStage};
 
+pub use bootstrap::{
+    check_aggregate_subnets, check_committee_count, parse_bootnode, read_bootnodes, read_node_key,
+};
 pub use config::{ASSIGNMENT_FILE_NAME, GenesisFile, assigned_validators};
 pub use error::ConfigError;
 
 // Re-exported so the binary can name addresses and identities without a second dependency on
 // the networking crate; the libp2p version is pinned once, in the workspace manifest.
 pub use verity_p2p::{Multiaddr, identity};
+// Re-exported for the same reason: the binary defaults its topic segment to the fork's digest
+// and does not otherwise depend on the types crate.
+pub use verity_types::config::GOSSIP_DIGEST;
 
 /// Capacity of the duty-product channel (②).
 ///
