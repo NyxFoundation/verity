@@ -158,6 +158,7 @@ impl core::fmt::Display for VerificationFailure {
 pub struct StageCounters {
     rejected: AtomicU64,
     evicted: AtomicU64,
+    duplicates: AtomicU64,
 }
 
 impl StageCounters {
@@ -169,6 +170,15 @@ impl StageCounters {
     /// Items dropped from the pending buffer to make room for newer arrivals.
     pub fn evicted(&self) -> u64 {
         self.evicted.load(Ordering::Relaxed)
+    }
+
+    /// Items dropped because the snapshot, or the pending buffer, already held them.
+    ///
+    /// A block reaches the stage more than once whenever gossip and a sync fetch both
+    /// deliver it, or two peers answer the same request; verifying it again costs a proof
+    /// check and a database write for nothing.
+    pub fn duplicates(&self) -> u64 {
+        self.duplicates.load(Ordering::Relaxed)
     }
 }
 
@@ -192,7 +202,7 @@ pub struct GossipPayload {
 }
 
 /// A decoded item, still unverified, still possibly waiting for the state it needs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Decoded {
     Block(Box<SignedBlock>),
     Attestation(Box<SignedAttestation>),
@@ -317,7 +327,16 @@ impl VerificationStage {
     }
 
     /// Verifies an item if its state is in view, and parks it otherwise.
+    ///
+    /// A block the snapshot already holds is dropped first: its proof was checked when it
+    /// was imported, and checking it again would only cost the pool a proof verification and
+    /// the chain task a write.
     async fn resolve(&mut self, decoded: Decoded) -> bool {
+        if self.already_imported(&decoded) {
+            self.counters.duplicates.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!("dropping a block the snapshot already holds");
+            return true;
+        }
         let Some(validators) = self.registry_for(decoded.awaited_root()) else {
             self.park(decoded);
             return true;
@@ -374,12 +393,36 @@ impl VerificationStage {
             .map(|state| state.validators.clone())
     }
 
+    /// Whether the snapshot already holds this item's block.
+    ///
+    /// Only blocks are keyed by something the snapshot indexes. A vote seen twice is
+    /// caught in the chain task's pools, where filing it again changes nothing.
+    fn already_imported(&self, decoded: &Decoded) -> bool {
+        match decoded {
+            Decoded::Block(signed) => self
+                .view
+                .borrow()
+                .block(hash_tree_root(&signed.block))
+                .is_some(),
+            Decoded::Attestation(_) | Decoded::Aggregate(_) => false,
+        }
+    }
+
     /// Parks an item, evicting the oldest arrival when the buffer is full.
     ///
-    /// Both the arriving item and any item displaced to make room for it raise a gap signal:
+    /// An item already parked is not parked twice: the copy that is waiting will be verified
+    /// when its state arrives, and a second copy would only be verified — and imported —
+    /// behind it. The gap it reveals was signalled by the first copy.
+    ///
+    /// Both a new arrival and any item displaced to make room for it raise a gap signal:
     /// the arrival because nothing has been asked for yet, and the eviction because what was
     /// asked for is now the only way that item comes back.
     fn park(&mut self, decoded: Decoded) {
+        if self.pending.contains(&decoded) {
+            self.counters.duplicates.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!("dropping an item already parked");
+            return;
+        }
         if self.pending.len() >= self.pending_capacity
             && let Some(evicted) = self.pending.pop_front()
         {
@@ -522,4 +565,113 @@ fn verify_aggregate(
     Ok(VerifiedAggregate {
         attestation: signed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use libssz::SszEncode;
+    use tokio::sync::{mpsc, watch};
+    use verity_chain::{ChainView, Store, generate_genesis};
+    use verity_db::stored_header;
+    use verity_p2p::GossipKind;
+    use verity_types::{
+        Block, BlockBody, SignedBlock, Slot, Validator, ValidatorIndex, Validators,
+    };
+
+    use super::{GossipPayload, StageCounters, VerificationStage};
+    use crate::store_open::block_from;
+
+    /// A stage over a snapshot of the genesis anchor, with the channels it writes to.
+    struct Harness {
+        stage: VerificationStage,
+        verified: mpsc::Receiver<super::Verified>,
+        gaps: mpsc::Receiver<crate::sync::fetch::Gap>,
+        counters: Arc<StageCounters>,
+        anchor: Block,
+    }
+
+    fn harness() -> Harness {
+        let validators = Validators::try_from(vec![Validator {
+            attestation_public_key: [1; 52],
+            proposal_public_key: [2; 52],
+            index: ValidatorIndex(0),
+        }])
+        .expect("one validator");
+        let genesis = generate_genesis(0, validators);
+        let anchor = block_from(&stored_header(&genesis), BlockBody::default());
+        let store = Store::new(&genesis, &anchor, None).expect("anchored");
+        let (_view_sender, view) = watch::channel(Arc::new(ChainView::of(&store)));
+
+        let (_inbound_sender, inbound) = mpsc::channel(4);
+        let (verified_sender, verified) = mpsc::channel(4);
+        let (gap_sender, gaps) = mpsc::channel(4);
+        let counters = Arc::new(StageCounters::default());
+        let stage = VerificationStage::new(
+            inbound,
+            verified_sender,
+            view,
+            gap_sender,
+            8,
+            Arc::clone(&counters),
+        );
+        Harness {
+            stage,
+            verified,
+            gaps,
+            counters,
+            anchor,
+        }
+    }
+
+    fn block_payload(block: Block) -> GossipPayload {
+        GossipPayload {
+            kind: GossipKind::Block,
+            payload: SignedBlock {
+                block,
+                proof: Default::default(),
+            }
+            .to_ssz(),
+        }
+    }
+
+    #[tokio::test]
+    async fn should_drop_a_block_the_snapshot_already_holds() {
+        let mut harness = harness();
+        let payload = block_payload(harness.anchor.clone());
+
+        assert!(harness.stage.accept(payload).await);
+
+        assert_eq!(harness.counters.duplicates(), 1);
+        assert_eq!(harness.counters.rejected(), 0);
+        assert!(harness.stage.pending.is_empty());
+        assert!(
+            harness.verified.try_recv().is_err(),
+            "nothing was forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_park_a_block_with_an_unknown_parent_once() {
+        let mut harness = harness();
+        let orphan = Block {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(0),
+            parent_root: [7; 32],
+            state_root: [8; 32],
+            body: BlockBody::default(),
+        };
+
+        assert!(harness.stage.accept(block_payload(orphan.clone())).await);
+        assert!(harness.stage.accept(block_payload(orphan)).await);
+
+        assert_eq!(harness.stage.pending.len(), 1, "parked once");
+        assert_eq!(harness.counters.duplicates(), 1);
+        assert!(
+            harness.gaps.try_recv().is_ok(),
+            "the first copy raised the gap"
+        );
+        assert!(harness.gaps.try_recv().is_err(), "the second copy did not");
+    }
 }

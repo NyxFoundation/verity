@@ -15,6 +15,14 @@
 //! body order, for the caller to fold. Merging changes no voter, so the post-state returned
 //! here is the one the folded block produces.
 //!
+//! # A vote with no proof emits nothing
+//!
+//! Fork choice files every vote a block carries into the counted pool with an empty proof
+//! set (`seed_block_votes`): a block's merged proof is never split back per vote. leanSpec's
+//! builder emits one attestation *per selected proof*, so such a vote is marked processed and
+//! contributes nothing to the body. The same holds here — a body attestation with no voters
+//! and no proof to fold would be one the prover refuses.
+//!
 //! Transcribed from leanSpec `src/lean_spec/spec/forks/lstar/block_production.py` and
 //! `aggregation.py`, read at commit `8603fa63`.
 
@@ -155,19 +163,22 @@ fn select_votes(
     let candidates = in_target_slot_order(aggregated_payloads);
 
     // Insertion-ordered accumulation: `order` fixes the body's attestation order, `groups`
-    // holds every proof chosen for a vote across the passes that reached it.
+    // holds every proof chosen for a vote across the passes that reached it. `processed` is
+    // wider than `groups`: a vote that was eligible but had no proof to select is done with,
+    // and must not be re-examined on the next pass.
     let mut order: Vec<AttestationData> = Vec::new();
     let mut groups: HashMap<AttestationData, Vec<SingleMessageAggregate>> = HashMap::new();
+    let mut processed: HashSet<AttestationData> = HashSet::new();
 
     loop {
         let mut found_new_entries = false;
 
         for (data, proofs) in &candidates {
-            if groups.contains_key(data) {
+            if processed.contains(data) {
                 continue;
             }
             // A proposer-side budget on distinct votes, not a consensus rule.
-            if order.len() >= MAX_ATTESTATIONS_DATA as usize {
+            if processed.len() >= MAX_ATTESTATIONS_DATA as usize {
                 break;
             }
             if !is_eligible(
@@ -181,9 +192,18 @@ fn select_votes(
                 continue;
             }
 
+            processed.insert(*data);
             found_new_entries = true;
+
+            // One attestation per selected proof, as leanSpec emits them: a vote the pool
+            // knows only from a block, with no proof behind it, selects nothing and adds
+            // nothing to the body.
+            let (selected, _) = select_proofs_for_coverage(Some(proofs), None);
+            if selected.is_empty() {
+                continue;
+            }
             order.push(*data);
-            groups.insert(*data, select_proofs_for_coverage(Some(proofs), None).0);
+            groups.insert(*data, selected);
         }
 
         if !found_new_entries {
@@ -538,6 +558,66 @@ mod tests {
 
         assert_eq!(built.block.body.attestations.len(), 1);
         assert_eq!(built.block.body.attestations[0].data, data);
+        assert_eq!(built.components.len(), 1);
+    }
+
+    /// A block-carried vote is filed into the counted pool with no proof behind it
+    /// (`seed_block_votes`). leanSpec's builder emits one attestation per *selected proof*, so
+    /// such a vote contributes nothing to the body; a body attestation with no voters and no
+    /// proof to fold is what leanVM refuses as "aggregated public keys is empty".
+    #[test]
+    fn should_emit_nothing_for_a_vote_that_has_no_proof_behind_it() {
+        let (store, genesis) = anchored_on_genesis(4);
+        let parent_root = store.head;
+        let data = vote(0, 0, parent_root);
+        let payloads = HashMap::from([(data, HashSet::new())]);
+
+        let built = build_block(
+            &genesis,
+            Slot(1),
+            ValidatorIndex(1),
+            parent_root,
+            &HashSet::from([parent_root]),
+            &payloads,
+        )
+        .expect("block building does not fail on a proof-less vote");
+
+        assert!(
+            built.block.body.attestations.is_empty(),
+            "a vote with no proof must not become an empty-bits attestation"
+        );
+        assert!(built.components.is_empty());
+    }
+
+    /// The proof-less vote still counts against the distinct-vote budget and is not looked
+    /// at again; a vote that does have a proof beside it is carried as before.
+    #[test]
+    fn should_still_carry_the_votes_that_have_proofs() {
+        let (store, genesis) = anchored_on_genesis(4);
+        let parent_root = store.head;
+        let with_proof = vote(0, 0, parent_root);
+        let mut without_proof = with_proof;
+        without_proof.slot = Slot(0);
+        let payloads = HashMap::from([
+            (
+                with_proof,
+                HashSet::from([proof(&[true, false, false, false])]),
+            ),
+            (without_proof, HashSet::new()),
+        ]);
+
+        let built = build_block(
+            &genesis,
+            Slot(1),
+            ValidatorIndex(1),
+            parent_root,
+            &HashSet::from([parent_root]),
+            &payloads,
+        )
+        .expect("a block carrying the one provable vote");
+
+        assert_eq!(built.block.body.attestations.len(), 1);
+        assert_eq!(built.block.body.attestations[0].data, with_proof);
         assert_eq!(built.components.len(), 1);
     }
 }
