@@ -129,7 +129,17 @@ tokio = { version = "1", default-features = false, features = [
     "macros",
     "time",
     "signal",
+    "net",
 ] }
+
+# --- HTTP surface -------------------------------------------------------------------------
+# `axum` serves the cross-client REST API (`/lean/v0/*`) and the Prometheus scrape endpoint.
+# Only what a handful of GET/POST routes need: HTTP/1, JSON bodies, the tokio server. `net` on
+# tokio above is for the listener the server binds.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+# The leanMetrics contract is Prometheus text exposition; this is the registry and encoder.
+# Default features pull in protobuf exposition, which nothing scrapes.
+prometheus = { version = "0.14", default-features = false }
 futures = "0.3"
 
 # Snappy, in both of its formats. leanSpec uses the raw block format for gossip payloads and
@@ -217,6 +227,8 @@ verity-crypto = { path = "crates/verity-crypto", version = "0.0.0" }
 verity-db = { path = "crates/verity-db", version = "0.0.0" }
 verity-p2p = { path = "crates/verity-p2p", version = "0.0.0" }
 verity-validator = { path = "crates/verity-validator", version = "0.0.0" }
+verity-metrics = { path = "crates/verity-metrics", version = "0.0.0" }
+verity-rpc = { path = "crates/verity-rpc", version = "0.0.0" }
 verity-node = { path = "crates/verity-node", version = "0.0.0" }
 
 # --- Test-only -----------------------------------------------------------------------------

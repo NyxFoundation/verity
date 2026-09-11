@@ -10,7 +10,9 @@ use std::path::PathBuf;
 
 use verity_chain::RejectionReason;
 use verity_db::StorageError;
+use verity_metrics::MetricsError;
 use verity_p2p::BuildError;
+use verity_rpc::BindError;
 use verity_types::Slot;
 use verity_validator::DutyError;
 
@@ -144,6 +146,13 @@ pub enum NodeError {
         /// The slot of the anchor that was fetched.
         slot: Slot,
     },
+    /// The metric registry could not be built.
+    Metrics(MetricsError),
+    /// An HTTP listener could not be bound.
+    ///
+    /// Fatal rather than skipped: a node started with `--api-port` is a node something else
+    /// will probe, and a silent absence would be diagnosed there, much later.
+    Http(BindError),
 }
 
 impl fmt::Display for NodeError {
@@ -170,7 +179,21 @@ impl fmt::Display for NodeError {
                  --checkpoint-sync-url",
                 slot.0
             ),
+            Self::Metrics(error) => write!(f, "{error}"),
+            Self::Http(error) => write!(f, "http: {error}"),
         }
+    }
+}
+
+impl From<MetricsError> for NodeError {
+    fn from(error: MetricsError) -> Self {
+        Self::Metrics(error)
+    }
+}
+
+impl From<BindError> for NodeError {
+    fn from(error: BindError) -> Self {
+        Self::Http(error)
     }
 }
 

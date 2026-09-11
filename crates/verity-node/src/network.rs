@@ -16,6 +16,7 @@ use libssz::SszEncode;
 use tokio::sync::{mpsc, watch};
 
 use verity_chain::ChainView;
+use verity_metrics::{Metrics, prometheus_gauge};
 use verity_p2p::{ErrorCode, GossipKind, NetworkEvent, NetworkHandle, Request, Response, Status};
 use verity_types::SubnetId;
 use verity_validator::LocalProduct;
@@ -28,6 +29,9 @@ use crate::verification::GossipPayload;
 /// leanSpec fixes `ATTESTATION_COMMITTEE_COUNT = 1`, so there is exactly one attestation
 /// subnet and every validator uses it. This becomes a computation the day that constant moves.
 pub const ATTESTATION_SUBNET: SubnetId = SubnetId(0);
+
+/// The `client` label of `lean_connected_peers` for a peer whose client is not announced.
+const PEER_CLIENT_UNKNOWN: &str = "unknown";
 
 /// Gossip the bridge could not hand downstream.
 #[derive(Debug, Default)]
@@ -70,6 +74,7 @@ pub struct NetworkBridge {
     handle: NetworkHandle,
     view: watch::Receiver<Arc<ChainView>>,
     counters: Arc<BridgeCounters>,
+    metrics: Arc<Metrics>,
 }
 
 impl NetworkBridge {
@@ -81,6 +86,7 @@ impl NetworkBridge {
         handle: NetworkHandle,
         view: watch::Receiver<Arc<ChainView>>,
         counters: Arc<BridgeCounters>,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             events,
@@ -91,7 +97,16 @@ impl NetworkBridge {
             handle,
             view,
             counters,
+            metrics,
         }
+    }
+
+    /// `lean_connected_peers`. leanMetrics labels the gauge by the peer's client, which the
+    /// lean transport does not announce, so every peer is `unknown`.
+    fn connected_peers(&self) -> prometheus_gauge::IntGauge {
+        self.metrics
+            .connected_peers
+            .with_label_values(&[PEER_CLIENT_UNKNOWN])
     }
 
     /// Runs until the network task stops.
@@ -119,12 +134,14 @@ impl NetworkBridge {
                 }
                 NetworkEvent::PeerConnected(peer) => {
                     tracing::info!(%peer, "peer connected");
+                    self.connected_peers().inc();
                     if self.peers.send(PeerEvent::Connected(peer)).await.is_err() {
                         break;
                     }
                 }
                 NetworkEvent::PeerDisconnected(peer) => {
                     tracing::info!(%peer, "peer disconnected");
+                    self.connected_peers().dec();
                     if self
                         .peers
                         .send(PeerEvent::Disconnected(peer))

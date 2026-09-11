@@ -95,6 +95,9 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
         // nothing to do with what this test claims. `single_node.rs` covers that path.
         is_aggregator: false,
         checkpoint_sync_url: None,
+        api_address: None,
+        metrics_address: None,
+        version: String::new(),
     })
     .await
     .expect("the producer starts");
@@ -151,6 +154,9 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
         key_directory: None,
         is_aggregator: false,
         checkpoint_sync_url: None,
+        api_address: None,
+        metrics_address: None,
+        version: String::new(),
     })
     .await
     .expect("the server starts on the producer's database");
@@ -175,6 +181,9 @@ async fn should_catch_up_to_a_running_node_when_started_after_it() {
         key_directory: None,
         is_aggregator: false,
         checkpoint_sync_url: None,
+        api_address: None,
+        metrics_address: None,
+        version: String::new(),
     })
     .await
     .expect("the follower starts");

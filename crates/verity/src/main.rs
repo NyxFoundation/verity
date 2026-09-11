@@ -21,6 +21,7 @@
 //! the thresholds outside the design's commitments. An operator can choose where the node
 //! starts; the rate at which it catches up is not a choice the wire format leaves open.
 
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -104,6 +105,18 @@ struct Args {
     #[arg(long, value_name = "URL")]
     checkpoint_sync_url: Option<String>,
 
+    /// Address the REST API and the metrics endpoint bind to.
+    #[arg(long, value_name = "IP", default_value = "0.0.0.0")]
+    http_address: IpAddr,
+
+    /// Port of the REST API (`/lean/v0/*`). Omit to serve none.
+    #[arg(long, value_name = "PORT")]
+    api_port: Option<u16>,
+
+    /// Port of the Prometheus scrape endpoint (`/metrics`). Omit to serve none.
+    #[arg(long, value_name = "PORT")]
+    metrics_port: Option<u16>,
+
     /// Log at DEBUG instead of INFO.
     #[arg(short, long)]
     verbose: bool,
@@ -164,6 +177,13 @@ async fn run(args: Args) -> Result<(), verity_node::error::NodeError> {
         key_directory,
         is_aggregator: args.is_aggregator,
         checkpoint_sync_url: args.checkpoint_sync_url,
+        api_address: args
+            .api_port
+            .map(|port| SocketAddr::new(args.http_address, port)),
+        metrics_address: args
+            .metrics_port
+            .map(|port| SocketAddr::new(args.http_address, port)),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     })
     .await?;
 

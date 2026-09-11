@@ -50,17 +50,25 @@ pub mod store_open;
 pub mod sync;
 pub mod verification;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use verity_chain::{ChainView, SlotClock, generate_genesis};
 
-use verity_db::RocksBackend;
+use verity_db::{Repository, RocksBackend, StorageReader};
+use verity_metrics::Metrics;
 use verity_p2p::{NetworkConfig, PeerId, identity::Keypair};
+use verity_rpc::{
+    ApiContext, BoundListener, HttpServer, SignedBlockSource, api_router, metrics_router,
+};
 use verity_types::ValidatorIndex;
+use verity_types::config::ATTESTATION_COMMITTEE_COUNT;
 use verity_validator::{DutyService, Keyring, Prover};
 
 use crate::chain::{Aggregator, ChainTask};
@@ -145,6 +153,12 @@ pub struct NodeConfig {
     /// Present means a checkpoint start, and that path has no fallbacks: a fetch or
     /// verification failure stops the node (`docs/design/sync.md`, Decision 1).
     pub checkpoint_sync_url: Option<String>,
+    /// Where the REST API (`/lean/v0/*`) listens. Absent means it is not served.
+    pub api_address: Option<SocketAddr>,
+    /// Where the Prometheus scrape endpoint listens. Absent means it is not served.
+    pub metrics_address: Option<SocketAddr>,
+    /// The client version `lean_node_info` reports.
+    pub version: String,
 }
 
 /// A running node, and the handles that stop it.
@@ -160,6 +174,10 @@ pub struct Node {
     stage_counters: Arc<StageCounters>,
     bridge_counters: Arc<BridgeCounters>,
     sync_counters: Arc<SyncCounters>,
+    metrics: Arc<Metrics>,
+    aggregator: Arc<AtomicBool>,
+    api: Option<HttpServer>,
+    metrics_server: Option<HttpServer>,
 }
 
 impl Node {
@@ -184,6 +202,11 @@ impl Node {
         // the node without having written an anchor of any kind.
         let checkpoint = fetch_checkpoint(&config, &genesis_state).await?;
 
+        // Bound here, served later. A port already in use — the commonest misconfiguration on
+        // a shared host — stops the node before it has opened the database or spawned a task.
+        let api_listener = bind_optional(config.api_address).await?;
+        let metrics_listener = bind_optional(config.metrics_address).await?;
+
         // The store carries one validator index, which is only ever used to attribute the
         // node's own votes; the keyring below is what actually decides which duties run.
         let backend = RocksBackend::open(&config.data_directory)?;
@@ -199,6 +222,8 @@ impl Node {
         let served = Arc::new(store_open::open_reader(reader, &genesis_state)?);
 
         let keyring = load_keys(&config)?;
+        let metrics = Arc::new(Metrics::new()?);
+        record_start(&metrics, &config, &keyring);
         let prover = Prover::new();
         if !keyring.is_empty() {
             // Paid once, here, rather than by the first duty of the node's life.
@@ -214,17 +239,21 @@ impl Node {
         let (block_requests, block_request_stream) = mpsc::channel(BLOCK_REQUEST_CAPACITY);
         let (peer_events, peer_event_stream) = mpsc::channel(PEER_EVENT_CAPACITY);
 
-        let aggregator = config.is_aggregator.then(|| Aggregator {
+        // Always wired, gated by the role flag: the admin API can turn aggregation on at
+        // runtime, and a round that has nowhere to send its output cannot be added later.
+        let aggregator_role = Arc::new(AtomicBool::new(config.is_aggregator));
+        let aggregator = Aggregator {
             prover: prover.clone(),
             products: products.clone(),
-        });
+            enabled: Arc::clone(&aggregator_role),
+        };
         let (chain, view) = ChainTask::new(
             store,
             repository,
             ticks.clone(),
             local_stream,
             verified_stream,
-            aggregator,
+            Some(aggregator),
         );
 
         let (handle, events) = verity_p2p::spawn(network_config(&config))?;
@@ -247,6 +276,7 @@ impl Node {
                 handle.clone(),
                 view.clone(),
                 Arc::clone(&bridge_counters),
+                Arc::clone(&metrics),
             )
             .run(),
         );
@@ -265,6 +295,7 @@ impl Node {
         // Order matters only in one place: the chain task is spawned last so that every
         // sender into it already exists, and it therefore never sees an empty inbox that
         // looks like shutdown.
+        let signed_block = signed_block_source(Arc::clone(&served));
         let draining = vec![
             tokio::spawn(DutyService::new(keyring, prover, products, view.clone(), ticks).run()),
             tokio::spawn(ProductRelay::new(product_stream, local, handle.clone()).run()),
@@ -293,6 +324,17 @@ impl Node {
             tokio::spawn(chain.run()),
         ];
 
+        let context = Arc::new(ApiContext {
+            view: view.clone(),
+            synced: synced.clone(),
+            signed_block,
+            aggregator: Arc::clone(&aggregator_role),
+            metrics: Arc::clone(&metrics),
+        });
+        let api = api_listener.map(|listener| listener.serve(api_router(Arc::clone(&context))));
+        let metrics_server =
+            metrics_listener.map(|listener| listener.serve(metrics_router(context)));
+
         tracing::info!(%peer_id, "node started");
 
         Ok(Self {
@@ -307,7 +349,35 @@ impl Node {
             stage_counters,
             bridge_counters,
             sync_counters,
+            metrics,
+            aggregator: aggregator_role,
+            api,
+            metrics_server,
         })
+    }
+
+    /// Where the REST API is listening, when it is served.
+    #[must_use]
+    pub fn api_address(&self) -> Option<SocketAddr> {
+        self.api.as_ref().map(HttpServer::local_addr)
+    }
+
+    /// Where the scrape endpoint is listening, when it is served.
+    #[must_use]
+    pub fn metrics_address(&self) -> Option<SocketAddr> {
+        self.metrics_server.as_ref().map(HttpServer::local_addr)
+    }
+
+    /// The process's metric registry.
+    #[must_use]
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+
+    /// Whether the aggregation round is on right now.
+    #[must_use]
+    pub fn is_aggregator(&self) -> bool {
+        self.aggregator.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The snapshot channel every reader answers from.
@@ -376,6 +446,14 @@ impl Node {
     /// Everything else drains: the duty loop's products are followed all the way into the
     /// store, and the chain task persists what it was given before it exits.
     pub async fn shutdown(mut self) {
+        // The HTTP surface first: nothing it serves should be read from a node that is
+        // stopping, and its shutdown lets an in-flight response finish.
+        if let Some(server) = self.api.take() {
+            server.shutdown().await;
+        }
+        if let Some(server) = self.metrics_server.take() {
+            server.shutdown().await;
+        }
         self.ticker.abort();
         self.bridge.abort();
         // The last handle: dropping it closes the swarm's command channel, which is how the
@@ -414,6 +492,56 @@ fn load_keys(config: &NodeConfig) -> Result<Keyring, NodeError> {
         }
         _ => Ok(Keyring::empty()),
     }
+}
+
+/// Binds an HTTP listener when an address was configured.
+async fn bind_optional(address: Option<SocketAddr>) -> Result<Option<BoundListener>, NodeError> {
+    match address {
+        Some(address) => Ok(Some(verity_rpc::bind(address).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Records the "on node start" metrics: identity, start time, and the static facts.
+fn record_start(metrics: &Metrics, config: &NodeConfig, keyring: &Keyring) {
+    let start_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| gauge_value(elapsed.as_secs()));
+    metrics.record_start("verity", &config.version, start_time);
+    metrics
+        .validators_count
+        .set(gauge_value(keyring.validators().count() as u64));
+    metrics.is_aggregator.set(i64::from(config.is_aggregator));
+    metrics
+        .attestation_committee_subnet
+        .set(gauge_value(ATTESTATION_SUBNET.0));
+    metrics
+        .attestation_committee_count
+        .set(gauge_value(ATTESTATION_COMMITTEE_COUNT));
+}
+
+/// A count as a gauge value; nothing counted here approaches `i64::MAX`.
+fn gauge_value(count: u64) -> i64 {
+    i64::try_from(count).unwrap_or(i64::MAX)
+}
+
+/// The finalized-block read the HTTP API performs, over the responder's database handle.
+///
+/// A storage error is reported as "not available" and logged: the route cannot repair the
+/// database, and the responder's next range read will surface the same damage as a
+/// `SERVER_ERROR` where it matters.
+fn signed_block_source<B: StorageReader + Send + Sync + 'static>(
+    repository: Arc<Repository<B>>,
+) -> SignedBlockSource {
+    Arc::new(
+        move |root| match sync::responder::signed_block(&repository, root) {
+            Ok(block) => block,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the finalized block for the API");
+                None
+            }
+        },
+    )
 }
 
 /// The network service's configuration, derived from the node's.

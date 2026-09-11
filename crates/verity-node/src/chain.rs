@@ -24,6 +24,7 @@
 //! anything added later.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{mpsc, watch};
 
@@ -51,6 +52,9 @@ pub struct Aggregator {
     pub prover: Prover,
     /// Where a finished round's aggregates re-enter — channel ②, like any other duty product.
     pub products: mpsc::Sender<LocalProduct>,
+    /// Whether the role is on. Shared with the admin API, which flips it at runtime; read
+    /// once per round, so a flip lands on the next interval 2 rather than mid-round.
+    pub enabled: Arc<AtomicBool>,
 }
 
 /// The task that owns `Store` and the repository, and the only thing that writes either.
@@ -218,6 +222,9 @@ impl<B: StorageBackend> ChainTask<B> {
         let Some(aggregator) = &self.aggregator else {
             return;
         };
+        if !aggregator.enabled.load(Ordering::Relaxed) {
+            return;
+        }
 
         let view = Arc::new(ChainView::of(&self.store));
         let prover = aggregator.prover.clone();
