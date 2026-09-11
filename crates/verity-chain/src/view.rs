@@ -31,7 +31,6 @@ use verity_types::{
     Validators,
 };
 
-use crate::error::RejectionReason;
 use crate::fork_choice::duties::{attestation_data, attestation_target};
 use crate::fork_choice::store::{AttestationSignatureEntry, Store};
 use crate::fork_choice::weights::block_weights;
@@ -204,12 +203,10 @@ impl ChainView {
 
     /// The vote a validator should cast at `slot`.
     ///
-    /// # Errors
-    ///
-    /// [`RejectionReason::SourceAfterTarget`] when the head's justified checkpoint sits ahead
-    /// of the target the walk selected, which is a vote no peer would admit.
+    /// The target never sits behind the source: when the walk lands behind the head's
+    /// justified checkpoint, that checkpoint is the target (see [`attestation_data`]).
     #[must_use = "this produces the vote; signing it is the validator's job"]
-    pub fn attestation_data(&self, slot: Slot) -> Result<AttestationData, RejectionReason> {
+    pub fn attestation_data(&self, slot: Slot) -> AttestationData {
         attestation_data(&self.store, slot)
     }
 
