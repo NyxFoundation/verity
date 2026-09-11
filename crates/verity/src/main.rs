@@ -57,11 +57,13 @@ struct Args {
     #[arg(long, value_name = "PORT")]
     listen_port: Option<u16>,
 
-    /// Peer to dial at startup, as a multiaddr or an ENR. Repeatable.
+    /// Peer to dial at startup, as a multiaddr or an ENR. Repeatable, and may be combined
+    /// with --bootnodes: the file's entries are dialled first, then these.
     #[arg(long = "bootnode", value_name = "MULTIADDR|ENR")]
     bootnode: Vec<String>,
 
-    /// File listing peers to dial at startup (`nodes.yaml`): a YAML list of ENRs or multiaddrs.
+    /// File listing peers to dial at startup: lean-quickstart's `nodes.yaml`, a YAML list of
+    /// ENRs or multiaddrs.
     #[arg(long, value_name = "PATH")]
     bootnodes: Option<PathBuf>,
 
@@ -74,11 +76,14 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     node_key: Option<PathBuf>,
 
-    /// Directory holding `validators.yaml` and `hash-sig-keys/`. Omit to follow without signing.
+    /// The genesis directory lean-quickstart generated, shared by every node: it holds
+    /// `validators.yaml` (node id -> validator indices) and `hash-sig-keys/`. Omit to follow
+    /// without signing.
     #[arg(long, value_name = "DIR")]
     validator_keys: Option<PathBuf>,
 
     /// This node's identifier, looked up in `validators.yaml` to find its validator indices.
+    /// An identifier the file does not name runs no validators and follows the chain.
     #[arg(long, value_name = "ID", default_value = "verity_0")]
     node_id: String,
 
@@ -86,8 +91,8 @@ struct Args {
     #[arg(long)]
     is_aggregator: bool,
 
-    /// Subnets to aggregate for, comma-separated. Accepted for deployment compatibility and
-    /// checked against the fork's committee count.
+    /// Subnets to aggregate for, comma-separated. Accepted for deployment compatibility; a
+    /// subnet the fork's committee count does not define stops the node at startup.
     #[arg(
         long,
         value_name = "IDS",
@@ -96,7 +101,8 @@ struct Args {
     )]
     aggregate_subnet_ids: Vec<u64>,
 
-    /// The deployment's attestation committee count. Checked against the fork's constant.
+    /// The deployment's attestation committee count. A value other than the fork's constant
+    /// stops the node at startup rather than joining a network it disagrees with.
     #[arg(long, value_name = "N")]
     attestation_committee_count: Option<u64>,
 
@@ -109,11 +115,14 @@ struct Args {
     #[arg(long, value_name = "IP", default_value = "0.0.0.0")]
     http_address: IpAddr,
 
-    /// Port of the REST API (`/lean/v0/*`). Omit to serve none.
+    /// Port of the REST API: `/lean/v0/*` (health, finalized state and block, justified
+    /// checkpoint, fork_choice, admin), `/v0/health` for leanpoint, and `/metrics`. Omit to
+    /// serve none.
     #[arg(long, value_name = "PORT")]
     api_port: Option<u16>,
 
-    /// Port of the Prometheus scrape endpoint (`/metrics`). Omit to serve none.
+    /// Port of the Prometheus scrape endpoint (`/metrics`, plus `/lean/v0/health`). Omit to
+    /// serve none.
     #[arg(long, value_name = "PORT")]
     metrics_port: Option<u16>,
 

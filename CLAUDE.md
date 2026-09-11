@@ -41,6 +41,56 @@ Owner-ratified ground rules for the first Rust code. Do not re-open these withou
 - **Verification harness**: NOT wired in from day one (no bolero/proptest in the initial scaffold or CI); introduced later per `docs/design/model-check.md`'s tool-to-zone mapping.
 - Known caveat: leanSig internally depends on `ethereum_ssz`, so two SSZ implementations coexist transitively — harmless, but mind type conversions at the signature boundary.
 
+## Devnet interop (2026-09-11)
+
+Verity is started by [lean-quickstart](https://github.com/blockblaz/lean-quickstart) exactly as
+every other client is (`docs/adding-a-new-client.md` there): `--genesis config.yaml`,
+`--bootnodes nodes.yaml` (ENRs), `--node-key <node>.key`, `--validator-keys <genesis dir>`
+(holds `validators.yaml` and `hash-sig-keys/`), `--node-id`, `--listen-port`, `--api-port`,
+`--metrics-port`, `--is-aggregator`, `--checkpoint-sync-url`. Facts that were only found by
+reading the tooling, and that break interop silently when wrong:
+
+- **The gossip topic segment is `12345678`**, leanSpec's `GOSSIP_DIGEST` (`spec/forks/lstar/spec.py`),
+  transcribed as `verity_types::config::GOSSIP_DIGEST` and the `--network-name` default. A node
+  with any other value subscribes to topics nobody publishes on and hears nothing.
+- **The generator spells the genesis keys `attestation_pubkey` / `proposal_pubkey`**, bare hex,
+  where leanSpec's own reader spells them `attestation_public_key` / `proposal_public_key`.
+  `GenesisFile` accepts both; the generator's extra keys (`ATTESTATION_COMMITTEE_COUNT`,
+  `VALIDATOR_COUNT`, `ACTIVE_EPOCH`) are ignored.
+- **leanpoint probes `/v0/health`**, not `/lean/v0/health` (`convert-validator-config.py`);
+  the `verity-rpc` crate inside the `verity` binary serves both on `--api-port`. "Healthy" means
+  the process answered; it says nothing about sync.
+- **Bootnode ENRs are reduced to `/ip4/<ip>/udp/<quic port>/quic-v1/p2p/<peer id>`**, the peer id
+  derived from the record's secp256k1 key. Every lean client derives its libp2p identity from the
+  key that signs its record, which is what makes the `/p2p/` suffix safe to add.
+- `ATTESTATION_COMMITTEE_COUNT` is a leanSpec constant (1), so `--attestation-committee-count`
+  and `--aggregate-subnet-ids` are checked against it and refused otherwise, never applied.
+- `Dockerfile` builds the image lean-quickstart's docker mode and hive run
+  (`ghcr.io/nyxfoundation/verity`); it builds `--locked` for the reasons above.
+- **Running it locally** (what the 2026-09-11 verification did):
+  1. Clone lean-quickstart. Bump the images in `client-cmds/ethlambda-cmd.sh` and
+     `client-cmds/ream-cmd.sh` to `ethlambda:devnet5` / `ream:latest-devnet5` (see next bullet).
+  2. Add `client-cmds/verity-cmd.sh` (six touch points in `docs/adding-a-new-client.md` there). In
+     binary mode it runs `$scriptDir/../verity/target/release/verity`, i.e. a `verity` checkout beside
+     the lean-quickstart checkout; set `VERITY_BINARY=/path/to/verity` to run any other build.
+  3. Add a `verity_0` entry to `local-devnet/genesis/validator-config.yaml`. `privkey` is required
+     (32-byte hex, e.g. `openssl rand -hex 32`); ports must not collide with the entries already in
+     that file — the upstream file uses quic 9001–9010, metrics 8081–8090, api 5051–5060/8086/8087,
+     so `9011` / `8091` / `5061` are free. Trim the file to the nodes you actually run: every entry
+     is a validator, and finality needs two thirds of them online.
+  4. `NETWORK_DIR=local-devnet ./spin-node.sh --node all --generateGenesis --skip-leanpoint --skip-nemo`.
+  5. Verify: `curl http://127.0.0.1:<apiPort>/lean/v0/fork_choice` on every node and compare
+     `finalized.slot` / `finalized.root` (JSON); they must match and advance. `/lean/v0/checkpoints/justified`
+     is the same for justification, and `/metrics` on the metrics port exposes
+     `lean_latest_finalized_slot`. Verity's log prints `imported slot=… finalized=…` per block.
+- **The latest devnet generation is devnet5** (leanSpec #717 "Aggregated block proof", the
+  `SignedBlock { block, proof: MultiMessageAggregate }` shape Verity transcribes). lean-quickstart's
+  `client-cmds/*.sh` still pin devnet4 images (`ethlambda:devnet4`, `ream:latest-devnet4`), whose
+  `SignedBlock` carries per-attestation proofs plus an XMSS proposer signature: Verity discards their
+  blocks as `undecodable` and they discard Verity's. Run it against `ethlambda:devnet5` and
+  `ream:latest-devnet5` (both published), which is how the 2026-09-11 three-node run reached
+  agreement on head and justification.
+
 ## Documentation site (`docs/`)
 
 The docs are an [mdBook](https://rust-lang.github.io/mdBook/). All commands run from the `docs/` directory.

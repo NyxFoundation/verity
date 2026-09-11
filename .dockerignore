@@ -1,0 +1,9 @@
+# Only what the Dockerfile copies reaches the build context: the manifests, the toolchain
+# pin, and the crates. Everything else is either regenerated in the image or irrelevant to it.
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!LICENSE
+!crates
+crates/**/target
