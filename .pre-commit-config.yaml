@@ -25,7 +25,8 @@ exclude: |
     docs/mermaid\.min\.js|
     docs/mermaid-init\.js|
     docs/book/.*|
-    Cargo\.lock
+    Cargo\.lock|
+    crates/verity-justifiability/proofs/.*
   )$
 
 # `pre-commit install` wires up both stages in one command.

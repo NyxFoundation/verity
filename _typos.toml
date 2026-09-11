@@ -8,6 +8,8 @@ extend-exclude = [
     # Vendored mdbook-mermaid assets (minified; regenerated on mdbook-mermaid bumps).
     "docs/mermaid.min.js",
     "docs/mermaid-init.js",
+    # Generated Lean / LLBC on the hax verification branch.
+    "crates/verity-justifiability/proofs/",
 ]
 
 [default]
@@ -21,6 +23,8 @@ ser = "ser"
 # "symetric" — the real directory name in leanVM (`crates/backend/symetric`), misspelled
 # upstream. Correcting it in our docs would point readers at a path that does not exist.
 symetric = "symetric"
+# The Cryspen extraction toolchain, not a misspelling of "hex".
+hax = "hax"
 
 [default.extend-identifiers]
 # Abbreviated git commit SHA of leanEthereum/leanSig cited in docs/design/key-management.md; the
