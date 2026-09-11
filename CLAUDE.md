@@ -67,22 +67,32 @@ reading the tooling, and that break interop silently when wrong:
   and `--aggregate-subnet-ids` are checked against it and refused otherwise, never applied.
 - `Dockerfile` builds the image lean-quickstart's docker mode and hive run
   (`ghcr.io/nyxfoundation/verity`); it builds `--locked` for the reasons above.
-- **Running it locally** (what the 2026-09-11 verification did):
-  1. Clone lean-quickstart. Bump the images in `client-cmds/ethlambda-cmd.sh` and
-     `client-cmds/ream-cmd.sh` to `ethlambda:devnet5` / `ream:latest-devnet5` (see next bullet).
-  2. Add `client-cmds/verity-cmd.sh` (six touch points in `docs/adding-a-new-client.md` there). In
-     binary mode it runs `$scriptDir/../verity/target/release/verity`, i.e. a `verity` checkout beside
-     the lean-quickstart checkout; set `VERITY_BINARY=/path/to/verity` to run any other build.
-  3. Add a `verity_0` entry to `local-devnet/genesis/validator-config.yaml`. `privkey` is required
-     (32-byte hex, e.g. `openssl rand -hex 32`); ports must not collide with the entries already in
-     that file — the upstream file uses quic 9001–9010, metrics 8081–8090, api 5051–5060/8086/8087,
-     so `9011` / `8091` / `5061` are free. Trim the file to the nodes you actually run: every entry
-     is a validator, and finality needs two thirds of them online.
-  4. `NETWORK_DIR=local-devnet ./spin-node.sh --node all --generateGenesis --skip-leanpoint --skip-nemo`.
-  5. Verify: `curl http://127.0.0.1:<apiPort>/lean/v0/fork_choice` on every node and compare
-     `finalized.slot` / `finalized.root` (JSON); they must match and advance. `/lean/v0/checkpoints/justified`
-     is the same for justification, and `/metrics` on the metrics port exposes
-     `lean_latest_finalized_slot`. Verity's log prints `imported slot=… finalized=…` per block.
+- **Running it locally** (what the 2026-09-11 verification did; needs docker, yq, curl, jq):
+  1. Clone lean-quickstart. In `client-cmds/ethlambda-cmd.sh` and `client-cmds/ream-cmd.sh` change the
+     image tags to `ethlambda:devnet5` / `ream:latest-devnet5` (see next bullet for why).
+  2. Add `client-cmds/verity-cmd.sh` (six touch points in `docs/adding-a-new-client.md` there; the
+     script is on the `add-verity-client` branch of the local clone until it is upstreamed). Its
+     `node_setup="docker"` runs `ghcr.io/nyxfoundation/verity:latest` — `docker build -t
+     ghcr.io/nyxfoundation/verity:latest .` first, spin-node tolerates a failed pull and runs the local
+     tag. Or set `node_setup="binary"`: it then runs `$scriptDir/../verity/target/release/verity`
+     (a `verity` checkout beside lean-quickstart, `cargo build --release --locked`), or the path in
+     `VERITY_BINARY`.
+  3. Replace the `validators:` list in `local-devnet/genesis/validator-config.yaml` with exactly three
+     entries: the upstream `ethlambda_0` and `ream_0` entries unchanged, plus `verity_0` with
+     `privkey: "<openssl rand -hex 32>"`, `enrFields: {ip: "127.0.0.1", quic: 9011}`, `metricsPort:
+     8091`, `apiPort: 5061`, `isAggregator: false`, `count: 1`. Every entry is a validator and
+     finality needs two thirds of them online, so entries you do not run must go. Each node's REST
+     port is its `apiPort` (upstream: ethlambda_0 8087, ream_0 5052).
+  4. `NETWORK_DIR=local-devnet ./spin-node.sh --node all --generateGenesis --skip-leanpoint --skip-nemo`
+     — `all` is every entry in that file; the two skips leave out the leanpoint and Nemo containers,
+     which need a tooling server. `--attestation-committee-count` and the node key are passed by
+     the script; `--network-name` is left at its default.
+  5. Verify, after two or three minutes (finalized reached slot 42 at 4.5 min in the run above):
+     `for p in 5061 8087 5052; do curl -s http://127.0.0.1:$p/lean/v0/fork_choice | jq -c .finalized; done`
+     prints one `{"slot":N,"root":"0x…"}` per node; they must be identical and `slot` must keep
+     growing. `/lean/v0/checkpoints/justified` is the same shape for justification, and
+     `/metrics` on the metrics port exposes `lean_latest_finalized_slot`. Verity's own log prints
+     `imported slot=… finalized=…` per block.
 - **The latest devnet generation is devnet5** (leanSpec #717 "Aggregated block proof", the
   `SignedBlock { block, proof: MultiMessageAggregate }` shape Verity transcribes). lean-quickstart's
   `client-cmds/*.sh` still pin devnet4 images (`ethlambda:devnet4`, `ream:latest-devnet4`), whose
