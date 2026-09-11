@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Language server entry point for the Lean package.
+#
+# Runs from the package root, with the toolchain on the path and the editor's
+# extra flag dropped, none of which the build tool's own server does for itself.
+set -euo pipefail
+
+export PATH="$HOME/.elan/bin:$PATH"
+cd "$(dirname "$(readlink -f "$0")")/.."
+exec lake serve

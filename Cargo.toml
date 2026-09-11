@@ -89,6 +89,13 @@ libssz-derive = "0.2.2"
 libssz-merkle = "0.2.2"
 libssz-types = "0.2.2"
 
+# Experimental Lean SSZ boundary. The crate remains inert unless a consumer enables its
+# `lean-ssz` feature; Cargo.lock and the vendored source pin the exact implementation.
+verity-consensus-sys = { path = "crates/verity-consensus-sys", version = "0.0.0" }
+
+# Build the one C translation unit that owns raw Lean runtime objects.
+cc = "1"
+
 # --- Networking ----------------------------------------------------------------------------
 # Upstream rust-libp2p, unforked. `default-features = false` keeps the transport set to what the
 # lean network actually uses: QUIC for transport, gossipsub for broadcast, request-response for

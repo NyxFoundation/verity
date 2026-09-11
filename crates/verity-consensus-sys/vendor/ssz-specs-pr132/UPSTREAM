@@ -1,0 +1,10 @@
+Repository: https://github.com/ethereum/ssz-specs
+Pull request: https://github.com/ethereum/ssz-specs/pull/132
+Commit: 463a311d61353cc83de04e1c7d71834b9f354784
+Vendored paths: LICENSE, lean/
+
+Local additions:
+- lean/VeritySsz.lean defines Verity's five consensus-container descriptors and C export.
+- lean/lakefile.toml registers VeritySsz as a library and default target.
+
+All files under lean/Ssz and lean/Conformance are unchanged from the pinned commit.

@@ -9,6 +9,10 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+default = []
+lean-ssz = ["verity-node/lean-ssz"]
+
 # The binary, and nothing else. Argument parsing, log setup, signal handling, and the call
 # that starts the node: everything with an opinion about consensus lives in `verity-node` and
 # below, where it can be tested without a process.

@@ -34,7 +34,9 @@ pub use justification::{
     IMMEDIATE_JUSTIFICATION_WINDOW, advance_checkpoint, extend_justified_slots_to,
     is_justifiable_after, is_slot_justified, justified_index_after,
 };
-pub use merkle::hash_tree_root;
+#[cfg(feature = "lean-ssz")]
+pub use merkle::{LeanSszType, lean_hash_tree_root};
+pub use merkle::{hash_tree_root, native_hash_tree_root};
 pub use proposer::proposer_for_slot;
 pub use slot_clock::{SlotClock, intervals_at_slot_start};
 pub use state_transition::{
