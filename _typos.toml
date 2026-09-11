@@ -10,6 +10,11 @@ extend-exclude = [
     "docs/mermaid-init.js",
 ]
 
+[default]
+# ENR records are base64url and land in tests as real-world samples; any 2-4 letter run inside
+# one is noise to a spell-checker, not a word.
+extend-ignore-re = ["enr:-[A-Za-z0-9_-]+"]
+
 [default.extend-words]
 # "ser" — serialization abbreviation (mermaid node IDs, serde ser/de), not a typo of "set".
 ser = "ser"
