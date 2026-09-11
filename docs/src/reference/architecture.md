@@ -1,6 +1,6 @@
 ---
 title: Verity Architecture
-last_updated: 2026-09-07
+last_updated: 2026-09-11
 tags:
   - architecture
   - verification-boundary
@@ -143,7 +143,8 @@ This layout is the **target** shape. The kickoff decision of 2026-07-22 was to s
 single `verity-consensus` crate and split only when a second crate earned its existence; that
 split has since happened, crate by crate, and the workspace now holds `verity-types`,
 `verity-chain`, `verity-crypto`, `verity-db`, `verity-p2p`, `verity-validator`, `verity-node`,
-and the `verity` binary. What is still ahead is named as such below.
+`verity-rpc`, `verity-metrics`, and the `verity` binary. What is still ahead is named as such
+below.
 
 The Rust runtime is a Cargo workspace. Crates map onto the zones, and **calls and dependencies flow
 inward, from higher-effect / lower-assurance toward lower-effect / higher-assurance — Verified Core never calls
@@ -205,8 +206,13 @@ upstream Lean library name per Rust's `-sys` convention.
   into `StorageReader` (point and range reads) and `StorageBackend` (those plus `write`), so a
   reader sharing the writer's open database is a handle with no `write` on it rather than one
   trusted not to call it. See [Storage engine and retention](#storage-engine-and-retention).
-- `verity-rpc` — HTTP API surface.
-- `verity-metrics` — implementation of the leanMetrics contract.
+- `verity-rpc` — the HTTP surface: the cross-client REST API (`/lean/v0/*` — health, the
+  finalized state and block as SSZ for checkpoint-syncing peers, the justified checkpoint and
+  fork-choice tree as JSON, the aggregator admin toggle) and the Prometheus scrape endpoint.
+  Every route answers from the `ChainView` snapshot; nothing here can reach the chain task.
+- `verity-metrics` — the [leanMetrics](https://github.com/leanEthereum/leanMetrics) registry:
+  the metric names, types and labels every lean client exposes identically, so one dashboard
+  serves them all. A leaf crate; the crate that owns each collection event records into it.
 
 Layer mapping: **Verified Core** = Verity Consensus (the compiled export subset of formal-leanSpec, not a Cargo crate); **Runtime Shell** = `verity-consensus-sys`,
 `verity-types`, `verity-chain`, `verity-crypto`, `verity-db`; **I/O Edge** = `verity-p2p`,

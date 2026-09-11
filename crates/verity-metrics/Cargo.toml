@@ -1,0 +1,18 @@
+[package]
+name = "verity-metrics"
+description = "The leanMetrics contract: the Prometheus metrics every lean client exposes under the same names, types, labels and buckets, so that one dashboard serves them all."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# A leaf crate on purpose. It knows the contract — the registered strings — and nothing about
+# the chain, so any crate can hold a handle and record into it without a dependency cycle.
+[dependencies]
+prometheus.workspace = true
+
+[lints]
+workspace = true

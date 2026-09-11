@@ -70,6 +70,9 @@ async fn should_advance_the_head_past_genesis_when_a_node_runs_its_own_validator
         key_directory: Some(key_base.join("hash-sig-keys")),
         is_aggregator: true,
         checkpoint_sync_url: None,
+        api_address: None,
+        metrics_address: None,
+        version: String::new(),
     })
     .await
     .expect("the node starts");

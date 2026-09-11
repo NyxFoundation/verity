@@ -1,0 +1,33 @@
+[package]
+name = "verity-rpc"
+description = "The HTTP surface: the cross-client REST API under /lean/v0 and the Prometheus scrape endpoint."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# An I/O Edge crate. It answers from the chain view like every other reader, encodes with the
+# same SSZ the wire uses, and never reaches past the snapshot into the chain task.
+[dependencies]
+axum.workspace = true
+hex.workspace = true
+libssz.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+verity-chain.workspace = true
+verity-metrics.workspace = true
+verity-types.workspace = true
+
+# The tests drive a bound server over real HTTP, as leanpoint and a checkpoint-syncing peer
+# would, rather than calling handlers in-process.
+[dev-dependencies]
+reqwest.workspace = true
+verity-db.workspace = true
+
+[lints]
+workspace = true

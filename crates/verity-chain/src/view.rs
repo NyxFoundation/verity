@@ -34,6 +34,7 @@ use verity_types::{
 use crate::error::RejectionReason;
 use crate::fork_choice::duties::{attestation_data, attestation_target};
 use crate::fork_choice::store::{AttestationSignatureEntry, Store};
+use crate::fork_choice::weights::block_weights;
 
 /// An immutable view of the chain, as of one completed import.
 ///
@@ -106,6 +107,50 @@ impl ChainView {
     #[must_use]
     pub fn block(&self, root: Bytes32) -> Option<&Block> {
         self.store.blocks.get(&root)
+    }
+
+    /// Every block the snapshot holds: the unfinalized tree and the anchor.
+    pub fn blocks(&self) -> impl Iterator<Item = (&Bytes32, &Block)> {
+        self.store.blocks.iter()
+    }
+
+    /// Each known block's fork-choice weight: the stake of the latest votes at or below it.
+    ///
+    /// Counts only the votes currently driving the head, exactly as `update_head` sees them;
+    /// attestations seen but not yet accepted carry no weight here either.
+    #[must_use]
+    pub fn block_weights(&self) -> HashMap<Bytes32, u64> {
+        block_weights(&self.store)
+    }
+
+    /// How many per-validator signatures the aggregator has collected, over every vote.
+    #[must_use]
+    pub fn attestation_signature_count(&self) -> usize {
+        self.store
+            .attestation_signatures
+            .values()
+            .map(HashSet::len)
+            .sum()
+    }
+
+    /// How many proofs were gathered this slot and do not count yet.
+    #[must_use]
+    pub fn new_aggregated_payload_count(&self) -> usize {
+        self.store
+            .latest_new_aggregated_payloads
+            .values()
+            .map(HashSet::len)
+            .sum()
+    }
+
+    /// How many proofs count toward fork-choice weight.
+    #[must_use]
+    pub fn known_aggregated_payload_count(&self) -> usize {
+        self.store
+            .latest_known_aggregated_payloads
+            .values()
+            .map(HashSet::len)
+            .sum()
     }
 
     /// The highest slot of any block in view, canonical or not.

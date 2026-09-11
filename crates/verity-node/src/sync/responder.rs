@@ -227,6 +227,25 @@ fn stored_signed_block<B: StorageReader>(
     }))
 }
 
+/// One stored block with its proof, for the HTTP API's finalized-block route.
+///
+/// The same read the range responder does per block, keyed by root alone: the header is
+/// looked up first to learn the slot the proof is filed under. `None` means the root is not
+/// stored, or names the anchor — which was adopted from configuration and has no proof.
+///
+/// # Errors
+///
+/// [`StorageError`] when a block above the anchor is missing a part, which is damage.
+pub fn signed_block<B: StorageReader>(
+    repository: &Repository<B>,
+    root: Bytes32,
+) -> Result<Option<SignedBlock>, StorageError> {
+    let Some(header) = repository.block_header(root)? else {
+        return Ok(None);
+    };
+    stored_signed_block(repository, header.slot, root, anchor_slot(repository)?)
+}
+
 /// The first slot this node holds proof-bearing history for.
 fn anchor_slot<B: StorageReader>(repository: &Repository<B>) -> Result<Slot, StorageError> {
     Ok(repository.served_from_slot()?.unwrap_or(Slot(0)))

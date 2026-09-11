@@ -2,32 +2,41 @@
 //!
 //! # The command line is the cross-client one
 //!
-//! The flags mirror leanSpec's node so that a Verity process can be dropped into a
-//! lean-quickstart devnet in place of any other client: the same `--genesis` file, the same
-//! `--validator-keys` layout, the same `--node-id` lookup. Two flags are Verity's own —
+//! The flags are the set lean-quickstart drives every client with (`docs/adding-a-new-client.md`
+//! there), so that a Verity process can be dropped into a devnet in place of any other client:
+//! the same `config.yaml` behind `--genesis`, the same `nodes.yaml` behind `--bootnodes`, the
+//! same `<node>.key` behind `--node-key`, the same `validators.yaml` and `hash-sig-keys/`
+//! layout behind `--validator-keys`, the same `--node-id` lookup. Two flags are Verity's own:
 //! `--data-dir`, because Verity persists what the reference node keeps in memory, and
-//! `--network-name`, because the topic segment is a caller string with no computation behind
-//! it yet.
+//! `--network-name`, which defaults to the fork's gossip digest and exists only so that a
+//! private network can partition itself off.
+//!
+//! Two flags are accepted for the deployment's sake and then checked rather than used:
+//! `--attestation-committee-count` and `--aggregate-subnet-ids`. leanSpec fixes the committee
+//! count as a constant of the fork, and this build transcribes it; a deployment asking for
+//! another value is refused at startup, with the reason, rather than joined.
 //!
 //! Sync has exactly one flag, `--checkpoint-sync-url`, and that is deliberate: every other
 //! number the sync service uses is a constant in the code, because `docs/design/sync.md` puts
 //! the thresholds outside the design's commitments. An operator can choose where the node
 //! starts; the rate at which it catches up is not a choice the wire format leaves open.
 
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
 use verity_node::{
-    ASSIGNMENT_FILE_NAME, GenesisFile, Multiaddr, Node, NodeConfig, assigned_validators,
-    config::KEY_SUBDIRECTORY, identity::Keypair,
+    ASSIGNMENT_FILE_NAME, ConfigError, GOSSIP_DIGEST, GenesisFile, Multiaddr, Node, NodeConfig,
+    assigned_validators, check_aggregate_subnets, check_committee_count, config::KEY_SUBDIRECTORY,
+    identity::Keypair, parse_bootnode, read_bootnodes, read_node_key,
 };
 
 /// A lean consensus node.
 #[derive(Debug, Parser)]
 #[command(name = "verity", version, about = "The Verity lean consensus client")]
 struct Args {
-    /// Path to the genesis YAML file.
+    /// Path to the genesis file (`config.yaml`).
     #[arg(long, value_name = "PATH")]
     genesis: PathBuf,
 
@@ -39,23 +48,42 @@ struct Args {
     #[arg(
         long,
         value_name = "MULTIADDR",
-        default_value = "/ip4/0.0.0.0/udp/9001/quic-v1"
+        default_value = "/ip4/0.0.0.0/udp/9001/quic-v1",
+        conflicts_with = "listen_port"
     )]
     listen: Multiaddr,
 
-    /// Peer to dial at startup. Repeatable.
-    #[arg(long = "bootnode", value_name = "MULTIADDR")]
-    bootnodes: Vec<Multiaddr>,
+    /// UDP port to listen on for inbound QUIC connections, on every interface.
+    #[arg(long, value_name = "PORT")]
+    listen_port: Option<u16>,
+
+    /// Peer to dial at startup, as a multiaddr or an ENR. Repeatable, and may be combined
+    /// with --bootnodes: the file's entries are dialled first, then these.
+    #[arg(long = "bootnode", value_name = "MULTIADDR|ENR")]
+    bootnode: Vec<String>,
+
+    /// File listing peers to dial at startup: lean-quickstart's `nodes.yaml`, a YAML list of
+    /// ENRs or multiaddrs.
+    #[arg(long, value_name = "PATH")]
+    bootnodes: Option<PathBuf>,
 
     /// The network segment of every gossip topic. Peers that disagree exchange no gossip.
-    #[arg(long, value_name = "NAME", default_value = "00000000")]
+    #[arg(long, value_name = "NAME", default_value = GOSSIP_DIGEST)]
     network_name: String,
 
-    /// Directory holding `validators.yaml` and `hash-sig-keys/`. Omit to follow without signing.
+    /// File holding this node's secp256k1 secret as hex (`<node>.key`). Omit for a fresh
+    /// identity each run.
+    #[arg(long, value_name = "PATH")]
+    node_key: Option<PathBuf>,
+
+    /// The genesis directory lean-quickstart generated, shared by every node: it holds
+    /// `validators.yaml` (node id -> validator indices) and `hash-sig-keys/`. Omit to follow
+    /// without signing.
     #[arg(long, value_name = "DIR")]
     validator_keys: Option<PathBuf>,
 
     /// This node's identifier, looked up in `validators.yaml` to find its validator indices.
+    /// An identifier the file does not name runs no validators and follows the chain.
     #[arg(long, value_name = "ID", default_value = "verity_0")]
     node_id: String,
 
@@ -63,10 +91,40 @@ struct Args {
     #[arg(long)]
     is_aggregator: bool,
 
+    /// Subnets to aggregate for, comma-separated. Accepted for deployment compatibility; a
+    /// subnet the fork's committee count does not define stops the node at startup.
+    #[arg(
+        long,
+        value_name = "IDS",
+        value_delimiter = ',',
+        requires = "is_aggregator"
+    )]
+    aggregate_subnet_ids: Vec<u64>,
+
+    /// The deployment's attestation committee count. A value other than the fork's constant
+    /// stops the node at startup rather than joining a network it disagrees with.
+    #[arg(long, value_name = "N")]
+    attestation_committee_count: Option<u64>,
+
     /// Base URL of a node to fetch the finalized anchor from, instead of replaying from
     /// genesis. A fetch or verification failure stops the node; there is no fallback.
     #[arg(long, value_name = "URL")]
     checkpoint_sync_url: Option<String>,
+
+    /// Address the REST API and the metrics endpoint bind to.
+    #[arg(long, value_name = "IP", default_value = "0.0.0.0")]
+    http_address: IpAddr,
+
+    /// Port of the REST API: `/lean/v0/*` (health, finalized state and block, justified
+    /// checkpoint, fork_choice, admin), `/v0/health` for leanpoint, and `/metrics`. Omit to
+    /// serve none.
+    #[arg(long, value_name = "PORT")]
+    api_port: Option<u16>,
+
+    /// Port of the Prometheus scrape endpoint (`/metrics`, plus `/lean/v0/health`). Omit to
+    /// serve none.
+    #[arg(long, value_name = "PORT")]
+    metrics_port: Option<u16>,
 
     /// Log at DEBUG instead of INFO.
     #[arg(short, long)]
@@ -91,6 +149,11 @@ async fn main() -> ExitCode {
 async fn run(args: Args) -> Result<(), verity_node::error::NodeError> {
     let genesis = GenesisFile::read(&args.genesis)?;
 
+    if let Some(count) = args.attestation_committee_count {
+        check_committee_count(count)?;
+    }
+    check_aggregate_subnets(&args.aggregate_subnet_ids)?;
+
     // The keys directory decides whether this node signs at all: with no directory there is
     // no assignment to read and no key to load, which is a follower.
     let (validator_indices, key_directory) = match &args.validator_keys {
@@ -101,19 +164,35 @@ async fn run(args: Args) -> Result<(), verity_node::error::NodeError> {
         None => (Vec::new(), None),
     };
 
+    // A configured key is what lets peers dial this node by the identity in `nodes.yaml`.
+    // Without one, a fresh identity per run is fine: nothing upstream depends on this node
+    // keeping the same peer id across restarts when it is only ever the dialler.
+    let keypair = match &args.node_key {
+        Some(path) => read_node_key(path)?,
+        None => Keypair::generate_secp256k1(),
+    };
+
+    let listen = listen_address(&args);
+    let bootnodes = bootnodes(&args)?;
+
     let node = Node::start(NodeConfig {
         genesis,
         data_directory: args.data_dir,
-        listen: args.listen,
-        bootnodes: args.bootnodes,
+        listen,
+        bootnodes,
         network_name: args.network_name,
-        // A fresh identity per run. Peers are reached by dialling configured addresses, so
-        // nothing upstream depends on this node keeping the same peer id across restarts.
-        keypair: Keypair::generate_secp256k1(),
+        keypair,
         validator_indices,
         key_directory,
         is_aggregator: args.is_aggregator,
         checkpoint_sync_url: args.checkpoint_sync_url,
+        api_address: args
+            .api_port
+            .map(|port| SocketAddr::new(args.http_address, port)),
+        metrics_address: args
+            .metrics_port
+            .map(|port| SocketAddr::new(args.http_address, port)),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     })
     .await?;
 
@@ -124,6 +203,34 @@ async fn run(args: Args) -> Result<(), verity_node::error::NodeError> {
     tracing::info!("interrupted; shutting down");
     node.shutdown().await;
     Ok(())
+}
+
+/// The bind address: the port flag when given, the full multiaddr otherwise.
+fn listen_address(args: &Args) -> Multiaddr {
+    match args.listen_port {
+        Some(port) => format!("/ip4/0.0.0.0/udp/{port}/quic-v1")
+            .parse()
+            .expect("a port number always forms a valid multiaddr"),
+        None => args.listen.clone(),
+    }
+}
+
+/// Every peer to dial at startup: the file's entries first, then the flag's.
+fn bootnodes(args: &Args) -> Result<Vec<Multiaddr>, ConfigError> {
+    let mut addresses = match &args.bootnodes {
+        Some(path) => read_bootnodes(path)?,
+        None => Vec::new(),
+    };
+    for entry in &args.bootnode {
+        addresses.push(
+            parse_bootnode(entry).map_err(|reason| ConfigError::MalformedBootnode {
+                source: "--bootnode".to_string(),
+                entry: entry.clone(),
+                reason,
+            })?,
+        );
+    }
+    Ok(addresses)
 }
 
 /// Installs the subscriber. A library never does this — it takes the choice from whoever

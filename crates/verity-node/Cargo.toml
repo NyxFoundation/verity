@@ -12,11 +12,12 @@ publish = false
 # The wiring crate. Everything below it is a component with one job; this is where the
 # components are joined, which is why it is the only crate that depends on all of them.
 #
-# `serde_norway` and `hex` read the cross-client genesis and validator-assignment files;
-# `libssz` decodes gossip payloads, which arrive as raw bytes by design. `reqwest` and `rand`
-# belong to the sync service alone: the checkpoint-sync fetch and score-weighted peer
-# selection respectively (`docs/design/sync.md`).
+# `serde_norway` and `hex` read the cross-client genesis and validator-assignment files, and
+# `enr` the bootnode records beside them; `libssz` decodes gossip payloads, which arrive as raw
+# bytes by design. `reqwest` and `rand` belong to the sync service alone: the checkpoint-sync
+# fetch and score-weighted peer selection respectively (`docs/design/sync.md`).
 [dependencies]
+enr.workspace = true
 hex.workspace = true
 libssz.workspace = true
 rand.workspace = true
@@ -29,14 +30,19 @@ tracing.workspace = true
 verity-chain.workspace = true
 verity-crypto.workspace = true
 verity-db.workspace = true
+verity-metrics.workspace = true
 verity-p2p.workspace = true
+verity-rpc.workspace = true
 verity-types.workspace = true
 verity-validator.workspace = true
 
-# `serde_json` reads the leanSpec fixture files; consensus values never travel as JSON.
+# `serde_json` reads the leanSpec fixture files and the API's JSON bodies; consensus values
+# never travel as JSON. `reqwest` drives the HTTP surface over a real socket in the tests.
 # `tracing-subscriber` is what makes `RUST_LOG` work in these harnesses: a library installs no
 # subscriber, so without it an end-to-end test that misbehaves is silent.
 [dev-dependencies]
+libssz.workspace = true
+reqwest.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tracing-subscriber.workspace = true
