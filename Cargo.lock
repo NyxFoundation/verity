@@ -6066,10 +6066,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "verity-justifiability"
-version = "0.0.0"
-
-[[package]]
 name = "verity-metrics"
 version = "0.0.0"
 dependencies = [
