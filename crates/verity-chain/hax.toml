@@ -1,0 +1,18 @@
+# Extraction of the pure functions in this crate.
+# Lives on the hax verification branch only; not merged to develop.
+#
+# STF, fork choice, and block production were attempted and refused:
+# nested-loop returns, HashMap iterators, and closures. They stay out
+# until the extractor can take them without rewriting production logic.
+
+[scenario.pure]
+backend = "lean"
+include = [
+    "verity_chain::justification",
+    "verity_chain::proposer",
+    "verity_chain::slot_clock",
+]
+
+[scenario.merkle]
+backend = "lean"
+include = ["verity_chain::merkle"]
