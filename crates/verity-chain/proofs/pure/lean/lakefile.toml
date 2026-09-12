@@ -1,9 +1,9 @@
-name = "Justifiable"
+name = "Pure"
 version = "0.1.0"
-defaultTargets = ["Justifiable"]
+defaultTargets = ["Pure"]
 
 [[lean_lib]]
-name = "Justifiable"
+name = "Pure"
 
 [[require]]
 name = "aeneas"

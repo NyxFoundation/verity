@@ -1,6 +1,0 @@
-# Extraction scenario for `is_justifiable_after`.
-# This file lives on the hax verification branch only.
-
-[scenario.justifiable]
-backend = "lean"
-include = ["verity_justifiability::is_justifiable_after"]

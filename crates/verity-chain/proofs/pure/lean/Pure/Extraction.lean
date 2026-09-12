@@ -1,3 +1,3 @@
 -- Imports the extraction modules. Rewritten by hax on every extraction.
-import Justifiable.Extraction.Types
-import Justifiable.Extraction.Funs
+import Pure.Extraction.Types
+import Pure.Extraction.Funs
