@@ -1,0 +1,12 @@
+name = "VerityChain"
+version = "0.1.0"
+defaultTargets = ["VerityChain"]
+
+[[lean_lib]]
+name = "VerityChain"
+
+[[require]]
+name = "aeneas"
+git = "https://github.com/cryspen/aeneas"
+rev = "nightly-2026.09.03-6852e64"
+subDir = "backends/lean"
