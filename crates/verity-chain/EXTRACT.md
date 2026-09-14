@@ -24,6 +24,11 @@ A failure is classified before any Rust is edited:
 
 Generated Lean is under `proofs/<scenario>/lean/`.
 
+`Pure/Assumptions/` declares the cross-crate `verity-types` names
+(`Slot`, `Checkpoint`, config literals) that Charon does not extract
+from `verity-chain`. That is hole-filling, not a rewrite of the
+functions.
+
 `is_justifiable_after : bool` extracts as `RustM Bool` because Aeneas
 models `u64` arithmetic as overflow-fallible. That is the extractor's
 Rust semantics, not a Verity defect, and it is the gap against

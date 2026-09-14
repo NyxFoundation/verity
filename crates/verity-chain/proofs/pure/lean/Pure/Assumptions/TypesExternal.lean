@@ -21,3 +21,27 @@ set_option maxHeartbeats 1000000
 /- You can set the `maxRecDepth` value with the `-max-recdepth` CLI option -/
 set_option maxRecDepth 2048
 
+/-- Cross-crate `verity-types` newtypes. Not extracted: Charon start-from
+    stays inside `verity-chain`. Values match `crates/verity-types`. -/
+@[reducible]
+def verity_types.primitives.Slot := Std.U64
+
+@[reducible]
+def verity_types.primitives.ValidatorIndex := Std.U64
+
+@[reducible]
+def verity_types.primitives.Interval := Std.U64
+
+structure verity_types.checkpoint.Checkpoint where
+  root : Array Std.U8 32#usize
+  slot : verity_types.primitives.Slot
+
+axiom core.time.Duration : Type
+
+axiom libssz_types.bitlist.SszBitlist (N : Std.Usize) : Type
+
+inductive libssz_types.error.TypeError where
+| InvalidLength : Std.Usize → Std.Usize → libssz_types.error.TypeError
+| OverCapacity : Std.Usize → Std.Usize → libssz_types.error.TypeError
+| Custom : String → libssz_types.error.TypeError
+

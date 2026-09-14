@@ -23,3 +23,18 @@ set_option maxHeartbeats 1000000
 set_option maxRecDepth 2048
 open verity_chain
 
+/-- Debug formatting is opaque std; the body is not a consensus function. -/
+axiom slot_clock.SlotClock.Insts.CoreFmtDebug.fmt :
+  slot_clock.SlotClock → core.fmt.Formatter → RustM ((core.result.Result
+    Unit core.fmt.Error) × core.fmt.Formatter × (core.fmt.Formatter →
+    core.fmt.Formatter))
+
+/-- leanSpec / verity-types constants. `ok` of the transcribed literals. -/
+def verity_types.config.INTERVALS_PER_SLOT : RustM Std.U64 := ok 5#u64
+
+def verity_types.config.MILLISECONDS_PER_SLOT : RustM Std.U64 := ok 4000#u64
+
+def verity_types.config.MILLISECONDS_PER_INTERVAL : RustM Std.U64 := ok 800#u64
+
+def verity_types.config.HISTORICAL_ROOTS_LIMIT : RustM Std.Usize := ok 262144#usize
+
