@@ -21,6 +21,11 @@ A failure is classified before any Rust is edited:
 
 Generated Lean is under `proofs/lean/`. The LLBC is gitignored.
 
+`lakefile.toml` / `lean-toolchain` pin Aeneas `nightly-2026.09.03` and
+Lean 4.31.0. Config constants in `FunsExternal.lean` are the transcribed
+literals, not axioms. `extract.sh` fails closed if Charon or Aeneas is
+missing.
+
 `is_justifiable_after : bool` extracts as `RustM Bool` because Aeneas
 models `u64` arithmetic as overflow-fallible. That is the extractor's
 Rust semantics, not a Verity defect, and it is the gap against

@@ -12,6 +12,17 @@ AENEAS="${AENEAS:-${HOME}/.cache/hax/tools/aeneas/nightly-2026.09.03-6852e64/aen
 ROOT="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 LLBC="${ROOT}/proofs/llbc/verity_chain.llbc"
 
+if [ ! -x "${CHARON}" ]; then
+  echo "charon not found at ${CHARON}" >&2
+  echo "install with: cargo hax tools install" >&2
+  exit 1
+fi
+if [ ! -x "${AENEAS}" ]; then
+  echo "aeneas not found at ${AENEAS}" >&2
+  echo "install with: cargo hax tools install" >&2
+  exit 1
+fi
+
 mkdir -p "${ROOT}/proofs/llbc" "${ROOT}/proofs/lean"
 PATH="$(dirname "${CHARON}"):${PATH}"
 export PATH

@@ -94,27 +94,13 @@ axiom libssz_types.bitlist.SszBitlist.push
     Source: 'crates/verity-types/src/config.rs', lines 8:0-8:33
     Name pattern: [verity_types::config::INTERVALS_PER_SLOT]
     Visibility: public -/
-@[rust_const "verity_types::config::INTERVALS_PER_SLOT"]
-axiom verity_types.config.INTERVALS_PER_SLOT : RustM Std.U64
+/-- Transcribed literals from `verity-types` config. Not axioms: the values
+    are the chain constants. -/
+def verity_types.config.INTERVALS_PER_SLOT : RustM Std.U64 := ok 5#u64
 
-/-- [verity_types::config::MILLISECONDS_PER_SLOT]
-    Source: 'crates/verity-types/src/config.rs', lines 20:0-20:36
-    Name pattern: [verity_types::config::MILLISECONDS_PER_SLOT]
-    Visibility: public -/
-@[rust_const "verity_types::config::MILLISECONDS_PER_SLOT"]
-axiom verity_types.config.MILLISECONDS_PER_SLOT : RustM Std.U64
+def verity_types.config.MILLISECONDS_PER_SLOT : RustM Std.U64 := ok 4000#u64
 
-/-- [verity_types::config::MILLISECONDS_PER_INTERVAL]
-    Source: 'crates/verity-types/src/config.rs', lines 23:0-23:40
-    Name pattern: [verity_types::config::MILLISECONDS_PER_INTERVAL]
-    Visibility: public -/
-@[rust_const "verity_types::config::MILLISECONDS_PER_INTERVAL"]
-axiom verity_types.config.MILLISECONDS_PER_INTERVAL : RustM Std.U64
+def verity_types.config.MILLISECONDS_PER_INTERVAL : RustM Std.U64 := ok 800#u64
 
-/-- [verity_types::config::HISTORICAL_ROOTS_LIMIT]
-    Source: 'crates/verity-types/src/config.rs', lines 31:0-31:39
-    Name pattern: [verity_types::config::HISTORICAL_ROOTS_LIMIT]
-    Visibility: public -/
-@[rust_const "verity_types::config::HISTORICAL_ROOTS_LIMIT"]
-axiom verity_types.config.HISTORICAL_ROOTS_LIMIT : RustM Std.Usize
+def verity_types.config.HISTORICAL_ROOTS_LIMIT : RustM Std.Usize := ok 262144#usize
 
