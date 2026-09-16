@@ -181,6 +181,14 @@ async fn should_expose_the_lean_metrics_on_both_ports() {
             "lean_attestation_committee_count 1",
             "lean_node_sync_status{status=\"syncing\"} 1",
             "lean_current_slot",
+            // The families that only the node can wire — a sample of each category.
+            "lean_gossip_mesh_peers{client=\"unknown\"} 0",
+            "lean_finalizations_total{result=\"success\"} 0",
+            "lean_aggregator_skipped_total{reason=\"not_aggregator\"}",
+            "# TYPE lean_tick_interval_duration_seconds histogram",
+            "# TYPE lean_state_transition_time_seconds histogram",
+            "# TYPE lean_pq_sig_attestation_verification_time_seconds histogram",
+            "# TYPE lean_gossip_block_arrival_delay_seconds histogram",
         ] {
             assert!(
                 text.contains(line),

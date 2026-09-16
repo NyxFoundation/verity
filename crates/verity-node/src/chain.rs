@@ -25,15 +25,17 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
 
 use verity_chain::{
-    ChainView, Store, hash_tree_root, on_block, on_tick, record_aggregated_payload,
+    ChainView, Store, hash_tree_root, on_block_observed, on_tick, record_aggregated_payload,
     record_attestation_signature,
 };
 use verity_crypto::containers::SignedAttestation;
 use verity_db::{BlockCommit, Repository, StorageBackend, TickCommit};
+use verity_metrics::{Metrics, SkipReason, observe_elapsed};
 use verity_types::config::INTERVALS_PER_SLOT;
 use verity_types::{
     AttestationData, Block, Bytes32, Interval, MultiMessageAggregate, SignedAggregatedAttestation,
@@ -41,6 +43,7 @@ use verity_types::{
 };
 use verity_validator::{LocalProduct, Prover};
 
+use crate::observe::{TransitionRecorder, reorg_depth};
 use crate::verification::Verified;
 
 /// What the chain task needs in order to hand an aggregation round off at interval 2.
@@ -66,6 +69,7 @@ pub struct ChainTask<B: StorageBackend> {
     local: mpsc::Receiver<LocalProduct>,
     network: mpsc::Receiver<Verified>,
     aggregator: Option<Aggregator>,
+    metrics: Arc<Metrics>,
 }
 
 impl<B: StorageBackend> ChainTask<B> {
@@ -82,6 +86,7 @@ impl<B: StorageBackend> ChainTask<B> {
         local: mpsc::Receiver<LocalProduct>,
         network: mpsc::Receiver<Verified>,
         aggregator: Option<Aggregator>,
+        metrics: Arc<Metrics>,
     ) -> (Self, watch::Receiver<Arc<ChainView>>) {
         let (view, receiver) = watch::channel(Arc::new(ChainView::of(&store)));
         (
@@ -93,6 +98,7 @@ impl<B: StorageBackend> ChainTask<B> {
                 local,
                 network,
                 aggregator,
+                metrics,
             },
             receiver,
         )
@@ -136,6 +142,7 @@ impl<B: StorageBackend> ChainTask<B> {
                     verified.map_or(Event::NetworkClosed, Event::Verified),
             };
 
+            let head_before = self.store.head;
             match event {
                 Event::Tick => {
                     let target = *self.clock.borrow_and_update();
@@ -161,10 +168,39 @@ impl<B: StorageBackend> ChainTask<B> {
                 }
             }
 
+            self.record_head_move(head_before);
             self.publish();
         }
 
         tracing::info!(head = %hex(self.store.head), "chain task stopped");
+    }
+
+    /// Counts a reorg when the event just applied moved the head off its own chain.
+    ///
+    /// Every event that can move the head — an import, or a tick that promotes votes — ends
+    /// up here, which is what makes the count complete rather than an import-only view.
+    fn record_head_move(&self, head_before: Bytes32) {
+        let Some(depth) = reorg_depth(&self.store.blocks, head_before, self.store.head) else {
+            return;
+        };
+        self.metrics.fork_choice.record_reorg(depth);
+        tracing::info!(
+            from = %hex(head_before),
+            to = %hex(self.store.head),
+            depth,
+            "fork choice reorg"
+        );
+    }
+
+    /// Records one vote's admission decision: how long it took, and which way it went.
+    fn record_validation(&self, started: Instant, valid: bool) {
+        let fork_choice = &self.metrics.fork_choice;
+        observe_elapsed(&fork_choice.attestation_validation_time_seconds, started);
+        if valid {
+            fork_choice.attestations_valid_total.inc();
+        } else {
+            fork_choice.attestations_invalid_total.inc();
+        }
     }
 
     /// Advances consensus time to `target`, running every interval on the way.
@@ -219,22 +255,35 @@ impl<B: StorageBackend> ChainTask<B> {
     /// Proving takes seconds — far longer than the interval it starts in — so the round runs
     /// on the prover and its output re-enters through channel ② whenever it finishes.
     fn start_aggregation_round(&self) {
+        let skipped = |reason| self.metrics.validator.record_aggregation_skipped(reason);
         let Some(aggregator) = &self.aggregator else {
+            skipped(SkipReason::NotAggregator);
             return;
         };
         if !aggregator.enabled.load(Ordering::Relaxed) {
+            skipped(SkipReason::NotAggregator);
             return;
         }
 
         let view = Arc::new(ChainView::of(&self.store));
         let prover = aggregator.prover.clone();
         let products = aggregator.products.clone();
+        let metrics = Arc::clone(&self.metrics);
 
         tokio::spawn(async move {
-            match prover
-                .prove(move || verity_validator::aggregate(&view))
-                .await
-            {
+            let round_metrics = Arc::clone(&metrics);
+            let round = prover.prove(move || {
+                let started = Instant::now();
+                let aggregates = verity_validator::aggregate(&view, &round_metrics);
+                observe_elapsed(
+                    &round_metrics
+                        .fork_choice
+                        .committee_signatures_aggregation_time_seconds,
+                    started,
+                );
+                aggregates
+            });
+            match round.await {
                 Ok(aggregates) => {
                     for aggregate in aggregates {
                         if products
@@ -246,7 +295,12 @@ impl<B: StorageBackend> ChainTask<B> {
                         }
                     }
                 }
-                Err(error) => tracing::warn!(%error, "aggregation round abandoned"),
+                Err(error) => {
+                    metrics
+                        .validator
+                        .record_aggregation_skipped(SkipReason::SpawnFailed);
+                    tracing::warn!(%error, "aggregation round abandoned");
+                }
             }
         });
     }
@@ -275,9 +329,11 @@ impl<B: StorageBackend> ChainTask<B> {
             }
             Verified::Attestation(attestation) => {
                 let (validator_index, data, signature) = attestation.into_parts();
-                if let Err(reason) =
-                    record_attestation_signature(&mut self.store, validator_index, data, signature)
-                {
+                let started = Instant::now();
+                let outcome =
+                    record_attestation_signature(&mut self.store, validator_index, data, signature);
+                self.record_validation(started, outcome.is_ok());
+                if let Err(reason) = outcome {
                     tracing::debug!(validator = validator_index.0, %reason, "vote not pooled");
                 }
             }
@@ -305,7 +361,14 @@ impl<B: StorageBackend> ChainTask<B> {
             .get(&block.parent_root)
             .map(|parent| parent.slot);
 
-        if let Err(reason) = on_block(&mut self.store, &block) {
+        let started = Instant::now();
+        let mut recorder = TransitionRecorder::new(&self.metrics);
+        let outcome = on_block_observed(&mut self.store, &block, &mut recorder);
+        observe_elapsed(
+            &self.metrics.fork_choice.block_processing_time_seconds,
+            started,
+        );
+        if let Err(reason) = outcome {
             tracing::debug!(slot = block.slot.0, %reason, "block not imported");
             return;
         }
@@ -344,12 +407,15 @@ impl<B: StorageBackend> ChainTask<B> {
     fn record_vote(&mut self, signed: SignedAttestation) {
         let signature =
             verity_chain::AttestationSignature(libssz::SszEncode::to_ssz(&signed.signature));
-        if let Err(reason) = record_attestation_signature(
+        let started = Instant::now();
+        let outcome = record_attestation_signature(
             &mut self.store,
             signed.validator_index,
             signed.data,
             signature,
-        ) {
+        );
+        self.record_validation(started, outcome.is_ok());
+        if let Err(reason) = outcome {
             tracing::debug!(validator = signed.validator_index.0, %reason, "own vote not pooled");
         }
     }
@@ -360,7 +426,10 @@ impl<B: StorageBackend> ChainTask<B> {
     /// covers those voters, so keeping the raw copies would only have later rounds re-prove
     /// what is already proved.
     fn record_aggregate(&mut self, aggregate: SignedAggregatedAttestation) {
-        if let Err(reason) = record_aggregated_payload(&mut self.store, &aggregate) {
+        let started = Instant::now();
+        let outcome = record_aggregated_payload(&mut self.store, &aggregate);
+        self.record_validation(started, outcome.is_ok());
+        if let Err(reason) = outcome {
             tracing::debug!(slot = aggregate.data.slot.0, %reason, "aggregate not recorded");
             return;
         }

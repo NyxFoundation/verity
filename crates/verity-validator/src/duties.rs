@@ -27,6 +27,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
 
@@ -34,6 +35,7 @@ use verity_chain::{BuiltBlock, ChainView, build_block, hash_tree_root, proposer_
 use verity_crypto::aggregate::{aggregate_single_message, merge_single_message_proofs};
 use verity_crypto::containers::{Signature, SignedAttestation};
 use verity_crypto::sign;
+use verity_metrics::{Metrics, observe_elapsed};
 use verity_types::config::INTERVALS_PER_SLOT;
 use verity_types::{
     AttestationData, Bytes32, Interval, MultiMessageAggregate, SignedBlock, SingleMessageAggregate,
@@ -75,6 +77,7 @@ pub struct DutyService {
     products: mpsc::Sender<LocalProduct>,
     view: watch::Receiver<Arc<ChainView>>,
     ticks: watch::Receiver<Interval>,
+    metrics: Arc<Metrics>,
     /// The lag gate. See [`DutyService::serves_duties`].
     gate: LagGate,
     attested: BTreeSet<Slot>,
@@ -94,6 +97,7 @@ impl DutyService {
         products: mpsc::Sender<LocalProduct>,
         view: watch::Receiver<Arc<ChainView>>,
         ticks: watch::Receiver<Interval>,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             keyring,
@@ -101,6 +105,7 @@ impl DutyService {
             products,
             view,
             ticks,
+            metrics,
             gate: LagGate::default(),
             attested: BTreeSet::new(),
             advancing: AdvancesInFlight::default(),
@@ -224,6 +229,10 @@ impl DutyService {
             return Ok(());
         };
 
+        // Building is selection plus signing; the fold is timed on its own below, and a
+        // failure at any of the three is one failed build.
+        let building = Instant::now();
+        let failures = &self.metrics.block.building_failures_total;
         let BuiltBlock {
             block, components, ..
         } = build_block(
@@ -233,11 +242,18 @@ impl DutyService {
             view.head(),
             &view.known_block_roots(),
             view.known_aggregated_payloads(),
-        )?;
+        )
+        .inspect_err(|_| failures.inc())?;
 
         let block_root = hash_tree_root(&block);
-        let signature =
-            sign(&keys.proposal.secret, slot, &block_root).map_err(DutyError::Signing)?;
+        let signature = sign(&keys.proposal.secret, slot, &block_root)
+            .map_err(DutyError::Signing)
+            .inspect_err(|_| failures.inc())?;
+        observe_elapsed(&self.metrics.block.building_time_seconds, building);
+        self.metrics
+            .block
+            .aggregated_payloads
+            .observe(block.body.attestations.len() as f64);
 
         tracing::info!(
             slot = slot.0,
@@ -259,13 +275,16 @@ impl DutyService {
             signature,
             block_root,
             slot,
+            metrics: Arc::clone(&self.metrics),
         };
 
         let prover = self.prover.clone();
         let products = self.products.clone();
+        let metrics = Arc::clone(&self.metrics);
         tokio::spawn(async move {
             match prover.prove(move || job.fold()).await {
                 Ok(Ok(proof)) => {
+                    metrics.block.building_success_total.inc();
                     // The product channel never sheds: a dropped block is a slot nobody else
                     // can fill.
                     let _ = products
@@ -273,9 +292,13 @@ impl DutyService {
                         .await;
                 }
                 Ok(Err(error)) => {
+                    metrics.block.building_failures_total.inc();
                     tracing::warn!(slot = slot.0, %error, "block proof could not be built");
                 }
-                Err(error) => tracing::warn!(slot = slot.0, %error, "block proof abandoned"),
+                Err(error) => {
+                    metrics.block.building_failures_total.inc();
+                    tracing::warn!(slot = slot.0, %error, "block proof abandoned");
+                }
             }
         });
 
@@ -293,10 +316,18 @@ impl DutyService {
         self.attested
             .retain(|attested| attested.0 + ATTESTED_SLOT_RETENTION > slot.0);
 
+        let production = Instant::now();
         let message = hash_tree_root(&data);
         for validator in self.keyring.validators() {
+            let signing = Instant::now();
             let signature =
                 sign(&validator.attestation.secret, slot, &message).map_err(DutyError::Signing)?;
+            observe_elapsed(
+                &self.metrics.signature.attestation_signing_time_seconds,
+                signing,
+            );
+            self.metrics.signature.attestation_signatures_total.inc();
+
             let attestation = SignedAttestation {
                 validator_index: validator.index,
                 data,
@@ -311,6 +342,10 @@ impl DutyService {
                 return Ok(());
             }
         }
+        observe_elapsed(
+            &self.metrics.validator.attestations_production_time_seconds,
+            production,
+        );
 
         tracing::debug!(
             slot = slot.0,
@@ -417,6 +452,7 @@ struct BlockProofJob {
     signature: Signature,
     block_root: Bytes32,
     slot: Slot,
+    metrics: Arc<Metrics>,
 }
 
 impl BlockProofJob {
@@ -426,6 +462,7 @@ impl BlockProofJob {
     /// then a single-element entry for the proposer. A verifier re-parses the merged proof by
     /// that order, so a different one here is a proof nobody can check.
     fn fold(self) -> Result<MultiMessageAggregate, DutyError> {
+        let folding = Instant::now();
         let mut components = Vec::with_capacity(self.components.len() + 1);
 
         for (data, proofs) in self.components {
@@ -439,7 +476,12 @@ impl BlockProofJob {
             components.push(if decoded.len() == 1 {
                 decoded.into_iter().next().expect("length checked")
             } else {
-                aggregate_single_message(decoded, &[], &hash_tree_root(&data), data.slot)?
+                let merged =
+                    aggregate_single_message(decoded, &[], &hash_tree_root(&data), data.slot)?;
+                self.metrics
+                    .signature
+                    .record_aggregate_built(merged.participants()?.len());
+                merged
             });
         }
 
@@ -451,7 +493,12 @@ impl BlockProofJob {
             self.slot,
         )?);
 
-        proofs::to_multi_container(&merge_single_message_proofs(components)?)
+        let proof = proofs::to_multi_container(&merge_single_message_proofs(components)?)?;
+        observe_elapsed(
+            &self.metrics.block.building_payload_aggregation_time_seconds,
+            folding,
+        );
+        Ok(proof)
     }
 }
 

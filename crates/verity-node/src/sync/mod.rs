@@ -44,7 +44,7 @@ use verity_types::Slot;
 use verity_types::config::SECONDS_PER_SLOT;
 
 use crate::network::status_of;
-use crate::verification::GossipPayload;
+use crate::verification::{GossipPayload, PayloadOrigin};
 
 use self::fetch::{FetchFailure, Gap, Plan};
 use self::peers::{Outcome, PeerTable};
@@ -305,6 +305,7 @@ impl SyncService {
             let block = GossipPayload {
                 kind: GossipKind::Block,
                 payload,
+                origin: PayloadOrigin::Sync,
             };
             if self.blocks.send(block).await.is_err() {
                 return false;

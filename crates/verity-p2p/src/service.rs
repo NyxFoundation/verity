@@ -17,9 +17,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt;
+use libp2p::core::ConnectedPoint;
 use libp2p::gossipsub::{self, IdentTopic};
 use libp2p::request_response::{self, OutboundRequestId};
-use libp2p::swarm::SwarmEvent;
+use libp2p::swarm::{ConnectionError, DialError, ListenError, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, SwarmBuilder};
 use tokio::sync::{mpsc, oneshot};
 
@@ -33,6 +34,102 @@ use crate::wire::snappy::{compress_block, decompress_block};
 /// The channel on which an inbound request awaits its response. Carried inside
 /// [`NetworkEvent::InboundRequest`] and returned through [`NetworkHandle::respond`].
 pub type ResponseChannel = request_response::ResponseChannel<Response>;
+
+/// How often the gossip mesh size is sampled into [`NetworkCounters`].
+///
+/// gossipsub raises no event when a peer is grafted or pruned, so the mesh is read off the
+/// behaviour on a timer. One second is well under a scrape interval and costs one small
+/// iteration per tick.
+const MESH_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Who opened a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// The peer dialed this node.
+    Inbound,
+    /// This node dialed the peer.
+    Outbound,
+}
+
+impl Direction {
+    fn of(endpoint: &ConnectedPoint) -> Self {
+        if endpoint.is_dialer() {
+            Self::Outbound
+        } else {
+            Self::Inbound
+        }
+    }
+}
+
+/// Why a connection attempt did not produce a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectFailure {
+    /// The attempt timed out.
+    Timeout,
+    /// Anything else: refused, denied, wrong peer, transport failure.
+    Error,
+}
+
+impl ConnectFailure {
+    fn of_dial(error: &DialError) -> Self {
+        let timed_out = match error {
+            DialError::Transport(attempts) => attempts
+                .iter()
+                .any(|(_, error)| error.to_string().to_lowercase().contains("timed out")),
+            DialError::LocalPeerId { .. }
+            | DialError::NoAddresses
+            | DialError::DialPeerConditionFalse(_)
+            | DialError::Aborted
+            | DialError::WrongPeerId { .. }
+            | DialError::Denied { .. } => false,
+        };
+        if timed_out {
+            Self::Timeout
+        } else {
+            Self::Error
+        }
+    }
+
+    fn of_listen(error: &ListenError) -> Self {
+        if error.to_string().to_lowercase().contains("timed out") {
+            Self::Timeout
+        } else {
+            Self::Error
+        }
+    }
+}
+
+/// Why an established connection ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisconnectReason {
+    /// The keep-alive expired.
+    Timeout,
+    /// The peer closed or reset the connection.
+    RemoteClose,
+    /// This node closed the connection.
+    LocalClose,
+    /// The transport failed.
+    Error,
+}
+
+impl DisconnectReason {
+    /// The lean clients agree on this reading of libp2p's cause: a close with no error is the
+    /// remote hanging up cleanly (this node never closes a connection itself), a keep-alive
+    /// expiry is a timeout, a reset is the remote, and any other I/O failure is an error.
+    fn of(cause: Option<&ConnectionError>) -> Self {
+        match cause {
+            None => Self::RemoteClose,
+            Some(ConnectionError::KeepAliveTimeout) => Self::Timeout,
+            Some(ConnectionError::IO(error)) => match error.kind() {
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted => {
+                    Self::RemoteClose
+                }
+                std::io::ErrorKind::TimedOut => Self::Timeout,
+                _ => Self::Error,
+            },
+        }
+    }
+}
 
 /// Commands into the network task.
 pub enum NetworkCommand {
@@ -82,9 +179,30 @@ pub enum NetworkEvent {
     /// the actual port becomes known.
     NewListenAddr(Multiaddr),
     /// First connection to a peer established.
-    PeerConnected(PeerId),
+    PeerConnected {
+        /// The peer.
+        peer: PeerId,
+        /// Who dialed whom.
+        direction: Direction,
+    },
     /// Last connection to a peer closed.
-    PeerDisconnected(PeerId),
+    PeerDisconnected {
+        /// The peer.
+        peer: PeerId,
+        /// Who had dialed whom.
+        direction: Direction,
+        /// Why it ended.
+        reason: DisconnectReason,
+    },
+    /// A connection attempt failed before any connection existed.
+    ConnectionFailed {
+        /// The peer, when the attempt got far enough to learn it.
+        peer: Option<PeerId>,
+        /// Who was dialing whom.
+        direction: Direction,
+        /// Why it failed.
+        failure: ConnectFailure,
+    },
     /// A gossip message on a subscribed topic of this network, decompressed. Raw SSZ
     /// bytes — decoding and verification happen downstream, never here.
     Gossip {
@@ -105,16 +223,23 @@ pub enum NetworkEvent {
     },
 }
 
-/// Drop and failure counters, shared between the task and its handle. The wiring point
-/// for `verity-metrics` once it exists; until then the counts are at least observable.
+/// Drop and failure counters, and the sampled mesh size, shared between the task and its
+/// handle. The node reads them into `verity-metrics`; the task itself records no metric.
 #[derive(Debug, Default)]
 pub struct NetworkCounters {
     gossip_dropped: AtomicU64,
     gossip_invalid: AtomicU64,
     events_dropped: AtomicU64,
+    mesh_peers: AtomicU64,
 }
 
 impl NetworkCounters {
+    /// Distinct peers in this node's gossipsub mesh, over every subscribed topic, as of the
+    /// last sample (`lean_gossip_mesh_peers`).
+    pub fn mesh_peers(&self) -> u64 {
+        self.mesh_peers.load(Ordering::Relaxed)
+    }
+
     /// Gossip messages dropped because the event channel was full — the pipeline's one
     /// deliberate load-shedding point.
     pub fn gossip_dropped(&self) -> u64 {
@@ -308,6 +433,9 @@ struct Service {
 
 impl Service {
     async fn run(mut self) {
+        let mut mesh_sample = tokio::time::interval(MESH_SAMPLE_INTERVAL);
+        mesh_sample.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
             tokio::select! {
                 // Commands first: the node's own work (duty products, sync requests)
@@ -320,8 +448,17 @@ impl Service {
                     None => break,
                 },
                 event = self.swarm.select_next_some() => self.handle_swarm_event(event),
+                _ = mesh_sample.tick() => self.sample_mesh(),
             }
         }
+    }
+
+    /// Reads the mesh size off the gossipsub behaviour into the shared counters.
+    fn sample_mesh(&self) {
+        let peers = self.swarm.behaviour().gossipsub.all_mesh_peers().count();
+        self.counters
+            .mesh_peers
+            .store(peers as u64, Ordering::Relaxed);
     }
 
     fn handle_command(&mut self, command: NetworkCommand) {
@@ -390,17 +527,41 @@ impl Service {
             }
             SwarmEvent::ConnectionEstablished {
                 peer_id,
+                endpoint,
                 num_established,
                 ..
             } if num_established.get() == 1 => {
-                self.emit(NetworkEvent::PeerConnected(peer_id));
+                self.emit(NetworkEvent::PeerConnected {
+                    peer: peer_id,
+                    direction: Direction::of(&endpoint),
+                });
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
+                endpoint,
                 num_established: 0,
+                cause,
                 ..
             } => {
-                self.emit(NetworkEvent::PeerDisconnected(peer_id));
+                self.emit(NetworkEvent::PeerDisconnected {
+                    peer: peer_id,
+                    direction: Direction::of(&endpoint),
+                    reason: DisconnectReason::of(cause.as_ref()),
+                });
+            }
+            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                self.emit(NetworkEvent::ConnectionFailed {
+                    peer: peer_id,
+                    direction: Direction::Outbound,
+                    failure: ConnectFailure::of_dial(&error),
+                });
+            }
+            SwarmEvent::IncomingConnectionError { peer_id, error, .. } => {
+                self.emit(NetworkEvent::ConnectionFailed {
+                    peer: peer_id,
+                    direction: Direction::Inbound,
+                    failure: ConnectFailure::of_listen(&error),
+                });
             }
             SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
                 message,

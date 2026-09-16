@@ -46,6 +46,7 @@ pub mod clock;
 pub mod config;
 pub mod error;
 pub mod network;
+pub mod observe;
 pub mod store_open;
 pub mod sync;
 pub mod verification;
@@ -62,10 +63,10 @@ use tokio::task::JoinHandle;
 use verity_chain::{ChainView, SlotClock, generate_genesis};
 
 use verity_db::{Repository, RocksBackend, StorageReader};
-use verity_metrics::Metrics;
-use verity_p2p::{NetworkConfig, PeerId, identity::Keypair};
+use verity_metrics::{Metrics, gauge_value};
+use verity_p2p::{NetworkConfig, NetworkCounters, PeerId, identity::Keypair};
 use verity_rpc::{
-    ApiContext, BoundListener, HttpServer, SignedBlockSource, api_router, metrics_router,
+    ApiContext, BoundListener, HttpServer, Sampler, SignedBlockSource, api_router, metrics_router,
 };
 use verity_types::ValidatorIndex;
 use verity_types::config::ATTESTATION_COMMITTEE_COUNT;
@@ -79,7 +80,7 @@ use crate::network::{
 use crate::sync::checkpoint::CheckpointAnchor;
 use crate::sync::responder::BlockResponder;
 use crate::sync::{SyncCounters, SyncService};
-use crate::verification::{StageCounters, VerificationStage};
+use crate::verification::{StageChannels, StageCounters, VerificationStage};
 
 pub use bootstrap::{
     check_aggregate_subnets, check_committee_count, parse_bootnode, read_bootnodes, read_node_key,
@@ -230,7 +231,7 @@ impl Node {
             prover.warm_up().await?;
         }
 
-        let (ticks, ticker) = clock::spawn(clock);
+        let (ticks, ticker) = clock::spawn(clock, Arc::clone(&metrics));
         let (products, product_stream) = mpsc::channel(PRODUCT_CAPACITY);
         let (local, local_stream) = mpsc::channel(PRODUCT_CAPACITY);
         let (verified, verified_stream) = mpsc::channel(GOSSIP_CAPACITY);
@@ -254,6 +255,7 @@ impl Node {
             local_stream,
             verified_stream,
             Some(aggregator),
+            Arc::clone(&metrics),
         );
 
         let (handle, events) = verity_p2p::spawn(network_config(&config))?;
@@ -297,7 +299,17 @@ impl Node {
         // looks like shutdown.
         let signed_block = signed_block_source(Arc::clone(&served));
         let draining = vec![
-            tokio::spawn(DutyService::new(keyring, prover, products, view.clone(), ticks).run()),
+            tokio::spawn(
+                DutyService::new(
+                    keyring,
+                    prover,
+                    products,
+                    view.clone(),
+                    ticks,
+                    Arc::clone(&metrics),
+                )
+                .run(),
+            ),
             tokio::spawn(ProductRelay::new(product_stream, local, handle.clone()).run()),
             tokio::spawn(sync.run()),
             tokio::spawn(
@@ -312,12 +324,16 @@ impl Node {
             ),
             tokio::spawn(
                 VerificationStage::new(
-                    raw_gossip_stream,
-                    verified,
-                    view.clone(),
-                    gaps,
+                    StageChannels {
+                        inbound: raw_gossip_stream,
+                        verified,
+                        view: view.clone(),
+                        gaps,
+                    },
                     PENDING_CAPACITY,
                     Arc::clone(&stage_counters),
+                    clock,
+                    Arc::clone(&metrics),
                 )
                 .run(),
             ),
@@ -330,6 +346,7 @@ impl Node {
             signed_block,
             aggregator: Arc::clone(&aggregator_role),
             metrics: Arc::clone(&metrics),
+            samplers: vec![mesh_sampler(handle.counters())],
         });
         let api = api_listener.map(|listener| listener.serve(api_router(Arc::clone(&context))));
         let metrics_server =
@@ -509,20 +526,34 @@ fn record_start(metrics: &Metrics, config: &NodeConfig, keyring: &Keyring) {
         .map_or(0, |elapsed| gauge_value(elapsed.as_secs()));
     metrics.record_start("verity", &config.version, start_time);
     metrics
+        .validator
         .validators_count
         .set(gauge_value(keyring.validators().count() as u64));
-    metrics.is_aggregator.set(i64::from(config.is_aggregator));
     metrics
+        .validator
+        .is_aggregator
+        .set(i64::from(config.is_aggregator));
+    metrics
+        .network
         .attestation_committee_subnet
         .set(gauge_value(ATTESTATION_SUBNET.0));
     metrics
+        .network
         .attestation_committee_count
         .set(gauge_value(ATTESTATION_COMMITTEE_COUNT));
 }
 
-/// A count as a gauge value; nothing counted here approaches `i64::MAX`.
-fn gauge_value(count: u64) -> i64 {
-    i64::try_from(count).unwrap_or(i64::MAX)
+/// The "on scrape" sample of `lean_gossip_mesh_peers`, read off the network task's counters.
+///
+/// The mesh lives inside the swarm, which no scrape can reach synchronously; the network task
+/// samples it on a timer and this closure copies the latest sample into the gauge.
+fn mesh_sampler(counters: Arc<NetworkCounters>) -> Sampler {
+    Arc::new(move |metrics: &Metrics| {
+        metrics
+            .network
+            .mesh_peers()
+            .set(gauge_value(counters.mesh_peers()));
+    })
 }
 
 /// The finalized-block read the HTTP API performs, over the responder's database handle.

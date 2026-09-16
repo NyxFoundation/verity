@@ -19,7 +19,8 @@ use crate::fork_choice::store::Store;
 use crate::fork_choice::weights::{latest_votes, lmd_ghost_head};
 use crate::justification::advance_checkpoint;
 use crate::merkle::hash_tree_root;
-use crate::state_transition::state_transition;
+use crate::state_transition::observe::{TransitionObserver, Unobserved};
+use crate::state_transition::state_transition_observed;
 
 /// Imports `block` and recomputes the head.
 ///
@@ -44,6 +45,19 @@ use crate::state_transition::state_transition;
 /// The store is left untouched on every one of them: nothing is written until the
 /// transition has returned a post-state.
 pub fn on_block(store: &mut Store, block: &Block) -> Result<(), RejectionReason> {
+    on_block_observed(store, block, &mut Unobserved)
+}
+
+/// [`on_block`], reporting the state transition's stage boundaries to `observer`.
+///
+/// # Errors
+///
+/// As [`on_block`].
+pub fn on_block_observed(
+    store: &mut Store,
+    block: &Block,
+    observer: &mut impl TransitionObserver,
+) -> Result<(), RejectionReason> {
     let block_root = hash_tree_root(block);
     if store.blocks.contains_key(&block_root) {
         return Ok(());
@@ -63,7 +77,7 @@ pub fn on_block(store: &mut Store, block: &Block) -> Result<(), RejectionReason>
         }
         reject_duplicate_attestation_data(block)?;
 
-        state_transition(parent_state, block)?
+        state_transition_observed(parent_state, block, observer)?
     };
 
     let previous_finalized_slot = store.latest_finalized.slot;

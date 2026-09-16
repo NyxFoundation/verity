@@ -6158,6 +6158,7 @@ dependencies = [
  "tracing",
  "verity-chain",
  "verity-crypto",
+ "verity-metrics",
  "verity-types",
 ]
 

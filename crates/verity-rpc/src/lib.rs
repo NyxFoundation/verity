@@ -58,6 +58,13 @@ pub use routes::{api_router, metrics_router};
 /// as 404 exactly as leanSpec does for a root its source cannot produce.
 pub type SignedBlockSource = Arc<dyn Fn(Bytes32) -> Option<SignedBlock> + Send + Sync>;
 
+/// A gauge refresh the node wires into the scrape, for a value the view does not carry.
+///
+/// leanMetrics marks some gauges "on scrape" whose source is neither the chain view nor the
+/// sync gate — the gossip mesh, held inside the network task. The node knows where such a
+/// value lives and this crate does not, so it hands over the read as a closure.
+pub type Sampler = Arc<dyn Fn(&Metrics) + Send + Sync>;
+
 /// What the handlers need, resolved once when the node wires the server.
 pub struct ApiContext {
     /// The snapshot channel every reader answers from.
@@ -70,6 +77,8 @@ pub struct ApiContext {
     pub aggregator: Arc<AtomicBool>,
     /// The process's metric registry.
     pub metrics: Arc<Metrics>,
+    /// Refreshes run on every scrape, after the view-derived gauges.
+    pub samplers: Vec<Sampler>,
 }
 
 /// A listener that could not be bound.

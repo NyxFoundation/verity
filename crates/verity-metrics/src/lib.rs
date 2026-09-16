@@ -9,23 +9,48 @@
 //!
 //! # What is implemented
 //!
-//! The gauges and counters a node can sample from its chain view and its peer set: node
-//! info, the fork-choice and state-transition slots, the sync status, the validator and
-//! aggregator facts, the peer count, and the committee layout. The histograms — timings of
-//! signing, verification, block building, state transition — are not registered yet: each
-//! needs a probe at the point of work, and an unregistered histogram is a gap a dashboard
-//! shows as "no data", where a wrongly placed probe would show a wrong number.
+//! Every metric the contract defines, grouped as the contract groups them: one struct per
+//! category, each a field of [`Metrics`]. Counters whose label is a closed enum expose every
+//! value at zero from the first scrape, so a dashboard reads the same series shape from this
+//! client as from any other whether or not a value has occurred yet.
 //!
 //! # Where the samples come from
 //!
 //! This crate registers and renders; it does not observe. leanMetrics names a "sample
 //! collection event" for each metric, and the crate that owns that event records into the
-//! handle it holds. Gauges marked "on scrape" are refreshed by the scrape endpoint itself,
-//! from the chain view current at that moment.
+//! handle it holds — the validator client times its own signing, the verification stage its
+//! own proof checks, the chain task its own imports. Gauges marked "on scrape" are refreshed
+//! by the scrape endpoint itself, from the chain view current at that moment.
 
 use std::fmt;
 
-use prometheus::{Encoder, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder};
+use prometheus::{Encoder, Registry, TextEncoder};
+
+mod block_production;
+mod fork_choice;
+mod gossip_arrival;
+mod labels;
+mod network;
+mod node_info;
+mod register;
+mod signature;
+mod state_transition;
+mod timing;
+mod validator;
+
+pub use block_production::BlockProductionMetrics;
+pub use fork_choice::ForkChoiceMetrics;
+pub use gossip_arrival::{ArrivalKind, GossipArrivalMetrics};
+pub use labels::{
+    ArrivalPosition, ConnectionResult, Direction, DisconnectReason, FinalizationResult, SkipReason,
+    SyncStatus,
+};
+pub use network::{NetworkMetrics, PEER_CLIENT_UNKNOWN};
+pub use node_info::NodeInfoMetrics;
+pub use signature::SignatureMetrics;
+pub use state_transition::StateTransitionMetrics;
+pub use timing::{count_value, gauge_value, observe_duration, observe_elapsed};
+pub use validator::ValidatorMetrics;
 
 /// A registry that could not be built.
 ///
@@ -48,89 +73,37 @@ impl From<prometheus::Error> for MetricsError {
     }
 }
 
-/// The concrete gauge and counter types, for a caller that names one in a signature.
-pub mod prometheus_gauge {
-    pub use prometheus::{IntCounter, IntGauge};
+/// The concrete metric types, for a caller that names one in a signature.
+pub mod prometheus_types {
+    pub use prometheus::{Histogram, IntCounter, IntCounterVec, IntGauge, IntGaugeVec};
 }
 
 /// The Prometheus text exposition media type, as leanSpec serves it.
 pub const TEXT_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// The `status` label of `lean_node_sync_status`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyncStatus {
-    /// Not syncing and not synced: the node has not met the network yet.
-    Idle,
-    /// Behind the network and fetching.
-    Syncing,
-    /// Caught up.
-    Synced,
-}
-
-impl SyncStatus {
-    const ALL: [Self; 3] = [Self::Idle, Self::Syncing, Self::Synced];
-
-    /// The label value leanMetrics fixes for this status.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Syncing => "syncing",
-            Self::Synced => "synced",
-        }
-    }
-}
-
 /// Every registered metric, and the registry that renders them.
 ///
-/// One per process, shared by handle. Fields are the metric families; recording into one
-/// is a plain Prometheus operation on it.
+/// One per process, shared by handle. Fields are the contract's categories; recording into a
+/// metric is a plain Prometheus operation on it.
 #[derive(Debug)]
 pub struct Metrics {
     registry: Registry,
-
-    /// `lean_node_info`, labelled `name`, `version`. Always 1.
-    pub node_info: IntGaugeVec,
-    /// `lean_node_start_time_seconds`: the Unix time the node started.
-    pub node_start_time_seconds: IntGauge,
-
-    /// `lean_head_slot`: the slot of the fork-choice head.
-    pub head_slot: IntGauge,
-    /// `lean_current_slot`: the slot the clock sits in.
-    pub current_slot: IntGauge,
-    /// `lean_safe_target_slot`: the slot of the safe target.
-    pub safe_target_slot: IntGauge,
-    /// `lean_gossip_signatures`: per-validator signatures held in the store.
-    pub gossip_signatures: IntGauge,
-    /// `lean_latest_new_aggregated_payloads`: proofs gathered this slot, not yet counted.
-    pub latest_new_aggregated_payloads: IntGauge,
-    /// `lean_latest_known_aggregated_payloads`: proofs counting toward weight.
-    pub latest_known_aggregated_payloads: IntGauge,
-    /// `lean_node_sync_status`, labelled `status`. Exactly one label value is 1.
-    pub node_sync_status: IntGaugeVec,
-
-    /// `lean_latest_justified_slot`.
-    pub latest_justified_slot: IntGauge,
-    /// `lean_latest_finalized_slot`.
-    pub latest_finalized_slot: IntGauge,
-    /// `lean_justified_slot`.
-    pub justified_slot: IntGauge,
-    /// `lean_finalized_slot`.
-    pub finalized_slot: IntGauge,
-    /// `lean_finalizations_total`, labelled `result` (`success`, `error`).
-    pub finalizations_total: IntCounterVec,
-
-    /// `lean_validators_count`: validators this node runs.
-    pub validators_count: IntGauge,
-    /// `lean_is_aggregator`: 1 when this node aggregates.
-    pub is_aggregator: IntGauge,
-
-    /// `lean_connected_peers`, labelled `client` (`<name>_<N>` or `unknown`).
-    pub connected_peers: IntGaugeVec,
-    /// `lean_attestation_committee_subnet`: the subnet this node's votes go on.
-    pub attestation_committee_subnet: IntGauge,
-    /// `lean_attestation_committee_count`: `ATTESTATION_COMMITTEE_COUNT`.
-    pub attestation_committee_count: IntGauge,
+    /// Node Info Metrics.
+    pub node: NodeInfoMetrics,
+    /// PQ Signature Metrics.
+    pub signature: SignatureMetrics,
+    /// Block Production Metrics.
+    pub block: BlockProductionMetrics,
+    /// Fork-Choice Metrics.
+    pub fork_choice: ForkChoiceMetrics,
+    /// State Transition Metrics.
+    pub transition: StateTransitionMetrics,
+    /// Validator Metrics.
+    pub validator: ValidatorMetrics,
+    /// Network Metrics.
+    pub network: NetworkMetrics,
+    /// Gossip Arrival Metrics.
+    pub arrival: GossipArrivalMetrics,
 }
 
 impl Metrics {
@@ -138,116 +111,32 @@ impl Metrics {
     ///
     /// # Errors
     ///
-    /// [`MetricsError`] only if two metrics collide, which the fixed names below make
-    /// impossible; it is propagated rather than unwrapped so the contract stays visible.
+    /// [`MetricsError`] only if two metrics collide, which the fixed names make impossible;
+    /// it is propagated rather than unwrapped so the contract stays visible.
     pub fn new() -> Result<Self, MetricsError> {
         let registry = Registry::new();
-        let metrics = Self {
-            node_info: gauge_vec(
-                &registry,
-                "lean_node_info",
-                "Node information (always 1)",
-                &["name", "version"],
-            )?,
-            node_start_time_seconds: gauge(
-                &registry,
-                "lean_node_start_time_seconds",
-                "Start timestamp",
-            )?,
-            head_slot: gauge(&registry, "lean_head_slot", "Latest slot of the lean chain")?,
-            current_slot: gauge(
-                &registry,
-                "lean_current_slot",
-                "Current slot of the lean chain",
-            )?,
-            safe_target_slot: gauge(&registry, "lean_safe_target_slot", "Safe target slot")?,
-            gossip_signatures: gauge(
-                &registry,
-                "lean_gossip_signatures",
-                "Number of gossip signatures in fork-choice store",
-            )?,
-            latest_new_aggregated_payloads: gauge(
-                &registry,
-                "lean_latest_new_aggregated_payloads",
-                "Number of new aggregated payload items",
-            )?,
-            latest_known_aggregated_payloads: gauge(
-                &registry,
-                "lean_latest_known_aggregated_payloads",
-                "Number of known aggregated payload items",
-            )?,
-            node_sync_status: gauge_vec(
-                &registry,
-                "lean_node_sync_status",
-                "Node sync status",
-                &["status"],
-            )?,
-            latest_justified_slot: gauge(
-                &registry,
-                "lean_latest_justified_slot",
-                "Latest justified slot",
-            )?,
-            latest_finalized_slot: gauge(
-                &registry,
-                "lean_latest_finalized_slot",
-                "Latest finalized slot",
-            )?,
-            justified_slot: gauge(&registry, "lean_justified_slot", "Current justified slot")?,
-            finalized_slot: gauge(&registry, "lean_finalized_slot", "Current finalized slot")?,
-            finalizations_total: counter_vec(
-                &registry,
-                "lean_finalizations_total",
-                "Total number of finalization attempts",
-                &["result"],
-            )?,
-            validators_count: gauge(
-                &registry,
-                "lean_validators_count",
-                "Number of validators managed by a node",
-            )?,
-            is_aggregator: gauge(
-                &registry,
-                "lean_is_aggregator",
-                "Validator's is_aggregator status. True=1, False=0",
-            )?,
-            connected_peers: gauge_vec(
-                &registry,
-                "lean_connected_peers",
-                "Number of connected peers",
-                &["client"],
-            )?,
-            attestation_committee_subnet: gauge(
-                &registry,
-                "lean_attestation_committee_subnet",
-                "Node's attestation committee subnet",
-            )?,
-            attestation_committee_count: gauge(
-                &registry,
-                "lean_attestation_committee_count",
-                "Number of attestation committees (ATTESTATION_COMMITTEE_COUNT)",
-            )?,
+        Ok(Self {
+            node: NodeInfoMetrics::register(&registry)?,
+            signature: SignatureMetrics::register(&registry)?,
+            block: BlockProductionMetrics::register(&registry)?,
+            fork_choice: ForkChoiceMetrics::register(&registry)?,
+            transition: StateTransitionMetrics::register(&registry)?,
+            validator: ValidatorMetrics::register(&registry)?,
+            network: NetworkMetrics::register(&registry)?,
+            arrival: GossipArrivalMetrics::register(&registry)?,
             registry,
-        };
-        Ok(metrics)
+        })
     }
 
     /// Records the node's identity and start time, once.
     pub fn record_start(&self, name: &str, version: &str, start_time_seconds: i64) {
-        self.node_info.with_label_values(&[name, version]).set(1);
-        self.node_start_time_seconds.set(start_time_seconds);
+        self.node.info.with_label_values(&[name, version]).set(1);
+        self.node.start_time_seconds.set(start_time_seconds);
     }
 
     /// Sets the sync status: the named label to 1, every other to 0.
-    ///
-    /// All three series are always present, so a dashboard's `max by (status)` reads the
-    /// same shape from every client whether or not a status has ever been active.
     pub fn set_sync_status(&self, status: SyncStatus) {
-        for candidate in SyncStatus::ALL {
-            let value = i64::from(candidate == status);
-            self.node_sync_status
-                .with_label_values(&[candidate.label()])
-                .set(value);
-        }
+        self.fork_choice.set_sync_status(status);
     }
 
     /// Renders every metric in Prometheus text exposition format.
@@ -263,78 +152,174 @@ impl Metrics {
     }
 }
 
-fn gauge(registry: &Registry, name: &str, help: &str) -> Result<IntGauge, prometheus::Error> {
-    let gauge = IntGauge::with_opts(Opts::new(name, help))?;
-    registry.register(Box::new(gauge.clone()))?;
-    Ok(gauge)
-}
-
-fn gauge_vec(
-    registry: &Registry,
-    name: &str,
-    help: &str,
-    labels: &[&str],
-) -> Result<IntGaugeVec, prometheus::Error> {
-    let gauge = IntGaugeVec::new(Opts::new(name, help), labels)?;
-    registry.register(Box::new(gauge.clone()))?;
-    Ok(gauge)
-}
-
-fn counter_vec(
-    registry: &Registry,
-    name: &str,
-    help: &str,
-    labels: &[&str],
-) -> Result<IntCounterVec, prometheus::Error> {
-    let counter = IntCounterVec::new(Opts::new(name, help), labels)?;
-    registry.register(Box::new(counter.clone()))?;
-    Ok(counter)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Every row of leanMetrics `metrics.md` at commit `69f97227`: the name and the type.
+    ///
+    /// The list is the contract, transcribed; the test is that the registry exposes exactly
+    /// these families, each once, under the right Prometheus type.
+    const CONTRACT: &[(&str, &str)] = &[
+        // Node Info
+        ("lean_node_info", "gauge"),
+        ("lean_node_start_time_seconds", "gauge"),
+        // PQ Signature
+        ("lean_pq_sig_attestation_signatures_total", "counter"),
+        ("lean_pq_sig_attestation_signatures_valid_total", "counter"),
+        (
+            "lean_pq_sig_attestation_signatures_invalid_total",
+            "counter",
+        ),
+        ("lean_pq_sig_attestation_signing_time_seconds", "histogram"),
+        (
+            "lean_pq_sig_attestation_verification_time_seconds",
+            "histogram",
+        ),
+        ("lean_pq_sig_aggregated_signatures_total", "counter"),
+        ("lean_pq_sig_aggregated_signatures_valid_total", "counter"),
+        ("lean_pq_sig_aggregated_signatures_invalid_total", "counter"),
+        (
+            "lean_pq_sig_attestations_in_aggregated_signatures_total",
+            "counter",
+        ),
+        (
+            "lean_pq_sig_aggregated_signatures_building_time_seconds",
+            "histogram",
+        ),
+        (
+            "lean_pq_sig_aggregated_signatures_verification_time_seconds",
+            "histogram",
+        ),
+        // Block Production
+        ("lean_block_aggregated_payloads", "histogram"),
+        (
+            "lean_block_building_payload_aggregation_time_seconds",
+            "histogram",
+        ),
+        ("lean_block_building_time_seconds", "histogram"),
+        ("lean_block_building_success_total", "counter"),
+        ("lean_block_building_failures_total", "counter"),
+        // Fork-Choice
+        ("lean_head_slot", "gauge"),
+        ("lean_current_slot", "gauge"),
+        ("lean_safe_target_slot", "gauge"),
+        (
+            "lean_fork_choice_block_processing_time_seconds",
+            "histogram",
+        ),
+        ("lean_attestations_valid_total", "counter"),
+        ("lean_attestations_invalid_total", "counter"),
+        ("lean_attestation_validation_time_seconds", "histogram"),
+        ("lean_fork_choice_reorgs_total", "counter"),
+        ("lean_fork_choice_reorg_depth", "histogram"),
+        ("lean_gossip_signatures", "gauge"),
+        ("lean_latest_new_aggregated_payloads", "gauge"),
+        ("lean_latest_known_aggregated_payloads", "gauge"),
+        (
+            "lean_committee_signatures_aggregation_time_seconds",
+            "histogram",
+        ),
+        ("lean_node_sync_status", "gauge"),
+        ("lean_tick_interval_duration_seconds", "histogram"),
+        // State Transition
+        ("lean_latest_justified_slot", "gauge"),
+        ("lean_latest_finalized_slot", "gauge"),
+        ("lean_justified_slot", "gauge"),
+        ("lean_finalized_slot", "gauge"),
+        ("lean_finalizations_total", "counter"),
+        ("lean_state_transition_time_seconds", "histogram"),
+        ("lean_state_transition_slots_processed_total", "counter"),
+        (
+            "lean_state_transition_slots_processing_time_seconds",
+            "histogram",
+        ),
+        (
+            "lean_state_transition_block_processing_time_seconds",
+            "histogram",
+        ),
+        (
+            "lean_state_transition_attestations_processed_total",
+            "counter",
+        ),
+        (
+            "lean_state_transition_attestations_processing_time_seconds",
+            "histogram",
+        ),
+        // Validator
+        ("lean_validators_count", "gauge"),
+        ("lean_is_aggregator", "gauge"),
+        ("lean_attestations_production_time_seconds", "histogram"),
+        ("lean_aggregator_skipped_total", "counter"),
+        // Network
+        ("lean_connected_peers", "gauge"),
+        ("lean_peer_connection_events_total", "counter"),
+        ("lean_peer_disconnection_events_total", "counter"),
+        ("lean_gossip_mesh_peers", "gauge"),
+        ("lean_attestation_committee_subnet", "gauge"),
+        ("lean_attestation_committee_count", "gauge"),
+        ("lean_gossip_block_size_bytes", "histogram"),
+        ("lean_gossip_attestation_size_bytes", "histogram"),
+        ("lean_gossip_aggregation_size_bytes", "histogram"),
+        // Gossip Arrival
+        ("lean_gossip_block_arrival_delay_seconds", "histogram"),
+        ("lean_gossip_attestation_arrival_delay_seconds", "histogram"),
+        ("lean_gossip_aggregation_arrival_delay_seconds", "histogram"),
+        ("lean_gossip_block_arrival_total", "counter"),
+        ("lean_gossip_attestation_arrival_total", "counter"),
+        ("lean_gossip_aggregation_arrival_total", "counter"),
+    ];
+
     #[test]
-    fn should_register_every_contract_name_exactly_once() {
+    fn should_expose_every_contract_family_exactly_once_under_its_type() {
         let metrics = Metrics::new().expect("fresh registry");
         metrics.record_start("verity", "0.0.0", 1);
-        metrics.set_sync_status(SyncStatus::Synced);
-        metrics
-            .finalizations_total
-            .with_label_values(&["success"])
-            .inc();
-        metrics
-            .connected_peers
-            .with_label_values(&["unknown"])
-            .set(3);
         let text = metrics.render();
 
-        for name in [
-            "lean_node_info{name=\"verity\",version=\"0.0.0\"} 1",
-            "lean_node_start_time_seconds 1",
-            "lean_head_slot 0",
-            "lean_current_slot 0",
-            "lean_safe_target_slot 0",
-            "lean_gossip_signatures 0",
-            "lean_latest_new_aggregated_payloads 0",
-            "lean_latest_known_aggregated_payloads 0",
-            "lean_node_sync_status{status=\"idle\"} 0",
-            "lean_node_sync_status{status=\"syncing\"} 0",
-            "lean_node_sync_status{status=\"synced\"} 1",
-            "lean_latest_justified_slot 0",
-            "lean_latest_finalized_slot 0",
-            "lean_justified_slot 0",
-            "lean_finalized_slot 0",
-            "lean_finalizations_total{result=\"success\"} 1",
-            "lean_validators_count 0",
-            "lean_is_aggregator 0",
-            "lean_connected_peers{client=\"unknown\"} 3",
-            "lean_attestation_committee_subnet 0",
-            "lean_attestation_committee_count 0",
-        ] {
-            assert!(text.contains(name), "missing `{name}` in:\n{text}");
+        assert_eq!(
+            CONTRACT.len(),
+            63,
+            "leanMetrics 69f97227 defines 63 metrics"
+        );
+        for (name, kind) in CONTRACT {
+            let header = format!("# TYPE {name} {kind}\n");
+            assert_eq!(
+                text.matches(&header).count(),
+                1,
+                "expected `{}` once in:\n{text}",
+                header.trim_end()
+            );
         }
+
+        let families = text
+            .lines()
+            .filter(|line| line.starts_with("# TYPE "))
+            .count();
+        assert_eq!(families, CONTRACT.len(), "no family outside the contract");
+    }
+
+    #[test]
+    fn should_render_every_enum_label_series_from_the_first_scrape() {
+        let metrics = Metrics::new().expect("fresh registry");
+        let text = metrics.render();
+
+        for line in [
+            "lean_finalizations_total{result=\"success\"} 0",
+            "lean_finalizations_total{result=\"error\"} 0",
+            "lean_aggregator_skipped_total{reason=\"not_synced\"} 0",
+            "lean_peer_connection_events_total{direction=\"inbound\",result=\"timeout\"} 0",
+            "lean_peer_disconnection_events_total{direction=\"outbound\",reason=\"local_close\"} 0",
+            "lean_gossip_block_arrival_total{position=\"before\"} 0",
+            "lean_gossip_aggregation_arrival_total{position=\"inside\"} 0",
+            "lean_connected_peers{client=\"unknown\"} 0",
+            "lean_gossip_mesh_peers{client=\"unknown\"} 0",
+        ] {
+            assert!(text.contains(line), "missing `{line}` in:\n{text}");
+        }
+        assert!(
+            !text.contains("lean_gossip_aggregation_arrival_total{position=\"before\"}"),
+            "an aggregate can never arrive before a boundary at or before it"
+        );
     }
 
     #[test]
@@ -349,11 +334,23 @@ mod tests {
     }
 
     #[test]
+    fn should_record_arrivals_against_the_channel_they_came_on() {
+        let metrics = Metrics::new().expect("fresh registry");
+        metrics
+            .arrival
+            .record(ArrivalKind::Attestation, 0.3, ArrivalPosition::After);
+        let text = metrics.render();
+        assert!(text.contains("lean_gossip_attestation_arrival_total{position=\"after\"} 1"));
+        assert!(text.contains("lean_gossip_attestation_arrival_delay_seconds_count 1"));
+        assert!(text.contains("lean_gossip_block_arrival_delay_seconds_count 0"));
+    }
+
+    #[test]
     fn should_declare_a_second_registry_independently() {
         // Two nodes in one test process must not share a registry.
         let a = Metrics::new().expect("first");
         let b = Metrics::new().expect("second");
-        a.head_slot.set(7);
+        a.fork_choice.head_slot.set(7);
         assert!(b.render().contains("lean_head_slot 0"));
     }
 }

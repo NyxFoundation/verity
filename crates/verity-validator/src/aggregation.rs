@@ -18,11 +18,13 @@
 //! `8603fa63`.
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 use libssz::SszDecode;
 use verity_chain::{ChainView, hash_tree_root, select_proofs_for_coverage};
 use verity_crypto::aggregate::aggregate_single_message;
 use verity_crypto::containers::{PublicKey, Signature};
+use verity_metrics::{Metrics, SkipReason, observe_elapsed};
 use verity_types::{AttestationData, SignedAggregatedAttestation, Validators};
 
 use crate::error::DutyError;
@@ -36,17 +38,23 @@ use crate::proofs;
 /// A vote whose round fails is logged and skipped rather than taking the whole round down:
 /// its raw signatures stay in the pool and the next round tries again.
 #[must_use = "the aggregates have to reach the chain task, or the round was for nothing"]
-pub fn aggregate(view: &ChainView) -> Vec<SignedAggregatedAttestation> {
+pub fn aggregate(view: &ChainView, metrics: &Metrics) -> Vec<SignedAggregatedAttestation> {
     let Some(validators) = view.head_state().map(|state| &state.validators) else {
+        metrics
+            .validator
+            .record_aggregation_skipped(SkipReason::MissingState);
         tracing::warn!("skipping aggregation: the chain view holds no state for its head");
         return Vec::new();
     };
 
     votes_with_fresh_evidence(view)
         .into_iter()
-        .filter_map(|data| match aggregate_one(view, validators, data) {
+        .filter_map(|data| match aggregate_one(view, validators, data, metrics) {
             Ok(aggregate) => aggregate,
             Err(error) => {
+                metrics
+                    .validator
+                    .record_aggregation_skipped(SkipReason::Other);
                 tracing::warn!(slot = data.slot.0, %error, "cannot aggregate a vote this round");
                 None
             }
@@ -77,6 +85,7 @@ fn aggregate_one(
     view: &ChainView,
     validators: &Validators,
     data: AttestationData,
+    metrics: &Metrics,
 ) -> Result<Option<SignedAggregatedAttestation>, DutyError> {
     // New payloads outrank known ones, so uncommitted work is reused before counted proofs.
     let (children, covered) = select_proofs_for_coverage(
@@ -117,8 +126,18 @@ fn aggregate_one(
         .map(|child| proofs::decode(child, validators))
         .collect::<Result<Vec<_>, DutyError>>()?;
 
+    let building = Instant::now();
     let proof = aggregate_single_message(children, &raw, &hash_tree_root(&data), data.slot)?;
+    observe_elapsed(
+        &metrics
+            .signature
+            .aggregated_signatures_building_time_seconds,
+        building,
+    );
     let participants = proof_participants(&proof, validators)?;
+    metrics
+        .signature
+        .record_aggregate_built(verity_chain::fork_choice::participants(&participants).count());
 
     Ok(Some(SignedAggregatedAttestation {
         data,

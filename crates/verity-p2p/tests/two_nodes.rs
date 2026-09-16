@@ -128,11 +128,12 @@ async fn should_serve_gossip_and_all_reqresp_protocols_between_two_nodes() {
     let (handle_b, mut events_b) = verity_p2p::spawn(config_b).expect("spawn node B");
     let peer_a = handle_a.local_peer_id();
 
-    wait_for(&mut events_b, |event| match event {
-        NetworkEvent::PeerConnected(peer) if peer == peer_a => Some(()),
+    let direction = wait_for(&mut events_b, |event| match event {
+        NetworkEvent::PeerConnected { peer, direction } if peer == peer_a => Some(direction),
         _ => None,
     })
     .await;
+    assert_eq!(direction, verity_p2p::Direction::Outbound, "B dialed A");
 
     // From here node A is driven by a responder task; the test body plays node B.
     let served_blocks = vec![
