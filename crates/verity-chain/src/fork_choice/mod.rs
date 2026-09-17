@@ -42,7 +42,7 @@ pub use attestation::{
     record_aggregated_payload, record_attestation_signature, validate_attestation,
     validate_attestation_signer,
 };
-pub use block::{on_block, update_head};
+pub use block::{on_block, on_block_observed, update_head};
 pub use duties::{attestation_data, attestation_target};
 pub use prune::prune_stale_attestation_data;
 pub use store::{AttestationSignature, AttestationSignatureEntry, Store};

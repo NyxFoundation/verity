@@ -16,13 +16,16 @@ publish = false
 #
 # `libssz` is here for the two directions the store's uninterpreted signature bytes have to be
 # read in: a pooled attestation signature arrives as bytes and an aggregate proof leaves as
-# them.
+# them. `verity-metrics` is the leanMetrics contract, a leaf with no view of the chain: the
+# signing, proving and block-building timings the contract asks for are only measurable here,
+# where the work runs, so this crate records them into the handle the node gives it.
 [dependencies]
 libssz.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 verity-chain.workspace = true
 verity-crypto.workspace = true
+verity-metrics.workspace = true
 verity-types.workspace = true
 
 [lints]

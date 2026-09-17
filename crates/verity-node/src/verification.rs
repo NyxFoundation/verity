@@ -35,13 +35,15 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use libssz::SszDecode;
 use tokio::sync::{mpsc, watch};
 
-use verity_chain::{AttestationSignature, ChainView, hash_tree_root};
+use verity_chain::{AttestationSignature, ChainView, SlotClock, hash_tree_root};
 use verity_crypto::aggregate::{MultiMessageProof, SingleMessageProof};
 use verity_crypto::containers::SignedAttestation;
+use verity_metrics::{ArrivalKind, Metrics, observe_elapsed};
 use verity_p2p::GossipKind;
 use verity_types::{
     AttestationData, Block, Bytes32, MultiMessageAggregate, SignedAggregatedAttestation,
@@ -49,6 +51,8 @@ use verity_types::{
 };
 use verity_validator::proofs;
 
+use crate::clock::now_milliseconds;
+use crate::observe::{check_aggregate_proof, is_arrival_observable, record_arrival};
 use crate::sync::fetch::Gap;
 
 /// A block whose proof has been checked against the registry its parent fixed.
@@ -192,6 +196,19 @@ enum Wake {
     Stop,
 }
 
+/// How a payload reached the stage.
+///
+/// Both paths verify identically; the origin only decides whether the arrival is measured.
+/// A block a peer served on request arrives whenever the request completes, and timing it
+/// against the interval it was due in would say nothing about gossip propagation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadOrigin {
+    /// Delivered by a gossip topic.
+    Gossip,
+    /// Fetched by the sync service.
+    Sync,
+}
+
 /// A payload as it leaves the network task: the topic it arrived on, and raw SSZ bytes.
 #[derive(Debug, Clone)]
 pub struct GossipPayload {
@@ -199,6 +216,8 @@ pub struct GossipPayload {
     pub kind: GossipKind,
     /// Uncompressed SSZ bytes. Meaning starts here, not on the network.
     pub payload: Vec<u8>,
+    /// Whether it was gossiped or fetched.
+    pub origin: PayloadOrigin,
 }
 
 /// A decoded item, still unverified, still possibly waiting for the state it needs.
@@ -235,6 +254,15 @@ impl Decoded {
         }
     }
 
+    /// The gossip channel this item's arrival is measured on.
+    const fn arrival_kind(&self) -> ArrivalKind {
+        match self {
+            Self::Block(_) => ArrivalKind::Block,
+            Self::Attestation(_) => ArrivalKind::Attestation,
+            Self::Aggregate(_) => ArrivalKind::Aggregation,
+        }
+    }
+
     /// The gap this item's arrival reveals.
     const fn gap(&self) -> Gap {
         Gap {
@@ -242,6 +270,21 @@ impl Decoded {
             waiting_slot: self.slot(),
         }
     }
+}
+
+/// Where the stage reads from and writes to.
+///
+/// One value rather than four parameters, as for the bridge: these are the stage's place in
+/// the pipeline, decided once when the node is wired.
+pub struct StageChannels {
+    /// Raw payloads, from the network bridge and the sync service.
+    pub inbound: mpsc::Receiver<GossipPayload>,
+    /// Verified items, to the chain task.
+    pub verified: mpsc::Sender<Verified>,
+    /// The snapshot channel items are resolved against.
+    pub view: watch::Receiver<Arc<ChainView>>,
+    /// Gap signals, to the sync service.
+    pub gaps: mpsc::Sender<Gap>,
 }
 
 /// The verification stage: decode, resolve, verify, forward.
@@ -253,27 +296,33 @@ pub struct VerificationStage {
     pending: VecDeque<Decoded>,
     pending_capacity: usize,
     counters: Arc<StageCounters>,
+    clock: SlotClock,
+    metrics: Arc<Metrics>,
 }
 
 impl VerificationStage {
     /// Wires the stage between the network task and the chain task.
+    ///
+    /// The clock is for the arrival metrics alone: a gossiped item is placed against the
+    /// interval it was due in, which is a wall-clock question the snapshot cannot answer.
     #[must_use = "a stage does nothing until it is run"]
     pub fn new(
-        inbound: mpsc::Receiver<GossipPayload>,
-        verified: mpsc::Sender<Verified>,
-        view: watch::Receiver<Arc<ChainView>>,
-        gaps: mpsc::Sender<Gap>,
+        channels: StageChannels,
         pending_capacity: usize,
         counters: Arc<StageCounters>,
+        clock: SlotClock,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
-            inbound,
-            verified,
-            view,
-            gaps,
+            inbound: channels.inbound,
+            verified: channels.verified,
+            view: channels.view,
+            gaps: channels.gaps,
             pending: VecDeque::with_capacity(pending_capacity),
             pending_capacity,
             counters,
+            clock,
+            metrics,
         }
     }
 
@@ -316,6 +365,9 @@ impl VerificationStage {
 
     /// Decodes one payload and either verifies it or parks it. Returns whether to keep going.
     async fn accept(&mut self, payload: GossipPayload) -> bool {
+        if payload.origin == PayloadOrigin::Gossip {
+            self.observe_size(&payload);
+        }
         let decoded = match decode(&payload) {
             Ok(decoded) => decoded,
             Err(failure) => {
@@ -323,7 +375,37 @@ impl VerificationStage {
                 return true;
             }
         };
+        if payload.origin == PayloadOrigin::Gossip {
+            self.observe_arrival(&decoded);
+        }
         self.resolve(decoded).await
+    }
+
+    /// `lean_gossip_*_size_bytes`: the uncompressed SSZ size, on receipt.
+    fn observe_size(&self, payload: &GossipPayload) {
+        let network = &self.metrics.network;
+        let histogram = match payload.kind {
+            GossipKind::Block => &network.gossip_block_size_bytes,
+            GossipKind::Attestation(_) => &network.gossip_attestation_size_bytes,
+            GossipKind::Aggregation => &network.gossip_aggregation_size_bytes,
+        };
+        // A byte count; the lossy cast only matters past 2^53 bytes.
+        histogram.observe(payload.payload.len() as f64);
+    }
+
+    /// The arrival metrics, before import, for an item from a slot the clock has reached.
+    fn observe_arrival(&self, decoded: &Decoded) {
+        let time = self.view.borrow().time();
+        if !is_arrival_observable(time, decoded.slot()) {
+            return;
+        }
+        record_arrival(
+            &self.metrics,
+            &self.clock,
+            decoded.arrival_kind(),
+            decoded.slot(),
+            now_milliseconds(),
+        );
     }
 
     /// Verifies an item if its state is in view, and parks it otherwise.
@@ -343,7 +425,9 @@ impl VerificationStage {
         };
 
         // Verification is the expensive step and leaves the async threads for it.
-        let outcome = tokio::task::spawn_blocking(move || verify(decoded, &validators)).await;
+        let metrics = Arc::clone(&self.metrics);
+        let outcome =
+            tokio::task::spawn_blocking(move || verify(decoded, &validators, &metrics)).await;
         match outcome {
             Ok(Ok(verified)) => self.verified.send(verified).await.is_ok(),
             Ok(Err(failure)) => {
@@ -463,14 +547,18 @@ fn decode(payload: &GossipPayload) -> Result<Decoded, VerificationFailure> {
 }
 
 /// The whole cryptographic check, on one item, against one registry.
-fn verify(decoded: Decoded, validators: &Validators) -> Result<Verified, VerificationFailure> {
+fn verify(
+    decoded: Decoded,
+    validators: &Validators,
+    metrics: &Metrics,
+) -> Result<Verified, VerificationFailure> {
     match decoded {
-        Decoded::Block(signed) => verify_block(*signed, validators).map(Verified::Block),
+        Decoded::Block(signed) => verify_block(*signed, validators, metrics).map(Verified::Block),
         Decoded::Attestation(signed) => {
-            verify_attestation(*signed, validators).map(Verified::Attestation)
+            verify_attestation(*signed, validators, metrics).map(Verified::Attestation)
         }
         Decoded::Aggregate(signed) => {
-            verify_aggregate(*signed, validators).map(Verified::Aggregate)
+            verify_aggregate(*signed, validators, metrics).map(Verified::Aggregate)
         }
     }
 }
@@ -487,6 +575,7 @@ fn verify(decoded: Decoded, validators: &Validators) -> Result<Verified, Verific
 fn verify_block(
     signed: SignedBlock,
     validators: &Validators,
+    metrics: &Metrics,
 ) -> Result<VerifiedBlock, VerificationFailure> {
     let root = hash_tree_root(&signed.block);
 
@@ -512,7 +601,7 @@ fn verify_block(
     if proof.bindings() != expected {
         return Err(VerificationFailure::Unbound);
     }
-    proof.verify().map_err(|_| VerificationFailure::Invalid)?;
+    check_aggregate_proof(metrics, || proof.verify())?;
 
     Ok(VerifiedBlock {
         root,
@@ -525,17 +614,25 @@ fn verify_block(
 fn verify_attestation(
     signed: SignedAttestation,
     validators: &Validators,
+    metrics: &Metrics,
 ) -> Result<VerifiedAttestation, VerificationFailure> {
     let key = proofs::attestation_key(validators, signed.validator_index)
         .map_err(|_| VerificationFailure::Unresolvable)?;
 
-    verity_crypto::verify(
+    let started = Instant::now();
+    let outcome = verity_crypto::verify(
         &key,
         signed.data.slot,
         &hash_tree_root(&signed.data),
         &signed.signature,
-    )
-    .map_err(|_| VerificationFailure::Invalid)?;
+    );
+    let signature = &metrics.signature;
+    observe_elapsed(&signature.attestation_verification_time_seconds, started);
+    if outcome.is_err() {
+        signature.attestation_signatures_invalid_total.inc();
+        return Err(VerificationFailure::Invalid);
+    }
+    signature.attestation_signatures_valid_total.inc();
 
     Ok(VerifiedAttestation {
         validator_index: signed.validator_index,
@@ -548,6 +645,7 @@ fn verify_attestation(
 fn verify_aggregate(
     signed: SignedAggregatedAttestation,
     validators: &Validators,
+    metrics: &Metrics,
 ) -> Result<VerifiedAggregate, VerificationFailure> {
     let keys = proofs::attestation_keys(validators, &signed.proof.participants)
         .map_err(|_| VerificationFailure::Unresolvable)?;
@@ -560,7 +658,7 @@ fn verify_aggregate(
     if proof.message() != hash_tree_root(&signed.data) || proof.slot() != signed.data.slot {
         return Err(VerificationFailure::Unbound);
     }
-    proof.verify().map_err(|_| VerificationFailure::Invalid)?;
+    check_aggregate_proof(metrics, || proof.verify())?;
 
     Ok(VerifiedAggregate {
         attestation: signed,
@@ -573,14 +671,15 @@ mod tests {
 
     use libssz::SszEncode;
     use tokio::sync::{mpsc, watch};
-    use verity_chain::{ChainView, Store, generate_genesis};
+    use verity_chain::{ChainView, SlotClock, Store, generate_genesis};
     use verity_db::stored_header;
+    use verity_metrics::Metrics;
     use verity_p2p::GossipKind;
     use verity_types::{
         Block, BlockBody, SignedBlock, Slot, Validator, ValidatorIndex, Validators,
     };
 
-    use super::{GossipPayload, StageCounters, VerificationStage};
+    use super::{GossipPayload, PayloadOrigin, StageChannels, StageCounters, VerificationStage};
     use crate::store_open::block_from;
 
     /// A stage over a snapshot of the genesis anchor, with the channels it writes to.
@@ -609,12 +708,16 @@ mod tests {
         let (gap_sender, gaps) = mpsc::channel(4);
         let counters = Arc::new(StageCounters::default());
         let stage = VerificationStage::new(
-            inbound,
-            verified_sender,
-            view,
-            gap_sender,
+            StageChannels {
+                inbound,
+                verified: verified_sender,
+                view,
+                gaps: gap_sender,
+            },
             8,
             Arc::clone(&counters),
+            SlotClock::new(0),
+            Arc::new(Metrics::new().expect("registry")),
         );
         Harness {
             stage,
@@ -633,6 +736,7 @@ mod tests {
                 proof: Default::default(),
             }
             .to_ssz(),
+            origin: PayloadOrigin::Gossip,
         }
     }
 

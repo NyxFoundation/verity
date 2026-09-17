@@ -28,6 +28,7 @@ use crate::error::RejectionReason;
 use crate::justification::{
     advance_checkpoint, is_justifiable_after, is_slot_justified, justified_index_after,
 };
+use crate::state_transition::observe::{TransitionEvent, TransitionObserver, Unobserved};
 
 /// Applies `attestations` to `state`, moving the justified and finalized checkpoints.
 ///
@@ -46,6 +47,20 @@ use crate::justification::{
 pub fn process_attestations(
     state: &State,
     attestations: &[AggregatedAttestation],
+) -> Result<State, RejectionReason> {
+    process_attestations_observed(state, attestations, &mut Unobserved)
+}
+
+/// [`process_attestations`], reporting each finalization attempt to `observer`.
+///
+/// # Errors
+///
+/// As [`process_attestations`].
+#[must_use = "this returns the state after the votes; the argument keeps its old checkpoints"]
+pub fn process_attestations_observed(
+    state: &State,
+    attestations: &[AggregatedAttestation],
+    observer: &mut impl TransitionObserver,
 ) -> Result<State, RejectionReason> {
     // Each unique AttestationData builds a per-root vote table sized to the validator set,
     // so the unique count is what drives work. Aggregates split over one target share their
@@ -67,7 +82,7 @@ pub fn process_attestations(
     let root_to_slot = index_chain_by_slot(state);
 
     for attestation in attestations {
-        justification_state.apply(attestation, state, &root_to_slot, validator_count)?;
+        justification_state.apply(attestation, state, &root_to_slot, validator_count, observer)?;
     }
 
     justification_state.repack(state, validator_count)
@@ -130,6 +145,7 @@ impl JustificationState {
         state: &State,
         root_to_slot: &HashMap<Bytes32, Slot>,
         validator_count: usize,
+        observer: &mut impl TransitionObserver,
     ) -> Result<(), RejectionReason> {
         let (source, target) = (attestation.data.source, attestation.data.target);
         if !self.counts(&attestation.data, state)? {
@@ -156,7 +172,7 @@ impl JustificationState {
         // to keep floating point out of a consensus decision.
         let count = votes.iter().filter(|voted| **voted).count();
         if 3 * count >= 2 * validator_count {
-            self.justify(source, target, root_to_slot)?;
+            self.justify(source, target, root_to_slot, observer)?;
         }
         Ok(())
     }
@@ -194,6 +210,7 @@ impl JustificationState {
         source: Checkpoint,
         target: Checkpoint,
         root_to_slot: &HashMap<Bytes32, Slot>,
+        observer: &mut impl TransitionObserver,
     ) -> Result<(), RejectionReason> {
         let finalized = self.latest_finalized.slot;
 
@@ -213,10 +230,16 @@ impl JustificationState {
         self.justifications.remove(&target.root);
 
         // Finalize the source when no justifiable slot sits strictly between it and the
-        // target. A source at or behind the boundary is already final.
+        // target. A source at or behind the boundary is already final, and is not an attempt.
+        if source.slot.0 <= finalized.0 {
+            return Ok(());
+        }
         let nothing_between = ((source.slot.0 + 1)..target.slot.0)
             .all(|slot| !is_justifiable_after(Slot(slot), finalized));
-        if source.slot.0 > finalized.0 && nothing_between {
+        observer.observe(TransitionEvent::FinalizationAttempt {
+            advanced: nothing_between,
+        });
+        if nothing_between {
             self.rebase_onto(source, finalized, root_to_slot)?;
         }
         Ok(())

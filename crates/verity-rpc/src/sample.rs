@@ -5,11 +5,12 @@
 //! entirely — it publishes views; it does not know a scrape happened.
 
 use verity_chain::ChainView;
-use verity_metrics::{Metrics, SyncStatus};
+use verity_metrics::{Metrics, SyncStatus, count_value, gauge_value};
 
 use crate::ApiContext;
 
-/// Refreshes every view-derived gauge from the snapshot current now.
+/// Refreshes every view-derived gauge from the snapshot current now, then runs the node's
+/// own samplers.
 pub fn on_scrape(context: &ApiContext) {
     let view = context.view.borrow().clone();
     let synced = *context.synced.borrow();
@@ -19,6 +20,9 @@ pub fn on_scrape(context: &ApiContext) {
     } else {
         SyncStatus::Syncing
     });
+    for sampler in &context.samplers {
+        sampler(&context.metrics);
+    }
 }
 
 fn sample_view(metrics: &Metrics, view: &ChainView) {
@@ -28,32 +32,27 @@ fn sample_view(metrics: &Metrics, view: &ChainView) {
         .block(view.safe_target())
         .map_or(0, |block| block.slot.0);
 
-    metrics
+    let fork_choice = &metrics.fork_choice;
+    fork_choice
         .head_slot
         .set(gauge_value(view.head_checkpoint().slot.0));
-    metrics.current_slot.set(gauge_value(view.slot().0));
-    metrics.safe_target_slot.set(gauge_value(safe_target_slot));
-    metrics.latest_justified_slot.set(gauge_value(justified));
-    metrics.justified_slot.set(gauge_value(justified));
-    metrics.latest_finalized_slot.set(gauge_value(finalized));
-    metrics.finalized_slot.set(gauge_value(finalized));
-    metrics
+    fork_choice.current_slot.set(gauge_value(view.slot().0));
+    fork_choice
+        .safe_target_slot
+        .set(gauge_value(safe_target_slot));
+    fork_choice
         .gossip_signatures
         .set(count_value(view.attestation_signature_count()));
-    metrics
+    fork_choice
         .latest_new_aggregated_payloads
         .set(count_value(view.new_aggregated_payload_count()));
-    metrics
+    fork_choice
         .latest_known_aggregated_payloads
         .set(count_value(view.known_aggregated_payload_count()));
-}
 
-/// A slot as a gauge value. Slots never approach `i64::MAX`; saturating keeps the cast
-/// honest without a panic path.
-fn gauge_value(slot: u64) -> i64 {
-    i64::try_from(slot).unwrap_or(i64::MAX)
-}
-
-fn count_value(count: usize) -> i64 {
-    i64::try_from(count).unwrap_or(i64::MAX)
+    let transition = &metrics.transition;
+    transition.latest_justified_slot.set(gauge_value(justified));
+    transition.justified_slot.set(gauge_value(justified));
+    transition.latest_finalized_slot.set(gauge_value(finalized));
+    transition.finalized_slot.set(gauge_value(finalized));
 }

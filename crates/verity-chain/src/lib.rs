@@ -26,7 +26,7 @@ pub use block_production::{BuiltBlock, build_block, select_proofs_for_coverage};
 pub use error::RejectionReason;
 pub use fork_choice::{
     AttestationSignature, AttestationSignatureEntry, Store, accept_new_attestations,
-    attestation_data, attestation_target, block_weights, on_block, on_tick,
+    attestation_data, attestation_target, block_weights, on_block, on_block_observed, on_tick,
     prune_stale_attestation_data, record_aggregated_payload, record_attestation_signature,
     update_head, update_safe_target, validate_attestation, validate_attestation_signer,
 };
@@ -38,7 +38,8 @@ pub use merkle::hash_tree_root;
 pub use proposer::proposer_for_slot;
 pub use slot_clock::{SlotClock, intervals_at_slot_start};
 pub use state_transition::{
-    generate_genesis, process_attestations, process_block, process_block_header, process_slots,
-    state_transition,
+    TransitionEvent, TransitionObserver, Unobserved, generate_genesis, process_attestations,
+    process_attestations_observed, process_block, process_block_header, process_block_observed,
+    process_slots, state_transition, state_transition_observed,
 };
 pub use view::ChainView;

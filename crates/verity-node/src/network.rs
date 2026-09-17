@@ -16,22 +16,20 @@ use libssz::SszEncode;
 use tokio::sync::{mpsc, watch};
 
 use verity_chain::ChainView;
-use verity_metrics::{Metrics, prometheus_gauge};
+use verity_metrics::{ConnectionResult, Metrics};
 use verity_p2p::{ErrorCode, GossipKind, NetworkEvent, NetworkHandle, Request, Response, Status};
 use verity_types::SubnetId;
 use verity_validator::LocalProduct;
 
+use crate::observe::{connection_failure, direction, disconnect_reason};
 use crate::sync::{BlockRequest, BlockRequestKind, PeerEvent};
-use crate::verification::GossipPayload;
+use crate::verification::{GossipPayload, PayloadOrigin};
 
 /// The subnet this node's votes are published on.
 ///
 /// leanSpec fixes `ATTESTATION_COMMITTEE_COUNT = 1`, so there is exactly one attestation
 /// subnet and every validator uses it. This becomes a computation the day that constant moves.
 pub const ATTESTATION_SUBNET: SubnetId = SubnetId(0);
-
-/// The `client` label of `lean_connected_peers` for a peer whose client is not announced.
-const PEER_CLIENT_UNKNOWN: &str = "unknown";
 
 /// Gossip the bridge could not hand downstream.
 #[derive(Debug, Default)]
@@ -101,14 +99,6 @@ impl NetworkBridge {
         }
     }
 
-    /// `lean_connected_peers`. leanMetrics labels the gauge by the peer's client, which the
-    /// lean transport does not announce, so every peer is `unknown`.
-    fn connected_peers(&self) -> prometheus_gauge::IntGauge {
-        self.metrics
-            .connected_peers
-            .with_label_values(&[PEER_CLIENT_UNKNOWN])
-    }
-
     /// Runs until the network task stops.
     ///
     /// The stream has to be drained continuously: an inbound request nobody takes off it is a
@@ -132,16 +122,27 @@ impl NetworkBridge {
                     // this event is the only place the bound port exists.
                     self.listening.send_modify(|bound| bound.push(address));
                 }
-                NetworkEvent::PeerConnected(peer) => {
-                    tracing::info!(%peer, "peer connected");
-                    self.connected_peers().inc();
+                NetworkEvent::PeerConnected {
+                    peer,
+                    direction: way,
+                } => {
+                    tracing::info!(%peer, ?way, "peer connected");
+                    let network = &self.metrics.network;
+                    network.record_connection(direction(way), ConnectionResult::Success);
+                    network.connected_peers().inc();
                     if self.peers.send(PeerEvent::Connected(peer)).await.is_err() {
                         break;
                     }
                 }
-                NetworkEvent::PeerDisconnected(peer) => {
-                    tracing::info!(%peer, "peer disconnected");
-                    self.connected_peers().dec();
+                NetworkEvent::PeerDisconnected {
+                    peer,
+                    direction: way,
+                    reason,
+                } => {
+                    tracing::info!(%peer, ?way, ?reason, "peer disconnected");
+                    let network = &self.metrics.network;
+                    network.record_disconnection(direction(way), disconnect_reason(reason));
+                    network.connected_peers().dec();
                     if self
                         .peers
                         .send(PeerEvent::Disconnected(peer))
@@ -150,6 +151,16 @@ impl NetworkBridge {
                     {
                         break;
                     }
+                }
+                NetworkEvent::ConnectionFailed {
+                    peer,
+                    direction: way,
+                    failure,
+                } => {
+                    tracing::debug!(?peer, ?way, ?failure, "connection attempt failed");
+                    self.metrics
+                        .network
+                        .record_connection(direction(way), connection_failure(failure));
                 }
             }
         }
@@ -160,11 +171,12 @@ impl NetworkBridge {
     /// `try_send`, never an await: blocking here would put verification latency on the path
     /// that keeps the gossip mesh alive.
     fn forward(&self, kind: GossipKind, payload: Vec<u8>) {
-        if self
-            .inbound
-            .try_send(GossipPayload { kind, payload })
-            .is_err()
-        {
+        let received = GossipPayload {
+            kind,
+            payload,
+            origin: PayloadOrigin::Gossip,
+        };
+        if self.inbound.try_send(received).is_err() {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }

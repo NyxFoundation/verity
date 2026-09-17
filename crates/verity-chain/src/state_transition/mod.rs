@@ -10,11 +10,13 @@
 pub mod attestations;
 pub mod genesis;
 pub mod header;
+pub mod observe;
 pub mod slots;
 
-pub use attestations::process_attestations;
+pub use attestations::{process_attestations, process_attestations_observed};
 pub use genesis::generate_genesis;
 pub use header::process_block_header;
+pub use observe::{TransitionEvent, TransitionObserver, Unobserved};
 pub use slots::process_slots;
 
 use verity_types::{Block, State};
@@ -31,12 +33,37 @@ use crate::merkle::hash_tree_root;
 /// actually produces.
 #[must_use = "this returns the post-state; the argument is not advanced in place"]
 pub fn state_transition(state: &State, block: &Block) -> Result<State, RejectionReason> {
+    state_transition_observed(state, block, &mut Unobserved)
+}
+
+/// [`state_transition`], reporting each stage boundary to `observer` as it is crossed.
+///
+/// The observer is how the transition's timings reach leanMetrics without this crate reading
+/// a clock: see [`observe`].
+///
+/// # Errors
+///
+/// As [`state_transition`].
+#[must_use = "this returns the post-state; the argument is not advanced in place"]
+pub fn state_transition_observed(
+    state: &State,
+    block: &Block,
+    observer: &mut impl TransitionObserver,
+) -> Result<State, RejectionReason> {
+    observer.observe(TransitionEvent::TransitionBegin);
+
+    observer.observe(TransitionEvent::SlotsBegin);
     let advanced = process_slots(state, block.slot)?;
-    let post = process_block(&advanced, block)?;
+    observer.observe(TransitionEvent::SlotsEnd {
+        processed: block.slot.0.saturating_sub(state.slot.0),
+    });
+
+    let post = process_block_observed(&advanced, block, observer)?;
 
     if block.state_root != hash_tree_root(&post) {
         return Err(RejectionReason::StateRootMismatch);
     }
+    observer.observe(TransitionEvent::TransitionEnd);
     Ok(post)
 }
 
@@ -47,8 +74,31 @@ pub fn state_transition(state: &State, block: &Block) -> Result<State, Rejection
 /// Any [`RejectionReason`] from header validation or attestation processing.
 #[must_use = "this returns the state after the block; the argument is left untouched"]
 pub fn process_block(state: &State, block: &Block) -> Result<State, RejectionReason> {
+    process_block_observed(state, block, &mut Unobserved)
+}
+
+/// [`process_block`], reporting its stage boundaries to `observer`.
+///
+/// # Errors
+///
+/// As [`process_block`].
+#[must_use = "this returns the state after the block; the argument is left untouched"]
+pub fn process_block_observed(
+    state: &State,
+    block: &Block,
+    observer: &mut impl TransitionObserver,
+) -> Result<State, RejectionReason> {
+    observer.observe(TransitionEvent::BlockBegin);
     let with_header = process_block_header(state, block)?;
-    process_attestations(&with_header, &block.body.attestations)
+
+    observer.observe(TransitionEvent::AttestationsBegin);
+    let post = process_attestations_observed(&with_header, &block.body.attestations, observer)?;
+    observer.observe(TransitionEvent::AttestationsEnd {
+        processed: block.body.attestations.len(),
+    });
+
+    observer.observe(TransitionEvent::BlockEnd);
+    Ok(post)
 }
 
 #[cfg(test)]
@@ -112,6 +162,34 @@ mod tests {
         assert_eq!(
             state_transition(&genesis, &block),
             Err(RejectionReason::StateRootMismatch)
+        );
+    }
+
+    #[test]
+    fn should_report_every_stage_boundary_in_order() {
+        use super::TransitionEvent as E;
+
+        let genesis = genesis_with(4);
+        let advanced = process_slots(&genesis, Slot(3)).unwrap();
+        let mut block = empty_block_at(&advanced, 3);
+        block.state_root = hash_tree_root(&super::process_block(&advanced, &block).unwrap());
+
+        let mut events = Vec::new();
+        super::state_transition_observed(&genesis, &block, &mut |event| events.push(event))
+            .expect("a self-consistent block");
+
+        assert_eq!(
+            events,
+            [
+                E::TransitionBegin,
+                E::SlotsBegin,
+                E::SlotsEnd { processed: 3 },
+                E::BlockBegin,
+                E::AttestationsBegin,
+                E::AttestationsEnd { processed: 0 },
+                E::BlockEnd,
+                E::TransitionEnd,
+            ]
         );
     }
 
