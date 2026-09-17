@@ -1,0 +1,17 @@
+name = "Pure"
+version = "0.1.0"
+defaultTargets = ["Pure"]
+
+[[lean_lib]]
+name = "Pure"
+
+[[require]]
+name = "aeneas"
+git = "https://github.com/cryspen/aeneas"
+rev = "nightly-2026.09.03-6852e64"
+subDir = "backends/lean"
+
+[[require]]
+name = "hax"
+git = "https://github.com/cryspen/hax-lean"
+rev = "v0.3.17"
