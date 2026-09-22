@@ -15,6 +15,10 @@ authors = ["Nyx Foundation"]
 # in is `verity-consensus-sys` (the FFI boundary), which will override this locally when it lands.
 [workspace.lints.rust]
 unsafe_code = "deny"
+# `cfg(kani)` is set by `cargo kani`, not by cargo, so it is unknown to the stable toolchain the
+# rest of CI runs on. Declaring it here is what lets a `#[cfg(kani)]` harness module sit next to
+# the code it checks without tripping `unexpected_cfgs` under `-D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -258,3 +262,10 @@ serde_json = "1.0"
 # backtrace is actually worth having.
 [profile.dev.package."*"]
 opt-level = 3
+
+# Flags `cargo kani` reads for every harness in the workspace. Stubbing is what lets the
+# chain harnesses replace the SHA-256 hasher with an arbitrary root: the hash's value never
+# steers the logic under proof, and the hasher is external code the checker is not asked
+# to cover.
+[workspace.metadata.kani.flags]
+unstable = ["stubbing"]

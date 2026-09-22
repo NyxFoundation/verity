@@ -164,3 +164,43 @@ jobs:
           VERITY_FIXTURES: ${{ github.workspace }}/fixtures-prod
           VERITY_TEST_KEYS: ${{ github.workspace }}/test-keys
         run: cargo test --locked --workspace -- --nocapture
+
+  # Bounded model checking of Verity's own logic, per docs/design/model-check.md. Kani brings
+  # its own nightly toolchain and CBMC, so it is its own job rather than a step of the fast
+  # gate; `rust-toolchain.toml` does not apply to it. Every `#[kani::proof]` harness in the
+  # workspace runs; a harness lives next to the code it checks, under `#[cfg(kani)]`.
+  kani:
+    runs-on: ubuntu-latest
+    env:
+      KANI_VERSION: 0.68.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: kani
+
+      # Pinned exactly, like every other tool here. The setup step downloads the toolchain
+      # and CBMC that this Kani release was built against; caching it keeps that off the
+      # critical path on the next run.
+      - name: Cache the Kani toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.kani
+          key: kani-${{ env.KANI_VERSION }}-${{ runner.os }}
+
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier --version "$KANI_VERSION"
+          cargo kani setup
+
+      # Harness proof budgets are per-harness (`#[kani::unwind]`); the timeout is the
+      # backstop that turns a solver blow-up into a failed job instead of a hung one.
+      - name: Verify
+        run: cargo kani --workspace -Z unstable-options --harness-timeout 10m
+
+      # `cargo kani` has no `--locked`, and it resolves the crate graph with its own cargo.
+      # The lockfile pins leanSig and Plonky3 revisions that live nowhere else (see the
+      # `check` job), so a resolve that moved them must fail the job, not pass silently.
+      - name: Lockfile unchanged
+        run: git diff --exit-code -- Cargo.lock

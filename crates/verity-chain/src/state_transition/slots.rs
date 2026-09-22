@@ -100,3 +100,49 @@ mod tests {
         );
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use libssz_merkle::HashTreeRoot;
+    use verity_types::Bytes32;
+
+    use crate::state_transition::testing::genesis_with;
+
+    use super::{HISTORICAL_ROOTS_LIMIT, RejectionReason, Slot, process_slots};
+
+    /// Stands in for the SHA-256 hasher, which is outside both this crate and the checker's
+    /// budget. The root's value plays no part in how the walk advances.
+    fn any_root<T: HashTreeRoot>(_: &T) -> Bytes32 {
+        kani::any()
+    }
+
+    /// Walks of at most this many slots keep the proof tractable.
+    const WALK: u64 = 3;
+
+    /// The guards decide exactly when the walk runs, and the walk lands on the target.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    #[kani::stub(crate::merkle::hash_tree_root, any_root)]
+    fn the_walk_is_guarded_and_lands_on_the_target() {
+        let mut state = genesis_with(1);
+        state.slot = Slot(kani::any());
+        let target: u64 = kani::any();
+        kani::assume(target <= state.slot.0.saturating_add(WALK));
+        match process_slots(&state, Slot(target)) {
+            Err(RejectionReason::BlockSlotNotInFuture) => {
+                assert!(target <= state.slot.0);
+            }
+            Err(RejectionReason::BlockSlotGapTooLarge) => {
+                assert!(target - state.slot.0 > HISTORICAL_ROOTS_LIMIT as u64);
+            }
+            Err(_) => {
+                unreachable!("no other rejection is defined");
+            }
+            Ok(advanced) => {
+                assert!(target > state.slot.0);
+                assert!(advanced.slot.0 == target);
+                assert!(advanced.latest_block_header.slot == state.latest_block_header.slot);
+            }
+        }
+    }
+}

@@ -268,3 +268,40 @@ mod tests {
         assert!(block_on(read_framed(&mut Cursor::new(wire), payload.len())).is_err());
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{
+        FRAME_COMPRESSED_DATA, FRAME_CRC_LEN, FRAME_RESERVED_UNSKIPPABLE_MAX,
+        FRAME_RESERVED_UNSKIPPABLE_MIN, FRAME_STREAM_IDENTIFIER, FRAME_UNCOMPRESSED_DATA,
+        frame_contribution,
+    };
+
+    /// Every frame type is classified without indexing past the payload, and a data frame
+    /// contributes exactly its bytes past the checksum.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn frames_are_classified_without_overrunning_the_payload() {
+        let frame_type: u8 = kani::any();
+        // The compressed arm hands the payload to the external snappy decoder, which is not
+        // this crate's logic to prove.
+        kani::assume(frame_type != FRAME_COMPRESSED_DATA);
+        let len: usize = kani::any();
+        kani::assume(len <= 8);
+        let payload: Vec<u8> = (0..len).map(|_| kani::any()).collect();
+        let contribution = frame_contribution(frame_type, &payload);
+        match frame_type {
+            FRAME_STREAM_IDENTIFIER => {
+                assert!(contribution.is_ok() == (payload == b"sNaPpY"));
+            }
+            FRAME_UNCOMPRESSED_DATA => match contribution {
+                Ok(bytes) => assert!(bytes + FRAME_CRC_LEN == payload.len()),
+                Err(_) => assert!(payload.len() < FRAME_CRC_LEN),
+            },
+            FRAME_RESERVED_UNSKIPPABLE_MIN..=FRAME_RESERVED_UNSKIPPABLE_MAX => {
+                assert!(contribution.is_err());
+            }
+            _ => assert!(matches!(contribution, Ok(0))),
+        }
+    }
+}
