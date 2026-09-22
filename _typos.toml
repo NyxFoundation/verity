@@ -21,8 +21,14 @@ ser = "ser"
 # "symetric" — the real directory name in leanVM (`crates/backend/symetric`), misspelled
 # upstream. Correcting it in our docs would point readers at a path that does not exist.
 symetric = "symetric"
+# "hax" — Cryspen's Rust-to-proof-assistant frontend (cargo-hax), cited by name in
+# docs/design/aeneas-correspondence.md; not a typo of "hex".
+hax = "hax"
 
 [default.extend-identifiers]
 # Abbreviated git commit SHA of leanEthereum/leanSig cited in docs/design/key-management.md; the
 # trailing "ba" is not a typo of "by"/"be".
 c08a3ba = "c08a3ba"
+# Abbreviated git commit SHA of NyxFoundation/formal-leanSpec cited in
+# docs/design/aeneas-correspondence.md; the leading "ba" is not a typo of "by"/"be".
+ba72845 = "ba72845"
