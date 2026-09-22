@@ -1,6 +1,6 @@
 ---
 title: Design Documents
-last_updated: 2026-08-26
+last_updated: 2026-09-23
 tags:
   - design
   - index
@@ -25,6 +25,7 @@ elaborates one axis of it.
 | [Storage Schema](storage.md) | What `verity-db` persists, how it is keyed, which transitions commit together, and what stays in memory |
 | [Key Management](key-management.md) | The crash-safe XMSS no-reuse guarantee, key material loading, and preparation scheduling |
 | [Verification Tooling](model-check.md) | Which verification technique applies to which zone, classified by assurance strength |
+| [Aeneas Correspondence Survey](aeneas-correspondence.md) | Which Verity items line up with a formal-leanSpec definition or proposition, and which of those Charon → Aeneas extracts to Lean today, measured per module |
 
 Each document states its own status and the upstream revision it was read at. Where two
 disagree, the one with the later `last_updated` is current — and the disagreement is a
