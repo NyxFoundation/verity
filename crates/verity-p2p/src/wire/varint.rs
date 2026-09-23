@@ -115,3 +115,37 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{MAX_VARINT_LEN, decode_varint, write_varint};
+
+    /// Every `u64` survives a write and a strict read, in at most ten bytes.
+    #[kani::proof]
+    #[kani::unwind(11)]
+    fn every_value_round_trips() {
+        let value: u64 = kani::any();
+        let mut encoded = Vec::new();
+        write_varint(&mut encoded, value);
+        assert!(!encoded.is_empty());
+        assert!(encoded.len() <= MAX_VARINT_LEN);
+        let (decoded, consumed) = decode_varint(&encoded).expect("a written varint reads back");
+        assert!(decoded == value);
+        assert!(consumed == encoded.len());
+    }
+
+    /// Any byte sequence either decodes inside the ten-byte cap or is refused; nothing panics.
+    #[kani::proof]
+    #[kani::unwind(13)]
+    fn decoding_is_total_and_bounded() {
+        let len: usize = kani::any();
+        kani::assume(len <= MAX_VARINT_LEN + 1);
+        let bytes: Vec<u8> = (0..len).map(|_| kani::any()).collect();
+        if let Ok((_, consumed)) = decode_varint(&bytes) {
+            assert!(consumed >= 1);
+            assert!(consumed <= MAX_VARINT_LEN);
+            assert!(consumed <= bytes.len());
+            assert!(bytes[consumed - 1] & 0x80 == 0);
+        }
+    }
+}

@@ -282,3 +282,94 @@ mod tests {
         );
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use verity_types::{Checkpoint, JustifiedSlots, Slot};
+
+    use super::{
+        IMMEDIATE_JUSTIFICATION_WINDOW, RejectionReason, advance_checkpoint, is_justifiable_after,
+        is_slot_justified, justified_index_after,
+    };
+
+    /// The index is defined exactly for slots past the boundary, and inverts to the slot.
+    #[kani::proof]
+    fn justified_index_inverts_to_the_slot() {
+        let slot: u64 = kani::any();
+        let finalized: u64 = kani::any();
+        match justified_index_after(Slot(slot), Slot(finalized)) {
+            None => {
+                assert!(slot <= finalized);
+            }
+            Some(index) => {
+                assert!(slot > finalized);
+                assert!(finalized + (index as u64) + 1 == slot);
+            }
+        }
+    }
+
+    /// A slot behind the boundary is never a candidate, and one inside the immediate window
+    /// always is. The square and pronic tests past the window run a `u128` integer square
+    /// root, which is beyond the solver's budget; they are covered by leanSpec's vectors.
+    #[kani::proof]
+    fn justifiability_is_settled_near_the_boundary() {
+        let slot: u64 = kani::any();
+        let finalized: u64 = kani::any();
+        kani::assume(slot < finalized || slot - finalized <= IMMEDIATE_JUSTIFICATION_WINDOW);
+        let candidate = is_justifiable_after(Slot(slot), Slot(finalized));
+        assert!(candidate == (slot >= finalized));
+    }
+
+    /// The advanced checkpoint is one of the two inputs and never moves backwards.
+    #[kani::proof]
+    fn advancing_never_rewinds() {
+        let current = Checkpoint {
+            root: kani::any(),
+            slot: Slot(kani::any()),
+        };
+        let candidate = Checkpoint {
+            root: kani::any(),
+            slot: Slot(kani::any()),
+        };
+        let advanced = advance_checkpoint(current, candidate);
+        assert!(advanced == current || advanced == candidate);
+        assert!(advanced.slot.0 >= current.slot.0);
+        assert!(advanced.slot.0 >= candidate.slot.0);
+        if candidate.slot == current.slot {
+            assert!(advanced == current);
+        }
+    }
+
+    /// A tracked bitfield of at most this many bits keeps the proofs below tractable.
+    const TRACKED_BITS: usize = 3;
+
+    fn any_justified_slots() -> JustifiedSlots {
+        let len: usize = kani::any();
+        kani::assume(len <= TRACKED_BITS);
+        let bits: Vec<bool> = (0..len).map(|_| kani::any()).collect();
+        JustifiedSlots::try_from(bits).expect("within the SSZ limit")
+    }
+
+    /// Slots at or behind the boundary read as justified; an untracked slot is refused
+    /// rather than indexed.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn slot_lookup_never_indexes_out_of_range() {
+        let justified_slots = any_justified_slots();
+        let finalized: u64 = kani::any();
+        let slot: u64 = kani::any();
+        match is_slot_justified(&justified_slots, Slot(finalized), Slot(slot)) {
+            Ok(true) if slot <= finalized => {}
+            Ok(_) => {
+                assert!(((slot - finalized - 1) as usize) < justified_slots.len());
+            }
+            Err(RejectionReason::JustifiedSlotOutOfRange) => {
+                assert!(slot > finalized);
+                assert!((slot - finalized - 1) as usize >= justified_slots.len());
+            }
+            Err(_) => {
+                unreachable!("no other rejection is defined");
+            }
+        }
+    }
+}

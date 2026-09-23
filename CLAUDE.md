@@ -38,8 +38,48 @@ Owner-ratified ground rules for the first Rust code. Do not re-open these withou
 - **Toolchain**: Rust edition 2024, resolver 3, latest stable pinned via `rust-toolchain.toml` (external floor: leanSig requires ≥1.87; no nightly needed).
 - **License**: MIT (Nyx Foundation copyright).
 - **Devnet**: always track the latest devnet generation; never hardcode a generation in docs or code comments.
-- **Verification harness**: NOT wired in from day one (no bolero/proptest in the initial scaffold or CI); introduced later per `docs/design/model-check.md`'s tool-to-zone mapping.
+- **Verification harness**: introduced per `docs/design/model-check.md`'s tool-to-zone mapping, not on day one. Today (2026-09-22): proptest scoped to the SSZ round trip in `verity-types`, and **Kani** bounded model checking across every crate with logic of its own (see **Kani** below). bolero, Loom, Shuttle and Miri are still to come.
 - Known caveat: leanSig internally depends on `ethereum_ssz`, so two SSZ implementations coexist transitively — harmless, but mind type conversions at the signature boundary.
+
+## Kani (2026-09-22)
+
+Bounded model checking of Verity's own pure logic; external crates (libssz, leanSig, leanVM,
+rust-libp2p, RocksDB, snap) are never the subject of a harness. Facts that are easy to get wrong:
+
+- **Harnesses live next to the code**, in a `#[cfg(kani)] mod harnesses` at the bottom of the file,
+  the way `#[cfg(test)] mod tests` does. `cfg(kani)` is declared in the workspace lints
+  (`unexpected_cfgs`), so clippy under `-D warnings` accepts it. The chain crate's `testing`
+  builders are gated `#[cfg(any(test, kani))]` so harnesses can build a small concrete `State`.
+- **Kani is not in CI — owner decision 2026-09-23.** A cold run on a GitHub runner spent 28 minutes
+  compiling leanVM and Plonky3 under Kani's compiler for 2 minutes of proof. Run it locally on the
+  branch that carries the change, before the PR:
+  `cargo kani --workspace -j 4 --output-format terse -Z unstable-options --harness-timeout 300s`
+  (`cargo install --locked kani-verifier --version 0.68.0 && cargo kani setup` once; it brings its
+  own nightly and CBMC, and ignores `rust-toolchain.toml`). `-p <crate>` and `--harness <name>`
+  narrow it. Detach a full run (`setsid nohup … &`) — it outlives an agent session that way. State
+  the result (`N successfully verified harnesses, 0 failures`) in the PR body.
+- **Stubbing is on workspace-wide** (`[workspace.metadata.kani.flags] unstable = ["stubbing"]`).
+  The chain harnesses stub `verity_chain::merkle::hash_tree_root` with an arbitrary root: SHA-256
+  over a `State` is outside the solver's budget and its value never steers the logic under proof.
+- **Bound the symbolic input, not the property.** Bitlists, vectors and slot walks are capped by a
+  named constant in the harness plus `#[kani::unwind(n)]`; the scalar arguments stay fully
+  symbolic. A harness that times out is a harness with too large a container, not a bug.
+- **`cargo kani` has no `--locked`.** Check `git diff --exit-code -- Cargo.lock` after a run: a
+  resolve that moved the leanSig or Plonky3 pins would otherwise pass silently.
+- **What does not fit the budget** (found 2026-09-22, each tried and timed out at 300 s): anything
+  that constructs a libssz bitlist or list (their `SmallVec<[u8; 64]>` backing is a 64-iteration
+  loop per operation), symbolic indexing into a `Vec<Bytes32>` followed by a 32-byte compare,
+  equalities between two `u64` divisions by a constant (`total_intervals == slot * 5 + interval`),
+  `Duration` comparisons (two divisions per `from_millis`), `u128::isqrt`, `sort_unstable`, and
+  `str::strip_prefix`. A harness over any of these is proving std or libssz, not Verity; state the
+  property on the pure function underneath instead, or leave it to the leanSpec vectors.
+- **Logging is not a Kani-reachable path.** `tracing::info!` reaches `catch_unwind`, which Kani
+  0.68 cannot compile (an ICE in `intrinsics.rs`; stubbing `dispatcher::get_default` does not
+  help because the callsite registration reaches it too). A decision that must be proved lives in
+  a `const fn` next to the method that logs it — `LagGate::closes`, `SyncMachine::next_state`.
+- The arithmetic the proofs assume rather than prove is stated in each harness: a genesis time
+  whose millisecond rendering fits a `u64`, and a slot whose interval count does. Both are far
+  beyond any chain; the assumptions exist so the proofs speak about the code, not about `u64::MAX`.
 
 ## Devnet interop (2026-09-11)
 

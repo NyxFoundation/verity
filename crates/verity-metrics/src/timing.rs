@@ -28,3 +28,34 @@ pub fn count_value(count: usize) -> i64 {
 pub fn gauge_value(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{count_value, gauge_value};
+
+    /// A count is reported exactly while it fits, and saturates rather than wrapping after.
+    #[kani::proof]
+    fn counts_are_exact_or_saturated() {
+        let count: usize = kani::any();
+        let reported = count_value(count);
+        assert!(reported >= 0);
+        if let Ok(exact) = i64::try_from(count) {
+            assert!(reported == exact);
+        } else {
+            assert!(reported == i64::MAX);
+        }
+    }
+
+    /// A slot or timestamp is reported exactly while it fits, and saturates after.
+    #[kani::proof]
+    fn gauges_are_exact_or_saturated() {
+        let value: u64 = kani::any();
+        let reported = gauge_value(value);
+        assert!(reported >= 0);
+        if let Ok(exact) = i64::try_from(value) {
+            assert!(reported == exact);
+        } else {
+            assert!(reported == i64::MAX);
+        }
+    }
+}

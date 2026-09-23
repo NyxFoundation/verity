@@ -170,3 +170,115 @@ mod tests {
         assert!(decode_slot_and_root(ColumnFamily::BlockProofs, &[0u8; 39]).is_err());
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use verity_types::primitives::{Bytes32, Slot, ValidatorIndex};
+
+    use super::{
+        ColumnFamily, ROOT_WIDTH, SLOT_ROOT_WIDTH, SLOT_WIDTH, StorageError, decode_root,
+        decode_slot, decode_slot_and_root, decode_validator, root, slot, slot_and_root,
+        slot_and_root_bounds, slot_bounds, validator,
+    };
+
+    /// Byte order on slot keys is numeric order: the property every range scan rests on.
+    #[kani::proof]
+    fn slot_keys_order_like_slots() {
+        let a: u64 = kani::any();
+        let b: u64 = kani::any();
+        assert!((slot(Slot(a)) < slot(Slot(b))) == (a < b));
+        assert!((slot(Slot(a)) == slot(Slot(b))) == (a == b));
+        assert!((validator(ValidatorIndex(a)) < validator(ValidatorIndex(b))) == (a < b));
+    }
+
+    /// Composite keys order by slot first, and every root at a slot sits inside that slot's
+    /// bounds and outside every other slot's.
+    #[kani::proof]
+    fn composite_keys_order_by_slot_first() {
+        let a: u64 = kani::any();
+        let b: u64 = kani::any();
+        let root_a: Bytes32 = kani::any();
+        let root_b: Bytes32 = kani::any();
+        let key_a = slot_and_root(Slot(a), root_a);
+        let key_b = slot_and_root(Slot(b), root_b);
+        if a < b {
+            assert!(key_a < key_b);
+        }
+        if a == b {
+            assert!((key_a < key_b) == (root_a < root_b));
+        }
+
+        let start: u64 = kani::any();
+        let end: u64 = kani::any();
+        let (low, high) = slot_and_root_bounds(Slot(start), Slot(end));
+        let inside = start <= a && a < end;
+        assert!((low <= key_a && key_a < high) == inside);
+        let (low, high) = slot_bounds(Slot(start), Slot(end));
+        assert!((low <= slot(Slot(a)) && slot(Slot(a)) < high) == inside);
+    }
+
+    /// A slot key and a validator key read back as what was written.
+    #[kani::proof]
+    fn integer_keys_read_back() {
+        let table = ColumnFamily::BlockProofs;
+        let at: u64 = kani::any();
+        let index: u64 = kani::any();
+        assert!(decode_slot(table, &slot(Slot(at))).unwrap().0 == at);
+        assert!(
+            decode_validator(table, &validator(ValidatorIndex(index)))
+                .unwrap()
+                .0
+                == index
+        );
+    }
+
+    /// A root key reads back as what was written.
+    #[kani::proof]
+    fn root_keys_read_back() {
+        let table = ColumnFamily::BlockProofs;
+        let block_root: Bytes32 = kani::any();
+        assert!(decode_root(table, &root(block_root)).unwrap() == block_root);
+    }
+
+    /// A composite key reads back as the slot and root it was written from.
+    #[kani::proof]
+    fn composite_keys_read_back() {
+        let table = ColumnFamily::BlockProofs;
+        let at: u64 = kani::any();
+        let block_root: Bytes32 = kani::any();
+        let (read_at, read_root) =
+            decode_slot_and_root(table, &slot_and_root(Slot(at), block_root)).unwrap();
+        assert!(read_at.0 == at);
+        assert!(read_root == block_root);
+    }
+
+    /// A key of any other width is refused by name, never indexed.
+    #[kani::proof]
+    #[kani::unwind(43)]
+    fn foreign_widths_are_refused() {
+        let table = ColumnFamily::BlockProofs;
+        let len: usize = kani::any();
+        kani::assume(len <= SLOT_ROOT_WIDTH + 1);
+        let key: Vec<u8> = (0..len).map(|_| kani::any()).collect();
+        let width_error = |expected: usize, outcome: Result<(), StorageError>| match outcome {
+            Ok(()) => assert!(key.len() == expected),
+            Err(StorageError::KeyWidth {
+                found,
+                expected: reported,
+                ..
+            }) => {
+                assert!(key.len() != expected);
+                assert!(found == key.len());
+                assert!(reported == expected);
+            }
+            Err(_) => unreachable!("only the width is checked"),
+        };
+        width_error(SLOT_WIDTH, decode_slot(table, &key).map(|_| ()));
+        width_error(SLOT_WIDTH, decode_validator(table, &key).map(|_| ()));
+        width_error(ROOT_WIDTH, decode_root(table, &key).map(|_| ()));
+        width_error(
+            SLOT_ROOT_WIDTH,
+            decode_slot_and_root(table, &key).map(|_| ()),
+        );
+    }
+}

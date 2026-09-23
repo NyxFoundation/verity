@@ -123,3 +123,31 @@ mod tests {
         assert_eq!(StateDiff::from_ssz_bytes(&diff.to_ssz()).unwrap(), diff);
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use verity_types::primitives::Slot;
+
+    use super::{SNAPSHOT_INTERVAL_SLOTS, crosses_snapshot_boundary};
+
+    /// Total for any pair of slots, never crossed backwards or in place, and always crossed
+    /// once the gap spans a whole interval: a run of empty slots cannot skip a boundary.
+    #[kani::proof]
+    fn boundaries_are_crossed_exactly_by_forward_gaps() {
+        let parent: u64 = kani::any();
+        let block: u64 = kani::any();
+        let crossed = crosses_snapshot_boundary(Slot(parent), Slot(block));
+        if block <= parent {
+            assert!(!crossed);
+        }
+        if let Some(far) = parent.checked_add(SNAPSHOT_INTERVAL_SLOTS)
+            && block >= far
+        {
+            assert!(crossed);
+        }
+        if crossed {
+            assert!(block > parent);
+            assert!(block / SNAPSHOT_INTERVAL_SLOTS > parent / SNAPSHOT_INTERVAL_SLOTS);
+        }
+    }
+}

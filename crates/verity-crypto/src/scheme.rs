@@ -170,3 +170,25 @@ mod tests {
         assert_eq!(Role::Proposal.file_infix(), "proposer");
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use verity_types::Slot;
+
+    use super::epoch_for_slot;
+    use crate::error::SignatureError;
+
+    /// A slot narrows to an epoch exactly when it fits, and the epoch names the slot.
+    #[kani::proof]
+    fn epochs_are_exactly_the_slots_that_fit() {
+        let slot: u64 = kani::any();
+        match epoch_for_slot(Slot(slot)) {
+            Ok(epoch) => assert!(u64::from(epoch) == slot),
+            Err(SignatureError::SlotOutsideLifetime { slot: reported }) => {
+                assert!(slot > u64::from(u32::MAX));
+                assert!(reported == slot);
+            }
+            Err(_) => unreachable!("no other error is defined"),
+        }
+    }
+}

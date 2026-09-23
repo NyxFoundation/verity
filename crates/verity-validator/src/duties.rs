@@ -415,13 +415,7 @@ impl LagGate {
         let network_lag = slot.0.saturating_sub(max_seen.0);
         let was_closed = self.closed;
 
-        self.closed = if network_lag > NETWORK_STALL_THRESHOLD {
-            false
-        } else if self.closed {
-            head_lag > DUTY_LAG_THRESHOLD - DUTY_LAG_HYSTERESIS
-        } else {
-            head_lag > DUTY_LAG_THRESHOLD
-        };
+        self.closed = Self::closes(was_closed, head_lag, network_lag);
 
         if self.closed != was_closed {
             tracing::info!(
@@ -434,6 +428,18 @@ impl LagGate {
             );
         }
         !self.closed
+    }
+
+    /// The decision alone: whether a gate that was `closed` stays or becomes closed at these
+    /// lags. Kept free of logging so it can be checked exhaustively.
+    const fn closes(closed: bool, head_lag: u64, network_lag: u64) -> bool {
+        if network_lag > NETWORK_STALL_THRESHOLD {
+            false
+        } else if closed {
+            head_lag > DUTY_LAG_THRESHOLD - DUTY_LAG_HYSTERESIS
+        } else {
+            head_lag > DUTY_LAG_THRESHOLD
+        }
     }
 }
 
@@ -562,5 +568,51 @@ mod tests {
         let mut gate = LagGate::default();
         let slot = Slot(100 + NETWORK_STALL_THRESHOLD + 1);
         assert!(!gate.admits(slot, Slot(100), slot));
+    }
+}
+
+#[cfg(kani)]
+mod harnesses {
+    use verity_types::Interval;
+
+    use super::{
+        DUTY_LAG_HYSTERESIS, DUTY_LAG_THRESHOLD, INTERVALS_PER_SLOT, LagGate,
+        NETWORK_STALL_THRESHOLD, slot_of,
+    };
+
+    /// The gate is total, closes only past the threshold, reopens only below the hysteresis
+    /// band, and opens whatever the lag when the whole network has stalled.
+    #[kani::proof]
+    fn the_gate_closes_late_and_reopens_early() {
+        let was_closed: bool = kani::any();
+        let head_lag: u64 = kani::any();
+        let network_lag: u64 = kani::any();
+        let closed = LagGate::closes(was_closed, head_lag, network_lag);
+
+        if network_lag > NETWORK_STALL_THRESHOLD {
+            assert!(!closed);
+        } else if was_closed {
+            assert!(closed == (head_lag > DUTY_LAG_THRESHOLD - DUTY_LAG_HYSTERESIS));
+        } else {
+            assert!(closed == (head_lag > DUTY_LAG_THRESHOLD));
+        }
+        // Inside the band a closed gate stays closed and an open one stays open: that is
+        // what hysteresis means, and it is only well-formed while the band is non-empty.
+        assert!(DUTY_LAG_HYSTERESIS <= DUTY_LAG_THRESHOLD);
+        if network_lag <= NETWORK_STALL_THRESHOLD
+            && head_lag > DUTY_LAG_THRESHOLD - DUTY_LAG_HYSTERESIS
+            && head_lag <= DUTY_LAG_THRESHOLD
+        {
+            assert!(closed == was_closed);
+        }
+    }
+
+    /// Every interval count lands in exactly one slot, and slot starts map back.
+    #[kani::proof]
+    fn intervals_land_in_one_slot() {
+        let interval: u64 = kani::any();
+        let slot = slot_of(Interval(interval));
+        assert!(slot.0 * INTERVALS_PER_SLOT <= interval);
+        assert!(interval - slot.0 * INTERVALS_PER_SLOT < INTERVALS_PER_SLOT);
     }
 }

@@ -367,3 +367,76 @@ mod tests {
         assert!(!is_arrival_observable(Interval(13), Slot(3)));
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use verity_chain::SlotClock;
+    use verity_types::config::{
+        GOSSIP_DISPARITY_INTERVALS, INTERVALS_PER_SLOT, MILLISECONDS_PER_INTERVAL,
+        MILLISECONDS_PER_SLOT,
+    };
+    use verity_types::{Interval, Slot};
+
+    use super::{anchored_delta, is_arrival_observable, latest_boundary_delta, saturating_i64};
+
+    /// A genesis time whose millisecond rendering fits a `u64`.
+    fn any_clock() -> SlotClock {
+        let genesis_time: u64 = kani::any();
+        kani::assume(genesis_time <= u64::MAX / 1000);
+        SlotClock::new(genesis_time)
+    }
+
+    /// Observability is total and admits exactly the slots the clock has reached, give or
+    /// take the gossip disparity margin.
+    #[kani::proof]
+    fn observability_is_total_and_bounded_by_the_clock() {
+        let view_time: u64 = kani::any();
+        let slot: u64 = kani::any();
+        let observable = is_arrival_observable(Interval(view_time), Slot(slot));
+        if slot <= u64::MAX / INTERVALS_PER_SLOT
+            && view_time <= u64::MAX - GOSSIP_DISPARITY_INTERVALS
+        {
+            assert!(
+                observable == (slot * INTERVALS_PER_SLOT <= view_time + GOSSIP_DISPARITY_INTERVALS)
+            );
+        }
+    }
+
+    /// The boundary delta always lands inside one slot, and the narrowing saturates.
+    #[kani::proof]
+    fn the_boundary_delta_stays_inside_the_slot() {
+        let clock = any_clock();
+        let now: u64 = kani::any();
+        let interval: u64 = kani::any();
+        kani::assume(interval < INTERVALS_PER_SLOT);
+        let delta = latest_boundary_delta(&clock, now, interval);
+        assert!(delta >= 0);
+        assert!(delta < MILLISECONDS_PER_SLOT as i64);
+
+        let value: u64 = kani::any();
+        let narrowed = saturating_i64(value);
+        assert!(narrowed >= 0);
+        assert!(u64::try_from(narrowed).unwrap() <= value);
+    }
+
+    /// The anchored delta is the signed distance to the due instant, never a panic.
+    #[kani::proof]
+    fn the_anchored_delta_is_a_signed_distance() {
+        let clock = any_clock();
+        let now: u64 = kani::any();
+        let slot: u64 = kani::any();
+        let interval: u64 = kani::any();
+        kani::assume(interval < INTERVALS_PER_SLOT);
+        let delta = anchored_delta(&clock, now, Slot(slot), interval);
+        let genesis_ms = clock.genesis_time() * 1000;
+        if let Some(due) = slot
+            .checked_mul(MILLISECONDS_PER_SLOT)
+            .and_then(|at| at.checked_add(genesis_ms))
+            .and_then(|at| at.checked_add(interval * MILLISECONDS_PER_INTERVAL))
+            && due <= i64::MAX as u64
+            && now <= i64::MAX as u64
+        {
+            assert!(delta == now as i64 - due as i64);
+        }
+    }
+}

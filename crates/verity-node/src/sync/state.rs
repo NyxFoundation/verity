@@ -75,12 +75,7 @@ impl SyncMachine {
         };
 
         let behind = head_slot.0 < network_finalized.0;
-        let next = match (self.state, behind) {
-            (None, _) => SyncState::Syncing,
-            (Some(SyncState::Syncing), false) => SyncState::Synced,
-            (Some(SyncState::Synced), true) => SyncState::Syncing,
-            (Some(current), _) => current,
-        };
+        let next = Self::next_state(self.state, behind);
 
         if self.state != Some(next) {
             tracing::info!(
@@ -93,6 +88,18 @@ impl SyncMachine {
         }
         self.state = Some(next);
         next
+    }
+
+    /// The transition table alone: where one observation moves a machine in `current` when
+    /// the head is or is not `behind` the network. Kept free of logging so it can be checked
+    /// exhaustively.
+    const fn next_state(current: Option<SyncState>, behind: bool) -> SyncState {
+        match (current, behind) {
+            (None, _) => SyncState::Syncing,
+            (Some(SyncState::Syncing), false) => SyncState::Synced,
+            (Some(SyncState::Synced), true) => SyncState::Syncing,
+            (Some(current), _) => current,
+        }
     }
 }
 
@@ -177,5 +184,49 @@ mod tests {
         machine.observe(Slot(50), Some(Slot(50)));
         machine.observe(Slot(50), Some(Slot(50)));
         assert_eq!(machine.observe(Slot(50), None), SyncState::Synced);
+    }
+}
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{SyncMachine, SyncState};
+
+    fn any_state() -> Option<SyncState> {
+        match kani::any::<u8>() {
+            0 => None,
+            1 => Some(SyncState::Idle),
+            2 => Some(SyncState::Syncing),
+            _ => Some(SyncState::Synced),
+        }
+    }
+
+    /// One observation moves the machine exactly as the transition table says, and the
+    /// shortcut from idle straight to synced does not exist.
+    #[kani::proof]
+    fn observations_follow_the_table() {
+        let before = any_state();
+        let behind: bool = kani::any();
+        let after = SyncMachine::next_state(before, behind);
+        match before {
+            None => assert!(after == SyncState::Syncing),
+            Some(SyncState::Idle) => assert!(after == SyncState::Idle),
+            Some(SyncState::Syncing | SyncState::Synced) => {
+                assert!(
+                    after
+                        == if behind {
+                            SyncState::Syncing
+                        } else {
+                            SyncState::Synced
+                        }
+                );
+            }
+        }
+        if before.is_none() {
+            assert!(after != SyncState::Synced);
+        }
+        // Once the network has been heard from, the machine never reports idle again.
+        if before.is_some() && before != Some(SyncState::Idle) {
+            assert!(after != SyncState::Idle);
+        }
     }
 }

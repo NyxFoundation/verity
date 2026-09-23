@@ -88,3 +88,19 @@ impl NetworkConfig {
         }
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{MAX_PAYLOAD_SIZE, max_compressed_len};
+
+    /// Below the payload cap, which every caller checks first, the bound neither overflows
+    /// nor falls short of the payload it bounds.
+    #[kani::proof]
+    fn the_compressed_bound_covers_every_capped_payload() {
+        let uncompressed: usize = kani::any();
+        kani::assume(uncompressed <= MAX_PAYLOAD_SIZE);
+        let bound = max_compressed_len(uncompressed);
+        assert!(bound >= uncompressed);
+        assert!(bound >= 32);
+    }
+}

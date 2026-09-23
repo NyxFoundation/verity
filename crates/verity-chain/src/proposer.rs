@@ -60,3 +60,27 @@ mod tests {
         );
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{RejectionReason, Slot, ValidatorIndex, proposer_for_slot};
+
+    /// Every slot names a proposer inside the registry, and only an empty registry is refused.
+    #[kani::proof]
+    fn proposer_is_total_and_in_range() {
+        let slot: u64 = kani::any();
+        let validator_count: u64 = kani::any();
+        match proposer_for_slot(Slot(slot), validator_count) {
+            Ok(ValidatorIndex(index)) => {
+                assert!(validator_count != 0);
+                assert!(index < validator_count);
+            }
+            Err(RejectionReason::EmptyValidatorRegistry) => {
+                assert!(validator_count == 0);
+            }
+            Err(_) => {
+                unreachable!("no other rejection is defined");
+            }
+        }
+    }
+}

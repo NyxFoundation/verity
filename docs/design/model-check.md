@@ -1,6 +1,6 @@
 ---
 title: Verification Tooling Adoption Strategy
-last_updated: 2026-08-26
+last_updated: 2026-09-23
 tags:
   - verification
   - model-checking
@@ -21,6 +21,17 @@ tags:
 > UB detection. Calling them all "model checking" would overstate the weaker ones, so
 > this memo classifies each by **assurance strength** (how it explores state) and by
 > **zone** (where it applies). Those are the two axes the whole strategy hangs on.
+
+## Status (2026-09-22)
+
+Kani is adopted: every crate with logic of its own carries `#[cfg(kani)]` harnesses next to the
+code. It runs locally (`cargo kani --workspace`), not in CI — a cold run on a hosted runner spends
+most of half an hour compiling the proving-system dependencies under Kani's own compiler, so the
+proofs are re-run on the branch that changes the code they cover and the result is stated in the PR. Because Verity is Rust-first, the
+state transition and fork choice are Rust today, so the "boundary code" column below is, for
+now, the Rust consensus logic itself — the first rung of the graduated ladder in
+"Graduated assurance". proptest remains scoped to the SSZ round trip. bolero, Loom, Shuttle and
+Miri are not yet wired in.
 
 ## The core claim
 
