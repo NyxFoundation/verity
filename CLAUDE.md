@@ -50,18 +50,22 @@ rust-libp2p, RocksDB, snap) are never the subject of a harness. Facts that are e
   the way `#[cfg(test)] mod tests` does. `cfg(kani)` is declared in the workspace lints
   (`unexpected_cfgs`), so clippy under `-D warnings` accepts it. The chain crate's `testing`
   builders are gated `#[cfg(any(test, kani))]` so harnesses can build a small concrete `State`.
-- **Run it with `cargo kani --workspace`** (`cargo install --locked kani-verifier --version 0.68.0
-  && cargo kani setup` once; it brings its own nightly and CBMC, and ignores
-  `rust-toolchain.toml`). `-p <crate>` and `--harness <name>` narrow it. CI runs it as the `kani`
-  job in `rust.yml`, separate from the fast gate, with a 10-minute per-harness timeout.
+- **Kani is not in CI — owner decision 2026-09-23.** A cold run on a GitHub runner spent 28 minutes
+  compiling leanVM and Plonky3 under Kani's compiler for 2 minutes of proof. Run it locally on the
+  branch that carries the change, before the PR:
+  `cargo kani --workspace -j 4 --output-format terse -Z unstable-options --harness-timeout 300s`
+  (`cargo install --locked kani-verifier --version 0.68.0 && cargo kani setup` once; it brings its
+  own nightly and CBMC, and ignores `rust-toolchain.toml`). `-p <crate>` and `--harness <name>`
+  narrow it. Detach a full run (`setsid nohup … &`) — it outlives an agent session that way. State
+  the result (`N successfully verified harnesses, 0 failures`) in the PR body.
 - **Stubbing is on workspace-wide** (`[workspace.metadata.kani.flags] unstable = ["stubbing"]`).
   The chain harnesses stub `verity_chain::merkle::hash_tree_root` with an arbitrary root: SHA-256
   over a `State` is outside the solver's budget and its value never steers the logic under proof.
 - **Bound the symbolic input, not the property.** Bitlists, vectors and slot walks are capped by a
   named constant in the harness plus `#[kani::unwind(n)]`; the scalar arguments stay fully
   symbolic. A harness that times out is a harness with too large a container, not a bug.
-- **`cargo kani` has no `--locked`.** CI checks `git diff --exit-code -- Cargo.lock` after the run,
-  because a resolve that moved the leanSig or Plonky3 pins would otherwise pass silently.
+- **`cargo kani` has no `--locked`.** Check `git diff --exit-code -- Cargo.lock` after a run: a
+  resolve that moved the leanSig or Plonky3 pins would otherwise pass silently.
 - **What does not fit the budget** (found 2026-09-22, each tried and timed out at 300 s): anything
   that constructs a libssz bitlist or list (their `SmallVec<[u8; 64]>` backing is a 64-iteration
   loop per operation), symbolic indexing into a `Vec<Bytes32>` followed by a 32-byte compare,
