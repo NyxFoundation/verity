@@ -2,6 +2,7 @@
 -- [verity_chain]: external functions.
 -- This is a template file: rename it to "FunsExternal.lean" and fill the holes.
 import Aeneas
+import LeanSpec.Forks.Lstar.Slot
 import VerityChain.Types
 open Aeneas Aeneas.Std RustM ControlFlow Error
 set_option linter.dupNamespace false
@@ -26,12 +27,22 @@ open verity_chain
 axiom U64.Insts.CoreHashHash.hash
   {H : Type} (HasherInst : core.hash.Hasher H) : Std.U64 → H → RustM H
 
-/-- [core::num::{u128}::isqrt]:
-    Source: '/rustc/library/core/src/num/uint_macros.rs', lines 3654:8-3654:40
-    Name pattern: [core::num::{u128}::isqrt]
-    Visibility: public -/
-@[rust_fun "core::num::{u128}::isqrt"]
-axiom core.num.U128.isqrt : Std.U128 → RustM Std.U128
+/-- Model Rust's `u128::isqrt` with formal-leanSpec's proved integer square root. -/
+def models.u128Isqrt (value : Std.U128) : RustM Std.U128 :=
+  ok (Std.U128.ofNat (LeanSpec.Slot.isqrt value.val) (by
+    have hsquare := LeanSpec.Slot.isqrt_le value.val
+    have hsqrt : LeanSpec.Slot.isqrt value.val ≤ value.val := by
+      by_cases hz : LeanSpec.Slot.isqrt value.val = 0
+      · omega
+      · have hpositive : 1 ≤ LeanSpec.Slot.isqrt value.val := Nat.one_le_iff_ne_zero.mpr hz
+        have hself : LeanSpec.Slot.isqrt value.val ≤
+            LeanSpec.Slot.isqrt value.val * LeanSpec.Slot.isqrt value.val := by
+          nlinarith
+        omega
+    exact hsqrt.trans (Std.U128.le_max value)))
+
+def core.num.U128.isqrt (value : Std.U128) : RustM Std.U128 :=
+  models.u128Isqrt value
 
 /-- [core::time::{core::time::Duration}::from_millis]:
     Source: '/rustc/library/core/src/time.rs', lines 244:4-244:53
@@ -90,10 +101,6 @@ axiom libssz_types.bitlist.SszBitlist.push
   libssz_types.bitlist.SszBitlist N → Bool → RustM ((core.result.Result
     Unit libssz_types.error.TypeError) × (libssz_types.bitlist.SszBitlist N))
 
-/-- [verity_types::config::INTERVALS_PER_SLOT]
-    Source: 'crates/verity-types/src/config.rs', lines 8:0-8:33
-    Name pattern: [verity_types::config::INTERVALS_PER_SLOT]
-    Visibility: public -/
 /-- Transcribed literals from `verity-types` config. Not axioms: the values
     are the chain constants. -/
 def verity_types.config.INTERVALS_PER_SLOT : RustM Std.U64 := ok 5#u64

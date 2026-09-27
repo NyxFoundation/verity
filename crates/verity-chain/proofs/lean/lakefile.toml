@@ -10,3 +10,8 @@ name = "aeneas"
 git = "https://github.com/cryspen/aeneas"
 rev = "nightly-2026.09.03-6852e64"
 subDir = "backends/lean"
+
+[[require]]
+name = "LeanSpec"
+git = "https://github.com/NyxFoundation/formal-leanSpec"
+rev = "ba7284513031eac5c66bfb8221d27b6154cf240b"

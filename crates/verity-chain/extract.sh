@@ -37,13 +37,24 @@ export PATH
 "${AENEAS}" -backend lean -dest "${ROOT}/proofs/lean" -split-files -gen-lib-entry \
   "${LLBC}"
 
-if [ ! -f "${ROOT}/proofs/lean/FunsExternal.lean" ] &&
-   [ -f "${ROOT}/proofs/lean/FunsExternal_Template.lean" ]; then
-  cp "${ROOT}/proofs/lean/FunsExternal_Template.lean" \
-    "${ROOT}/proofs/lean/FunsExternal.lean"
-fi
-if [ ! -f "${ROOT}/proofs/lean/TypesExternal.lean" ] &&
-   [ -f "${ROOT}/proofs/lean/TypesExternal_Template.lean" ]; then
-  cp "${ROOT}/proofs/lean/TypesExternal_Template.lean" \
-    "${ROOT}/proofs/lean/TypesExternal.lean"
-fi
+LEAN_ROOT="${ROOT}/proofs/lean"
+LEAN_MODULES="${LEAN_ROOT}/VerityChain"
+mkdir -p "${LEAN_MODULES}"
+
+for generated in Funs.lean FunsExternal_Template.lean Types.lean TypesExternal_Template.lean; do
+  if [ -f "${LEAN_ROOT}/${generated}" ]; then
+    mv "${LEAN_ROOT}/${generated}" "${LEAN_MODULES}/${generated}"
+  fi
+done
+
+for external in FunsExternal.lean TypesExternal.lean; do
+  if [ ! -f "${LEAN_MODULES}/${external}" ]; then
+    echo "required hand-written model missing: ${LEAN_MODULES}/${external}" >&2
+    exit 1
+  fi
+done
+
+cat > "${LEAN_ROOT}/VerityChain.lean" <<'EOF'
+import VerityChain.Funs
+import VerityChain.Correspondence
+EOF
