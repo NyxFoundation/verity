@@ -147,13 +147,18 @@ pub fn answer<B: StorageReader>(
     }
 }
 
+/// Whether a range count is inside the protocol's non-empty response bound.
+const fn range_count_is_valid(count: u64) -> bool {
+    count > 0 && count <= MAX_REQUEST_BLOCKS as u64
+}
+
 /// Answers a `BlocksByRange`, or refuses it in the protocol's own terms.
 fn serve_range<B: StorageReader>(
     repository: &Repository<B>,
     current_slot: Slot,
     request: BlocksByRangeRequest,
 ) -> Result<Response, StorageError> {
-    if request.count == 0 || request.count > MAX_REQUEST_BLOCKS as u64 {
+    if !range_count_is_valid(request.count) {
         return Ok(Response::Error {
             code: ErrorCode::InvalidRequest,
             message: format!("count must be 1..={MAX_REQUEST_BLOCKS}"),
@@ -266,4 +271,17 @@ fn incomplete(
         slot.0,
         root_prefix(root)
     )))
+}
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{MAX_REQUEST_BLOCKS, range_count_is_valid};
+
+    /// A range responder admits exactly the non-empty request counts allowed by the protocol.
+    // Lean overlap: request-bound portion of NET-1. Future Lean-adoption deletion candidate.
+    #[kani::proof]
+    fn range_response_counts_are_admitted_exactly_inside_the_bound() {
+        let count: u64 = kani::any();
+        assert!(range_count_is_valid(count) == (count > 0 && count <= MAX_REQUEST_BLOCKS as u64));
+    }
 }

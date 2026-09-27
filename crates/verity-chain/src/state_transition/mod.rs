@@ -101,7 +101,7 @@ pub fn process_block_observed(
     Ok(post)
 }
 
-#[cfg(test)]
+#[cfg(any(test, kani))]
 pub(crate) mod testing {
     //! Builders shared by the unit tests of this module's submodules.
 
@@ -130,6 +130,7 @@ pub(crate) mod testing {
     }
 
     /// An empty block that `state` should accept, assuming it already sits at `slot`.
+    #[cfg_attr(kani, allow(dead_code))]
     pub(crate) fn empty_block_at(state: &State, slot: u64) -> Block {
         Block {
             slot: Slot(slot),

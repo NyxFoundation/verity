@@ -100,3 +100,92 @@ mod tests {
         );
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use libssz_merkle::HashTreeRoot;
+    use verity_types::{Bytes32, ZERO_HASH};
+
+    use crate::state_transition::testing::genesis_with;
+
+    use super::{HISTORICAL_ROOTS_LIMIT, RejectionReason, Slot, process_slots};
+
+    /// Stands in for the SHA-256 hasher, which is outside both this crate and the checker's
+    /// budget. The root's value plays no part in how the walk advances.
+    #[allow(dead_code)]
+    fn any_root<T: HashTreeRoot>(_: &T) -> Bytes32 {
+        kani::any()
+    }
+
+    /// Walks of at most this many slots keep the proof tractable.
+    const WALK: u64 = 3;
+
+    /// The non-future guard decides exactly when a short walk runs, and a successful walk
+    /// lands on the target.
+    // Lean overlap: ST-1 (`State.process_slots_advances`). Future Lean-adoption deletion candidate.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    #[kani::stub(crate::merkle::hash_tree_root, any_root)]
+    fn the_walk_is_guarded_and_lands_on_the_target() {
+        let mut state = genesis_with(1);
+        state.slot = Slot(kani::any());
+        let target: u64 = kani::any();
+        kani::assume(target <= state.slot.0.saturating_add(WALK));
+        match process_slots(&state, Slot(target)) {
+            Err(RejectionReason::BlockSlotNotInFuture) => {
+                assert!(target <= state.slot.0);
+            }
+            Err(RejectionReason::BlockSlotGapTooLarge) => {
+                unreachable!("a short walk cannot exceed the history limit");
+            }
+            Err(_) => {
+                unreachable!("no other rejection is defined");
+            }
+            Ok(advanced) => {
+                assert!(target > state.slot.0);
+                assert!(advanced.slot.0 == target);
+                assert!(advanced.latest_block_header.slot == state.latest_block_header.slot);
+            }
+        }
+    }
+
+    /// A walk beyond the protocol history limit is rejected before iteration begins.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    #[kani::stub(crate::merkle::hash_tree_root, any_root)]
+    fn a_walk_beyond_the_history_limit_is_rejected() {
+        let mut state = genesis_with(1);
+        let gap = HISTORICAL_ROOTS_LIMIT as u64 + 1;
+        let current: u64 = kani::any();
+        kani::assume(current <= u64::MAX - gap);
+        state.slot = Slot(current);
+        assert!(matches!(
+            process_slots(&state, Slot(current + gap)),
+            Err(RejectionReason::BlockSlotGapTooLarge)
+        ));
+    }
+
+    /// Empty-slot processing may fill an empty state root, but preserves every header
+    /// identity field and never overwrites a root that was already filled.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    #[kani::stub(crate::merkle::hash_tree_root, any_root)]
+    fn a_walk_only_fills_an_empty_header_state_root() {
+        let mut state = genesis_with(1);
+        let current: u64 = kani::any();
+        kani::assume(current < u64::MAX);
+        state.slot = Slot(current);
+        state.latest_block_header.state_root = kani::any();
+        let before = state.latest_block_header;
+        let advanced = process_slots(&state, Slot(current + 1)).expect("one slot is in range");
+        let after = advanced.latest_block_header;
+
+        assert!(after.slot == before.slot);
+        assert!(after.proposer_index == before.proposer_index);
+        assert!(after.parent_root == before.parent_root);
+        assert!(after.body_root == before.body_root);
+        if before.state_root != ZERO_HASH {
+            assert!(after == before);
+        }
+    }
+}

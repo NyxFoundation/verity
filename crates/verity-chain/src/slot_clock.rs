@@ -141,3 +141,46 @@ mod tests {
         assert_eq!(intervals_at_slot_start(Slot(10)), Interval(50));
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{INTERVALS_PER_SLOT, Slot, SlotClock, intervals_at_slot_start};
+
+    /// A genesis time whose millisecond rendering fits a `u64`: about 584 million years of
+    /// Unix time, so the bound excludes nothing a configuration could mean.
+    fn any_clock() -> SlotClock {
+        let genesis_time: u64 = kani::any();
+        kani::assume(genesis_time <= u64::MAX / 1000);
+        SlotClock::new(genesis_time)
+    }
+
+    /// Every accessor is total at any instant.
+    #[kani::proof]
+    fn accessors_are_total() {
+        let clock = any_clock();
+        let now: u64 = kani::any();
+        let _ = clock.milliseconds_since_genesis(now);
+        let _ = clock.current_slot(now);
+        let _ = clock.current_interval(now);
+        let _ = clock.total_intervals(now);
+        let _ = clock.until_next_interval(now);
+    }
+
+    /// The interval stays inside the slot.
+    #[kani::proof]
+    fn the_interval_stays_in_the_slot() {
+        let clock = any_clock();
+        let now: u64 = kani::any();
+        assert!(clock.current_interval(now).0 < INTERVALS_PER_SLOT);
+    }
+
+    /// Slot boundaries land on exact interval multiples for every slot the chain can reach.
+    #[kani::proof]
+    fn slot_starts_land_on_interval_multiples() {
+        let slot: u64 = kani::any();
+        kani::assume(slot <= u64::MAX / INTERVALS_PER_SLOT);
+        let start = intervals_at_slot_start(Slot(slot));
+        assert!(start.0 % INTERVALS_PER_SLOT == 0);
+        assert!(start.0 / INTERVALS_PER_SLOT == slot);
+    }
+}

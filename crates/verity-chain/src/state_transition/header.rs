@@ -217,3 +217,115 @@ mod tests {
         );
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use libssz_merkle::HashTreeRoot;
+    use verity_types::{Block, BlockBody, Bytes32, Slot, ValidatorIndex};
+
+    use crate::state_transition::testing::genesis_with;
+
+    use super::{RejectionReason, process_block_header, validate};
+
+    /// Stands in for the SHA-256 hasher the genesis builder runs; the checks under proof
+    /// compare roots, never compute anything from them, so an arbitrary root loses nothing.
+    #[allow(dead_code)]
+    fn any_root<T: HashTreeRoot>(_: &T) -> Bytes32 {
+        kani::any()
+    }
+
+    #[allow(dead_code)]
+    fn zero_root<T: HashTreeRoot>(_: &T) -> Bytes32 {
+        [0; 32]
+    }
+
+    /// Every header check for a non-empty registry is a named rejection in leanSpec's order,
+    /// and a block that passes them sits at a slot the later `block.slot - 1` can subtract from.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    #[kani::stub(crate::merkle::hash_tree_root, any_root)]
+    fn header_checks_are_total_and_ordered() {
+        let mut state = genesis_with(1);
+        state.slot = Slot(kani::any());
+        state.latest_block_header.slot = Slot(kani::any());
+        let block = Block {
+            slot: Slot(kani::any()),
+            proposer_index: ValidatorIndex(kani::any()),
+            parent_root: kani::any(),
+            state_root: kani::any(),
+            body: BlockBody::default(),
+        };
+        let parent_root = kani::any();
+        match validate(&state, &block, parent_root) {
+            Ok(()) => {
+                assert!(block.slot == state.slot);
+                assert!(block.slot.0 > state.latest_block_header.slot.0);
+                assert!(block.slot.0 >= 1);
+                assert!(block.proposer_index.0 == 0);
+                assert!(block.parent_root == parent_root);
+            }
+            Err(RejectionReason::BlockSlotMismatch) => {
+                assert!(block.slot != state.slot);
+            }
+            Err(RejectionReason::BlockOlderThanLatestHeader) => {
+                assert!(block.slot == state.slot);
+                assert!(block.slot.0 <= state.latest_block_header.slot.0);
+            }
+            Err(RejectionReason::WrongProposer) => {
+                assert!(block.slot == state.slot);
+                assert!(block.slot.0 > state.latest_block_header.slot.0);
+                assert!(block.proposer_index.0 != 0);
+            }
+            Err(RejectionReason::ParentRootMismatch) => {
+                assert!(block.slot == state.slot);
+                assert!(block.slot.0 > state.latest_block_header.slot.0);
+                assert!(block.proposer_index.0 == 0);
+                assert!(block.parent_root != parent_root);
+            }
+            Err(_) => unreachable!("no other rejection is reachable from the header checks"),
+        }
+    }
+
+    /// An empty registry is rejected after the two slot checks and before the parent check.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    #[kani::stub(crate::merkle::hash_tree_root, any_root)]
+    fn an_empty_registry_is_rejected_before_the_parent_check() {
+        let mut state = genesis_with(0);
+        let slot: u64 = kani::any();
+        kani::assume(slot > 0);
+        state.slot = Slot(slot);
+        state.latest_block_header.slot = Slot(slot - 1);
+        let block = Block {
+            slot: state.slot,
+            proposer_index: ValidatorIndex(kani::any()),
+            parent_root: kani::any(),
+            state_root: kani::any(),
+            body: BlockBody::default(),
+        };
+        let parent_root = kani::any();
+        assert!(matches!(
+            validate(&state, &block, parent_root),
+            Err(RejectionReason::EmptyValidatorRegistry)
+        ));
+    }
+
+    /// The first successfully processed header installs the block's slot as the latest header slot.
+    // Lean overlap: bounded instance of ST-2. Future Lean-adoption deletion candidate.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    #[kani::stub(crate::merkle::hash_tree_root, zero_root)]
+    fn the_first_successful_header_installs_the_block_slot() {
+        let mut state = genesis_with(1);
+        state.slot = Slot(1);
+        let block = Block {
+            slot: state.slot,
+            proposer_index: ValidatorIndex(0),
+            parent_root: [0; 32],
+            state_root: kani::any(),
+            body: BlockBody::default(),
+        };
+        let post = process_block_header(&state, &block).expect("the header is valid");
+        assert!(post.latest_block_header.slot == block.slot);
+    }
+}

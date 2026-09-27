@@ -444,3 +444,59 @@ mod tests {
         );
     }
 }
+
+#[cfg(kani)]
+mod harnesses {
+    use verity_types::Slot;
+
+    use super::{BY_ROOT_GAP_SLOTS, Gap, MAX_REQUEST_BLOCKS, Plan, plan_for_gap, range_from};
+
+    /// A range request starts just past the head and asks for one to a full batch of blocks.
+    #[kani::proof]
+    fn range_requests_are_bounded_and_start_past_the_head() {
+        let head: u64 = kani::any();
+        let target: u64 = kani::any();
+        let request = range_from(Slot(head), Slot(target));
+        assert!(request.start_slot.0 == head.saturating_add(1));
+        assert!(request.count >= 1);
+        assert!(request.count <= MAX_REQUEST_BLOCKS as u64);
+        if target > head {
+            assert!(request.count == (target - head).min(MAX_REQUEST_BLOCKS as u64));
+        }
+    }
+
+    /// Small gaps go by root, large ones by range, and the split is exactly the threshold.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    fn gaps_split_at_the_threshold() {
+        let head: u64 = kani::any();
+        let gap = Gap {
+            awaited_root: kani::any(),
+            waiting_slot: Slot(kani::any()),
+        };
+        let small = gap.waiting_slot.0.saturating_sub(head) <= BY_ROOT_GAP_SLOTS;
+        let by_root = matches!(plan_for_gap(Slot(head), gap), Plan::ByRoot(_));
+        assert!(by_root == small);
+    }
+
+    /// A by-root plan chases exactly the awaited root; a by-range plan is the forward window.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    fn plans_carry_what_the_gap_named() {
+        let head: u64 = kani::any();
+        let gap = Gap {
+            awaited_root: kani::any(),
+            waiting_slot: Slot(kani::any()),
+        };
+        match plan_for_gap(Slot(head), gap.clone()) {
+            Plan::ByRoot(roots) => {
+                assert!(roots.len() == 1);
+                assert!(roots[0] == gap.awaited_root);
+            }
+            Plan::ByRange(request) => {
+                assert!(request.start_slot.0 == head.saturating_add(1));
+                assert!(request.count == range_from(Slot(head), gap.waiting_slot).count);
+            }
+        }
+    }
+}
