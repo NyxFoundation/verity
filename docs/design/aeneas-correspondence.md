@@ -1,6 +1,6 @@
 ---
 title: Aeneas Correspondence Survey
-last_updated: 2026-09-23
+last_updated: 2026-09-27
 tags:
   - verification
   - aeneas
@@ -16,10 +16,11 @@ measurement, not a plan: every extractability verdict below comes from running t
 the real crates at `develop` HEAD, and every correspondence names the two definitions side by
 side so a proof author can start from the row.
 
-**Status.** Survey only. No theorem is stated or proved here, and no production Rust was
-changed to make anything extract. Aeneas remains a verification aid: the architecture's proof
-route is still formal-leanSpec compiled through Lean's C backend
+**Status.** Survey plus one follow-up result. No theorem is stated or proved in this document,
+and no production Rust was changed to make anything extract. Aeneas remains a verification aid:
+the architecture's proof route is still formal-leanSpec compiled through Lean's C backend
 ([architecture](../src/reference/architecture.md)), and this document does not reopen that.
+PR #49 commit `1828a7b` subsequently proved the CONT-2 correspondence identified below.
 
 **Read at.** Verity `develop` `dff96ac`; formal-leanSpec `ba72845` (34 catalog propositions in
 `docs/lean4-proof-propositions.md`); leanSpec `08e1481a`; Charon `nightly-2026.09.02`; Aeneas
@@ -168,7 +169,7 @@ before a theorem could relate them. "Extracts" is per item, from the generated `
 |---|---|---|---|
 | `Checkpoint {root, slot}`, `LT` by slot, `checkpoint_lt_iff_slot_lt` (CONT-1) | `verity_types::checkpoint::Checkpoint {root, slot}` | `structure`: body; derived decode helper: sorry | Rust defines no order on `Checkpoint` (no `PartialOrd`); every comparison in Verity is written out as `a.slot.0 > b.slot.0`. CONT-1 is a statement about the Lean `LT` instance, so its Rust form is a property of `advance_checkpoint`, not of an operator |
 | `Checkpoint.advanceTo` | `verity_chain::justification::advance_checkpoint(current, candidate)` | body | Same rule (`candidate.slot > self.slot`), same tie-breaking |
-| `Slot.isJustifiableAfter finalized target` (CONT-2: `justifiable_iff`, `justifiable_before_finalized`) | `verity_chain::justification::is_justifiable_after(slot, finalized)` | body, as `RustM Bool` | Argument order is swapped. Lean computes on `Nat` with its own proven `isqrt`; Rust widens to `u128` and calls `u128::isqrt`, which Aeneas leaves as an axiom `core.num.U128.isqrt`. `RustM` wraps the `u64` subtraction; the theorem needs `finalized ≤ slot` (already CONT-2's hypothesis) to discharge it. **This is the first theorem to write** |
+| `Slot.isJustifiableAfter finalized target` (CONT-2: `justifiable_iff`, `justifiable_before_finalized`) | `verity_chain::justification::is_justifiable_after(slot, finalized)` | body, as `RustM Bool`; correspondence proved on PR #49 | Argument order is swapped. Lean computes on `Nat`; Rust widens to `u128` and returns `RustM Bool`. PR #49 models `u128::isqrt` with formal-leanSpec's proved `Slot.isqrt`, proves equality under `finalized ≤ slot`, and separately proves that `slot < finalized` returns `ok false`. `#print axioms` reports no project-specific axiom, and the proof contains no `sorry` |
 | `Slot.justifiedIndexAfter` | `justification::justified_index_after(slot, finalized)` | body, as `RustM (Option Usize)` | Same order swap; `Nat` vs `usize` |
 | `Slot.immediateJustificationWindow = 5` | `justification::IMMEDIATE_JUSTIFICATION_WINDOW = 5` | body (`5#u64`) | — |
 | `JustifiedSlots.isSlotJustified` | `justification::is_slot_justified(justified_slots, finalized, slot)` | body, via axiom `SszBitlist.get` | Lean indexes an `Array Bool`; Rust a `SszBitlist<N>` whose `get` is opaque to Aeneas |
@@ -297,14 +298,17 @@ Rust and the Lean say different things, which is what a correspondence table exi
   `HashSet` dedup closure in the attestation loop. ST-1, ST-2, and ST-5 are statable about the extracted
   definitions now; ST-3/4/6/7 need models for the `BTreeMap` axioms first. This reverses the
   most consequential line in PR #48's record.
-- **Two theorems are writable with no further tooling**, on definitions that extract clean:
-  `is_justifiable_after` against `LeanSpec.Slot.isJustifiableAfter` (CONT-2), and
-  `proposer_for_slot` against `LeanSpec.ValidatorIndex.proposerForSlot` (VAL-1/VAL-3). Both need
-  `core.num.U128.isqrt` given a body (Lean's `Nat.sqrt` on the widened value) instead of the
-  axiom Aeneas leaves, and both need the argument-order swap stated in the theorem. Smaller
-  candidates with the same property: `advance_checkpoint` against `Checkpoint.advanceTo`,
-  `is_eligible` against `candidateEligible`, `votes::replaces` against `votePrecedence`,
-  `ErrorCode::from_byte` against leanSpec's codec, `write_varint` against `varintSize`.
+- **The first correspondence theorem is complete on PR #49.** At commit `1828a7b`,
+  `isJustifiableAfter_eq` proves that the extracted `RustM Bool` equals
+  `LeanSpec.Slot.isJustifiableAfter` under `finalized ≤ slot`, and
+  `isJustifiableAfter_before_finalized` proves that an earlier slot returns `ok false`. The
+  hand-written external model replaces Aeneas's `u128::isqrt` axiom with formal-leanSpec's proved
+  `Slot.isqrt`; neither theorem depends on a project-specific axiom or `sorry`. The next clean
+  correspondence is `proposer_for_slot` against `LeanSpec.ValidatorIndex.proposerForSlot`
+  (VAL-1/VAL-3). Smaller candidates with the same property are `advance_checkpoint` against
+  `Checkpoint.advanceTo`, `is_eligible` against `candidateEligible`, `votes::replaces` against
+  `votePrecedence`, `ErrorCode::from_byte` against leanSpec's codec, and `write_varint` against
+  `varintSize`.
 - **Every consensus container extracts as a type.** The `verity-types` refusals are entirely
   the `libssz` derive's decode closures. A container-shape correspondence (field names, order,
   widths) is checkable in Lean today, and the rows above already record the two mismatches it
