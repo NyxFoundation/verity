@@ -202,14 +202,19 @@ mod harnesses {
 
     /// One observation moves the machine exactly as the transition table says, and the
     /// shortcut from idle straight to synced does not exist.
+    // Lean overlap: SYNC-1. Future Lean-adoption deletion candidate.
     #[kani::proof]
     fn observations_follow_the_table() {
         let before = any_state();
         let behind: bool = kani::any();
         let after = SyncMachine::next_state(before, behind);
         match before {
-            None => assert!(after == SyncState::Syncing),
-            Some(SyncState::Idle) => assert!(after == SyncState::Idle),
+            None => {
+                assert!(after == SyncState::Syncing);
+            }
+            Some(SyncState::Idle) => {
+                assert!(after == SyncState::Idle);
+            }
             Some(SyncState::Syncing | SyncState::Synced) => {
                 assert!(
                     after

@@ -279,6 +279,7 @@ mod harnesses {
 
     /// Every frame type is classified without indexing past the payload, and a data frame
     /// contributes exactly its bytes past the checksum.
+    // Lean overlap: framed-size accounting portion of NET-2. Future Lean-adoption deletion candidate.
     #[kani::proof]
     #[kani::unwind(10)]
     fn frames_are_classified_without_overrunning_the_payload() {
@@ -295,13 +296,19 @@ mod harnesses {
                 assert!(contribution.is_ok() == (payload == b"sNaPpY"));
             }
             FRAME_UNCOMPRESSED_DATA => match contribution {
-                Ok(bytes) => assert!(bytes + FRAME_CRC_LEN == payload.len()),
-                Err(_) => assert!(payload.len() < FRAME_CRC_LEN),
+                Ok(bytes) => {
+                    assert!(bytes + FRAME_CRC_LEN == payload.len());
+                }
+                Err(_) => {
+                    assert!(payload.len() < FRAME_CRC_LEN);
+                }
             },
             FRAME_RESERVED_UNSKIPPABLE_MIN..=FRAME_RESERVED_UNSKIPPABLE_MAX => {
                 assert!(contribution.is_err());
             }
-            _ => assert!(matches!(contribution, Ok(0))),
+            _ => {
+                assert!(matches!(contribution, Ok(0)));
+            }
         }
     }
 }

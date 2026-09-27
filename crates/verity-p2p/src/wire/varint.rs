@@ -135,6 +135,7 @@ mod harnesses {
     }
 
     /// Any byte sequence either decodes inside the ten-byte cap or is refused; nothing panics.
+    // Lean overlap: wire-prefix portion of NET-2. Future Lean-adoption deletion candidate.
     #[kani::proof]
     #[kani::unwind(13)]
     fn decoding_is_total_and_bounded() {

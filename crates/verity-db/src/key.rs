@@ -261,7 +261,9 @@ mod harnesses {
         kani::assume(len <= SLOT_ROOT_WIDTH + 1);
         let key: Vec<u8> = (0..len).map(|_| kani::any()).collect();
         let width_error = |expected: usize, outcome: Result<(), StorageError>| match outcome {
-            Ok(()) => assert!(key.len() == expected),
+            Ok(()) => {
+                assert!(key.len() == expected);
+            }
             Err(StorageError::KeyWidth {
                 found,
                 expected: reported,

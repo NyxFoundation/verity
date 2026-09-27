@@ -14,7 +14,9 @@
 //! `0588c2d215a955a516378677a92db2a5666802f3`.
 
 use verity_types::config::{GOSSIP_DISPARITY_INTERVALS, INTERVALS_PER_SLOT};
-use verity_types::{AttestationData, Checkpoint, SignedAggregatedAttestation, ValidatorIndex};
+use verity_types::{
+    AttestationData, Checkpoint, SignedAggregatedAttestation, Slot, ValidatorIndex,
+};
 
 use crate::error::RejectionReason;
 use crate::fork_choice::store::{AttestationSignature, AttestationSignatureEntry, Store};
@@ -52,15 +54,24 @@ fn validate_availability(store: &Store, data: &AttestationData) -> Result<(), Re
     Ok(())
 }
 
-/// History is linear: source at or before target, target at or before head — and each
-/// checkpoint's slot must be the slot of the block it names.
-fn validate_topology(store: &Store, data: &AttestationData) -> Result<(), RejectionReason> {
-    if data.source.slot.0 > data.target.slot.0 {
+/// History is linear: source at or before target, then target at or before head.
+const fn validate_slot_order(
+    source: Slot,
+    target: Slot,
+    head: Slot,
+) -> Result<(), RejectionReason> {
+    if source.0 > target.0 {
         return Err(RejectionReason::SourceAfterTarget);
     }
-    if data.head.slot.0 < data.target.slot.0 {
+    if head.0 < target.0 {
         return Err(RejectionReason::HeadOlderThanTarget);
     }
+    Ok(())
+}
+
+/// Each checkpoint's slot must be ordered and equal the slot of the block it names.
+fn validate_topology(store: &Store, data: &AttestationData) -> Result<(), RejectionReason> {
+    validate_slot_order(data.source.slot, data.target.slot, data.head.slot)?;
 
     let checks = [
         (data.source, RejectionReason::SourceSlotMismatch),
@@ -223,4 +234,35 @@ pub fn record_aggregated_payload(
         .or_default()
         .insert(attestation.proof.clone());
     Ok(())
+}
+
+#[cfg(kani)]
+mod harnesses {
+    use verity_types::Slot;
+
+    use super::{RejectionReason, validate_slot_order};
+
+    /// A successful topology check orders source, target, and head; failures name the first
+    /// violated relation in leanSpec's order.
+    // Lean overlap: FC-3 (`Store.attestation_topology`). Future Lean-adoption deletion candidate.
+    #[kani::proof]
+    fn attestation_slots_are_topologically_ordered() {
+        let source = Slot(kani::any());
+        let target = Slot(kani::any());
+        let head = Slot(kani::any());
+        match validate_slot_order(source, target, head) {
+            Ok(()) => {
+                assert!(source.0 <= target.0);
+                assert!(target.0 <= head.0);
+            }
+            Err(RejectionReason::SourceAfterTarget) => {
+                assert!(source.0 > target.0);
+            }
+            Err(RejectionReason::HeadOlderThanTarget) => {
+                assert!(source.0 <= target.0);
+                assert!(head.0 < target.0);
+            }
+            Err(_) => unreachable!("no other rejection is defined"),
+        }
+    }
 }

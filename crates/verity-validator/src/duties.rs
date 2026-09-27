@@ -307,14 +307,14 @@ impl DutyService {
 
     /// Casts this slot's vote, once, for every validator this node runs.
     async fn attest(&mut self, slot: Slot, view: &ChainView) -> Result<(), DutyError> {
-        if self.attested.contains(&slot) {
+        if !should_attest(self.attested.contains(&slot)) {
             return Ok(());
         }
 
         let data = view.attestation_data(slot);
         self.attested.insert(slot);
         self.attested
-            .retain(|attested| attested.0 + ATTESTED_SLOT_RETENTION > slot.0);
+            .retain(|seen| retains_attested_slot(*seen, slot));
 
         let production = Instant::now();
         let message = hash_tree_root(&data);
@@ -393,6 +393,18 @@ impl DutyService {
             self.keyring.swap(index, role, advanced);
         }
     }
+}
+
+/// Whether a slot that may already be in the attestation history can start signing.
+const fn should_attest(already_attested: bool) -> bool {
+    !already_attested
+}
+
+/// Whether an attested slot remains inside the deduplication window.
+const fn retains_attested_slot(seen: Slot, current: Slot) -> bool {
+    // The subtraction is reached only when `current > seen`, avoiding the `seen + retention`
+    // overflow that a slot near `u64::MAX` would otherwise trigger.
+    seen.0 >= current.0 || current.0 - seen.0 < ATTESTED_SLOT_RETENTION
 }
 
 /// The slot an interval count since genesis falls in.
@@ -512,7 +524,19 @@ impl BlockProofJob {
 mod tests {
     use verity_types::Slot;
 
-    use super::{DUTY_LAG_THRESHOLD, LagGate, NETWORK_STALL_THRESHOLD};
+    use super::{
+        ATTESTED_SLOT_RETENTION, DUTY_LAG_THRESHOLD, LagGate, NETWORK_STALL_THRESHOLD,
+        retains_attested_slot,
+    };
+
+    #[test]
+    fn should_keep_the_current_attested_slot_at_the_top_of_the_slot_range() {
+        assert!(retains_attested_slot(Slot(u64::MAX), Slot(u64::MAX)));
+        assert!(!retains_attested_slot(
+            Slot(0),
+            Slot(ATTESTED_SLOT_RETENTION)
+        ));
+    }
 
     /// A node whose head keeps up with the clock, which is also the case of a node alone on
     /// the network at genesis: nothing is behind anything.
@@ -573,11 +597,11 @@ mod tests {
 
 #[cfg(kani)]
 mod harnesses {
-    use verity_types::Interval;
+    use verity_types::{Interval, Slot};
 
     use super::{
-        DUTY_LAG_HYSTERESIS, DUTY_LAG_THRESHOLD, INTERVALS_PER_SLOT, LagGate,
-        NETWORK_STALL_THRESHOLD, slot_of,
+        ATTESTED_SLOT_RETENTION, DUTY_LAG_HYSTERESIS, DUTY_LAG_THRESHOLD, INTERVALS_PER_SLOT,
+        LagGate, NETWORK_STALL_THRESHOLD, retains_attested_slot, should_attest, slot_of,
     };
 
     /// The gate is total, closes only past the threshold, reopens only below the hysteresis
@@ -604,6 +628,31 @@ mod harnesses {
             && head_lag <= DUTY_LAG_THRESHOLD
         {
             assert!(closed == was_closed);
+        }
+    }
+
+    /// The attestation gate refuses every slot already recorded by the history set.
+    // Lean overlap: decision portion of VAL-4. Future Lean-adoption deletion candidate.
+    #[kani::proof]
+    fn the_attestation_gate_refuses_recorded_slots() {
+        let already_attested: bool = kani::any();
+        assert!(should_attest(already_attested) == !already_attested);
+    }
+
+    /// Retention keeps the current slot and removes every slot at least four positions back,
+    /// including near `u64::MAX` where ordinary addition would overflow.
+    #[kani::proof]
+    fn attestation_retention_is_total_at_the_slot_boundary() {
+        let seen = Slot(kani::any());
+        let current = Slot(kani::any());
+        let retained = retains_attested_slot(seen, current);
+        if seen == current {
+            assert!(retained);
+        }
+        if let Some(expired_at) = seen.0.checked_add(ATTESTED_SLOT_RETENTION)
+            && current.0 >= expired_at
+        {
+            assert!(!retained);
         }
     }
 

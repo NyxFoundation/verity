@@ -110,6 +110,14 @@ fn encode_chunk_payload(payload: &[u8]) -> io::Result<Vec<u8>> {
     Ok(wire)
 }
 
+/// Narrows a peer-declared length only when it is inside the protocol cap.
+const fn checked_declared_len(declared: u64, max: usize) -> Option<usize> {
+    if declared > max as u64 {
+        return None;
+    }
+    Some(declared as usize)
+}
+
 /// Reads one chunk payload, refusing a declared length above `max` before reading a
 /// single frame.
 async fn read_chunk_payload<T>(io: &mut T, max: usize) -> io::Result<Vec<u8>>
@@ -117,15 +125,12 @@ where
     T: AsyncRead + Unpin + Send,
 {
     let declared = read_varint(io).await?;
-    if declared > max as u64 {
-        return Err(io::Error::new(
+    let declared = checked_declared_len(declared, max).ok_or_else(|| {
+        io::Error::new(
             io::ErrorKind::InvalidData,
             "chunk declares a length above the protocol cap",
-        ));
-    }
-    // The cap fits in usize on every supported target, so the narrowing is checked once.
-    let declared = usize::try_from(declared)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "length beyond addressable"))?;
+        )
+    })?;
     read_framed(io, declared).await
 }
 
@@ -421,5 +426,27 @@ mod tests {
                 }
             );
         });
+    }
+}
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{MAX_PAYLOAD_SIZE, checked_declared_len};
+
+    /// A peer-controlled length is accepted exactly inside the payload cap, and successful
+    /// narrowing preserves its value.
+    // Lean overlap: payload-cap portion of NET-2. Future Lean-adoption deletion candidate.
+    #[kani::proof]
+    fn declared_payload_lengths_are_capped_before_allocation() {
+        let declared: u64 = kani::any();
+        match checked_declared_len(declared, MAX_PAYLOAD_SIZE) {
+            Some(length) => {
+                assert!(declared <= MAX_PAYLOAD_SIZE as u64);
+                assert!(length as u64 == declared);
+            }
+            None => {
+                assert!(declared > MAX_PAYLOAD_SIZE as u64);
+            }
+        }
     }
 }

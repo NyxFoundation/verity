@@ -311,6 +311,7 @@ mod harnesses {
     /// A slot behind the boundary is never a candidate, and one inside the immediate window
     /// always is. The square and pronic tests past the window run a `u128` integer square
     /// root, which is beyond the solver's budget; they are covered by leanSpec's vectors.
+    // Lean overlap: bounded subset of CONT-2. Future Lean-adoption deletion candidate.
     #[kani::proof]
     fn justifiability_is_settled_near_the_boundary() {
         let slot: u64 = kani::any();
@@ -321,6 +322,8 @@ mod harnesses {
     }
 
     /// The advanced checkpoint is one of the two inputs and never moves backwards.
+    // Lean overlap: CONT-1 and the forward halves of ST-3/ST-6/ST-7.
+    // Future Lean-adoption deletion candidate.
     #[kani::proof]
     fn advancing_never_rewinds() {
         let current = Checkpoint {

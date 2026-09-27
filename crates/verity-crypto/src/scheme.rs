@@ -183,7 +183,9 @@ mod harnesses {
     fn epochs_are_exactly_the_slots_that_fit() {
         let slot: u64 = kani::any();
         match epoch_for_slot(Slot(slot)) {
-            Ok(epoch) => assert!(u64::from(epoch) == slot),
+            Ok(epoch) => {
+                assert!(u64::from(epoch) == slot);
+            }
             Err(SignatureError::SlotOutsideLifetime { slot: reported }) => {
                 assert!(slot > u64::from(u32::MAX));
                 assert!(reported == slot);

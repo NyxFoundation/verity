@@ -1,6 +1,6 @@
 ---
 title: Verification Tooling Adoption Strategy
-last_updated: 2026-09-23
+last_updated: 2026-09-26
 tags:
   - verification
   - model-checking
@@ -22,16 +22,15 @@ tags:
 > this memo classifies each by **assurance strength** (how it explores state) and by
 > **zone** (where it applies). Those are the two axes the whole strategy hangs on.
 
-## Status (2026-09-22)
+## Status (2026-09-26)
 
-Kani is adopted: every crate with logic of its own carries `#[cfg(kani)]` harnesses next to the
-code. It runs locally (`cargo kani --workspace`), not in CI — a cold run on a hosted runner spends
-most of half an hour compiling the proving-system dependencies under Kani's own compiler, so the
-proofs are re-run on the branch that changes the code they cover and the result is stated in the PR. Because Verity is Rust-first, the
-state transition and fork choice are Rust today, so the "boundary code" column below is, for
-now, the Rust consensus logic itself — the first rung of the graduated ladder in
-"Graduated assurance". proptest remains scoped to the SSZ round trip. bolero, Loom, Shuttle and
-Miri are not yet wired in.
+Kani is adopted: seven crates with Verity-owned decision or arithmetic logic carry 42
+`#[cfg(kani)]` harnesses next to the code. It runs locally (`cargo kani --workspace`), not in CI,
+by owner decision; the proofs are re-run on the branch that changes the code they cover and the
+result is stated in the PR. Because Verity is Rust-first, the state transition and fork choice are
+Rust today, so the "boundary code" column below is, for now, the Rust consensus logic itself — the
+first rung of the graduated ladder in "Graduated assurance". proptest remains scoped to the SSZ
+round trip. bolero, Loom, Shuttle and Miri are not yet wired in.
 
 ## The core claim
 
@@ -188,6 +187,54 @@ named implementation obligation:
 | NET-1..2 | req/resp and payload bounds | `verity-p2p` (I/O Edge) | Kani + bolero on the bound checks |
 | STOR-1..2 | parent presence; batch atomicity | `verity-db` (Runtime Shell) | property tests + Miri; atomicity against the embedded KV's transactions |
 | SYNC-1..2 | FSM closure; gossip gating | `verity` bin orchestrator (I/O Edge) | Loom / Shuttle on the concurrent FSM |
+
+### Kani harness audit
+
+Every harness was compared with the current 35-item formal-leanSpec catalog. "Overlap" means the
+same or a weaker proposition is checked independently against the Rust implementation; it does
+**not** establish Rust–Lean equivalence. Such harnesses are deletion candidates only if their Rust
+path is later replaced by the proven Lean implementation.
+
+| Rust area | Harnesses audited | Lean catalog relation | Bound or remaining gap |
+|---|---|---|---|
+| chain / proposer | `proposer_is_total_and_in_range` | VAL-1/VAL-3 overlap | All `u64`; Rust empty-registry error is additional |
+| chain / justification | `justified_index_inverts_to_the_slot`, `justifiability_is_settled_near_the_boundary`, `advancing_never_rewinds`, `slot_lookup_never_indexes_out_of_range` | CONT-2 overlap for near-boundary justifiability; CONT-1 and partial ST-3/ST-6/ST-7 overlap for checkpoint advance | `isqrt` paths excluded; bitfield capped at 3 bits; index and checkpoint scalars remain fully symbolic |
+| chain / clock | `accessors_are_total`, `the_interval_stays_in_the_slot`, `slot_starts_land_on_interval_multiples` | No catalog proposition | Arithmetic assumptions exclude only unrepresentable millisecond/interval products |
+| chain / slots | `the_walk_is_guarded_and_lands_on_the_target`, `a_walk_beyond_the_history_limit_is_rejected`, `a_walk_only_fills_an_empty_header_state_root` | ST-1 overlap for successful advancement | Successful walk capped at 3; the long-gap guard is proved separately without entering the loop; hashing stubbed |
+| chain / header | `header_checks_are_total_and_ordered`, `an_empty_registry_is_rejected_before_the_parent_check`, `the_first_successful_header_installs_the_block_slot` | Bounded ST-2 overlap for the first-header postcondition | One-validator and empty-registry models; hashing stubbed |
+| chain / attestation topology | `attestation_slots_are_topologically_ordered` | FC-3 overlap for slot ordering | Store lookup and ancestry halves remain outside this scalar harness |
+| p2p / varint | `every_value_round_trips`, `decoding_is_total_and_bounded` | NET-2 overlap only for the length-prefix portion | Decoder input capped at 11 bytes, covering the 10-byte protocol maximum plus one |
+| p2p / payload cap | `the_compressed_bound_covers_every_capped_payload`, `declared_payload_lengths_are_capped_before_allocation` | NET-2 overlap | External snappy decompression is not proved |
+| p2p / frames | `frames_are_classified_without_overrunning_the_payload` | NET-2 overlap for framed-size accounting | Payload capped at 8 bytes; compressed frames hand off to external snap |
+| db / keys | `slot_keys_order_like_slots`, `composite_keys_order_by_slot_first`, `integer_keys_read_back`, `root_keys_read_back`, `composite_keys_read_back`, `foreign_widths_are_refused` | No catalog proposition; Rust storage-layout obligations | Wrong-width input capped at 41 bytes, one beyond the widest key |
+| db / snapshots | `boundaries_are_crossed_exactly_by_forward_gaps` | No catalog proposition | All slot pairs; exact quotient characterization is asserted |
+| validator / duties | `the_gate_closes_late_and_reopens_early`, `the_attestation_gate_refuses_recorded_slots`, `attestation_retention_is_total_at_the_slot_boundary`, `intervals_land_in_one_slot` | VAL-4 overlap for the dedup decision | The `BTreeSet` implementation is trusted std; the pure gate and overflow-safe retention rule are proved |
+| node / sync FSM | `observations_follow_the_table` | SYNC-1 overlap | Entire finite transition table |
+| node / fetch planning | `range_requests_are_bounded_and_start_past_the_head`, `gaps_split_at_the_threshold`, `plans_carry_what_the_gap_named` | No direct catalog proposition | Planning only, not responder output |
+| node / responder | `range_response_counts_are_admitted_exactly_inside_the_bound` | NET-1 overlap for request admission | Database range iteration and response materialization remain backend-dependent |
+| node / observability | `observability_is_total_and_bounded_by_the_clock`, `the_boundary_delta_stays_inside_the_slot`, `the_anchored_delta_is_a_signed_distance` | No catalog proposition | Exact equalities are asserted only where intermediate values are representable |
+| crypto / epoch | `epochs_are_exactly_the_slots_that_fit` | No catalog proposition | All `u64`; cryptographic implementation remains external |
+| metrics / narrowing | `counts_are_exact_or_saturated`, `gauges_are_exact_or_saturated` | No catalog proposition | All source integer values |
+
+This audit found one implementation defect: validator attestation-history retention added the
+retention window to a symbolic slot and could overflow near `u64::MAX`. The production predicate
+now uses a guarded subtraction, and its boundary behavior has a dedicated harness and unit test.
+
+Catalog items not represented by a Kani harness fall into explicit categories:
+
+- **SSZ-1..7:** serialization is external libssz/type-level structure, covered by proptest and
+  leanSpec vectors; collision resistance is an axiom.
+- **ST-3..7 and FC-1..2/FC-4..8:** whole-state/store invariants require symbolic SSZ containers,
+  hash maps, ancestry walks, sorting, or quorum assumptions. Scalar helper obligations are checked
+  above, while the unbounded propositions remain Lean's responsibility.
+- **VAL-2:** the production loader rejects duplicate role keys and has unit coverage, but its parsed
+  key containers and file I/O are not a useful Kani target. **VAL-5** belongs to external leanSig.
+- **NET-1/NET-2:** Kani proves Verity's pure admission and size arithmetic; database iteration,
+  buffering, and snappy remain integration/external concerns.
+- **STOR-1/STOR-2:** parent preservation is a map invariant across block import, and atomicity is a
+  RocksDB/backend transaction guarantee; neither is reduced to a misleading scalar harness.
+- **SYNC-2:** there is no standalone Rust `accepts_gossip` decision in the current runtime. No Kani
+  claim is made until that production gate exists; the orchestrator obligation remains open.
 
 The boundary invariants work the same way in the other direction: the core's theorems are
 proved relative to named predicates (`Store.WellFormed`, `AnchorWF`/`Reachable`,

@@ -416,7 +416,11 @@ mod harnesses {
         let value: u64 = kani::any();
         let narrowed = saturating_i64(value);
         assert!(narrowed >= 0);
-        assert!(u64::try_from(narrowed).unwrap() <= value);
+        if value <= i64::MAX as u64 {
+            assert!(narrowed == value as i64);
+        } else {
+            assert!(narrowed == i64::MAX);
+        }
     }
 
     /// The anchored delta is the signed distance to the due instant, never a panic.

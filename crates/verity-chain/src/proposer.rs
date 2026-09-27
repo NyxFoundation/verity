@@ -66,6 +66,7 @@ mod harnesses {
     use super::{RejectionReason, Slot, ValidatorIndex, proposer_for_slot};
 
     /// Every slot names a proposer inside the registry, and only an empty registry is refused.
+    // Lean overlap: VAL-1/VAL-3. Future Lean-adoption deletion candidate.
     #[kani::proof]
     fn proposer_is_total_and_in_range() {
         let slot: u64 = kani::any();

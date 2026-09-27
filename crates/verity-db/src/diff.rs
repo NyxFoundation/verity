@@ -137,6 +137,7 @@ mod harnesses {
         let parent: u64 = kani::any();
         let block: u64 = kani::any();
         let crossed = crosses_snapshot_boundary(Slot(parent), Slot(block));
+        assert!(crossed == (parent / SNAPSHOT_INTERVAL_SLOTS < block / SNAPSHOT_INTERVAL_SLOTS));
         if block <= parent {
             assert!(!crossed);
         }
