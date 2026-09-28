@@ -33,11 +33,14 @@ Rust semantics, not a Verity defect.
 ## CONT-2 correspondence
 
 The Lean package pins formal-leanSpec at `ba7284513031eac5c66bfb8221d27b6154cf240b`.
-`VerityChain.Correspondence` proves two properties about the generated Rust
+`VerityChain.Correspondence` proves three properties about the generated Rust
 semantics:
 
 - `isJustifiableAfter_eq`: at or after finalization, the extracted `RustM Bool`
   succeeds with formal-leanSpec's `Slot.isJustifiableAfter` result;
+- `isJustifiableAfter_iff`: the extracted predicate directly satisfies CONT-2:
+  the distance from finalization is at most 5, a perfect square, or a pronic
+  number exactly when the predicate succeeds with `true`;
 - `isJustifiableAfter_before_finalized`: a slot before finalization succeeds
   with `false`.
 

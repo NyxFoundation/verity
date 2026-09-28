@@ -176,6 +176,20 @@ theorem isJustifiableAfter_eq
         exact beq_eq_false_iff_ne.mpr hSquare]
       simp
 
+/-- CONT-2 for the extracted Rust predicate: after finalization, a slot is
+    justifiable exactly when its distance is immediate, square, or pronic. -/
+theorem isJustifiableAfter_iff
+    (slot finalized : Std.U64) (h : finalized.val ≤ slot.val) :
+    justification.is_justifiable_after slot finalized = ok true ↔
+      (let δ := slot.val - finalized.val
+       δ ≤ 5 ∨ (∃ k, δ = k * k) ∨ (∃ k, δ = k * (k + 1))) := by
+  rw [isJustifiableAfter_eq slot finalized h]
+  have hslots : toLeanSlot finalized ≤ toLeanSlot slot := by
+    rw [UInt64.le_iff_toNat_le]
+    simpa using h
+  simpa using LeanSpec.Slot.justifiable_iff
+    (toLeanSlot finalized) (toLeanSlot slot) hslots
+
 /-- The extracted Rust predicate rejects slots before the finalized boundary. -/
 theorem isJustifiableAfter_before_finalized
     (slot finalized : Std.U64) (h : slot.val < finalized.val) :
