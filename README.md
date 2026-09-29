@@ -35,7 +35,9 @@ Reader-facing documentation is published at
 [docs.verityclient.com](https://docs.verityclient.com), built from `docs/src/` — start
 with the [architecture](./docs/src/reference/architecture.md). The internal design
 records that sit underneath it — domain model, concurrency, sync, storage, key
-management, and verification tooling — are in [`docs/design/`](./docs/design/).
+management, and verification tooling — are in [`docs/design/`](./docs/design/). Aeneas-generated
+Lean and its correspondence proofs against formal-leanSpec live in
+[`verity-aeneas-proofs`](https://github.com/NyxFoundation/verity-aeneas-proofs).
 
 ## Contributing
 
