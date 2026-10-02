@@ -106,7 +106,7 @@ pub mod wire;
 pub use behaviour::{Behaviour, BehaviourEvent};
 pub use config::{
     MAX_ERROR_MESSAGE_SIZE, MAX_PAYLOAD_SIZE, MAX_REQUEST_BLOCKS, MIN_SLOTS_FOR_BLOCK_REQUESTS,
-    NetworkConfig, RESP_TIMEOUT, max_compressed_len,
+    NetworkConfig, RESP_TIMEOUT, max_compressed_len, max_framed_compressed_len,
 };
 pub use error::{BuildError, CommandError, PublishError, RequestError};
 pub use gossip::message_id::{MESSAGE_ID_LEN, compute_message_id, message_id_with_domain};
