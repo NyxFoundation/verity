@@ -37,13 +37,23 @@ pub const MESSAGE_DOMAIN_VALID_SNAPPY: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 /// Message-ID domain prefix for a gossip payload whose snappy decompression failed.
 pub const MESSAGE_DOMAIN_INVALID_SNAPPY: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 
-/// Worst-case compressed size for a payload of `uncompressed` bytes in either snappy
-/// format: the framing overhead plus snappy's maximum expansion of one sixth. A chunk
-/// whose compressed byte count exceeds this bound for its declared uncompressed length is
-/// malformed, whatever its content.
+/// Worst-case size of a raw-block Snappy payload, matching snap's `max_compress_len`.
+///
+/// This bounds gossip, which uses the raw block format. Req/resp uses framed Snappy and
+/// [`max_framed_compressed_len`] instead: the two formats do not share a wire bound.
 #[must_use]
 pub const fn max_compressed_len(uncompressed: usize) -> usize {
     32 + uncompressed + uncompressed / 6
+}
+
+/// Worst-case size of a framed req/resp Snappy stream for `uncompressed` bytes.
+///
+/// leanSpec `networking/reqresp/handler.py` permits `n + n/6 + 1024`, which covers
+/// Snappy's expansion plus reserved skippable chunks. A tighter raw-block bound rejects
+/// streams the reference node accepts.
+#[must_use]
+pub const fn max_framed_compressed_len(uncompressed: usize) -> usize {
+    uncompressed + uncompressed / 6 + 1024
 }
 
 /// Configuration for [`crate::service::spawn`].
@@ -86,6 +96,19 @@ impl NetworkConfig {
             command_buffer: 64,
             event_buffer: 512,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_PAYLOAD_SIZE, max_compressed_len, max_framed_compressed_len};
+
+    #[test]
+    fn should_match_the_lean_spec_framed_bound_at_the_payload_cap() {
+        assert_eq!(max_framed_compressed_len(0), 1024);
+        assert_eq!(max_framed_compressed_len(1), 1025);
+        assert_eq!(max_framed_compressed_len(MAX_PAYLOAD_SIZE), 12_234_410);
+        assert!(max_framed_compressed_len(1) > max_compressed_len(1));
     }
 }
 
