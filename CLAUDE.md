@@ -115,6 +115,9 @@ reading the tooling, and that break interop silently when wrong:
   and `--aggregate-subnet-ids` are checked against it and refused otherwise, never applied.
 - `Dockerfile` builds the image lean-quickstart's docker mode and hive run
   (`ghcr.io/nyxfoundation/verity`); it builds `--locked` for the reasons above.
+  `.github/workflows/docker.yml` publishes it to GHCR on pushes to `develop` and `main`,
+  tagged `latest` and with the current devnet generation. That workflow file is the one
+  place the generation is named.
 - **Running it locally** (what the 2026-09-11 verification did; needs docker, yq, curl, jq):
   1. Clone lean-quickstart. In `client-cmds/ethlambda-cmd.sh` and `client-cmds/ream-cmd.sh` change the
      image tags to `ethlambda:devnet5` / `ream:latest-devnet5` (see next bullet for why).
