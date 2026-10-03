@@ -69,13 +69,12 @@ use verity_rpc::{
     ApiContext, BoundListener, HttpServer, Sampler, SignedBlockSource, api_router, metrics_router,
 };
 use verity_types::ValidatorIndex;
-use verity_types::config::ATTESTATION_COMMITTEE_COUNT;
 use verity_validator::{DutyService, Keyring, Prover};
 
 use crate::chain::{Aggregator, ChainTask};
 use crate::error::NodeError;
 use crate::network::{
-    ATTESTATION_SUBNET, BridgeChannels, BridgeCounters, NetworkBridge, ProductRelay,
+    BridgeChannels, BridgeCounters, NetworkBridge, ProductRelay, subscribed_subnets,
 };
 use crate::sync::checkpoint::CheckpointAnchor;
 use crate::sync::responder::BlockResponder;
@@ -195,6 +194,8 @@ impl Node {
     /// used, [`NodeError::Validator`] when the configured keys cannot be loaded, and
     /// [`NodeError::Network`] when the listen address cannot be bound.
     pub async fn start(config: NodeConfig) -> Result<Self, NodeError> {
+        // Before the database: a committee count of zero must not open it.
+        let committee_count = config.genesis.committee_count()?;
         let genesis_state =
             generate_genesis(config.genesis.genesis_time, config.genesis.to_validators()?);
         let clock = SlotClock::new(config.genesis.genesis_time);
@@ -224,7 +225,7 @@ impl Node {
 
         let keyring = load_keys(&config)?;
         let metrics = Arc::new(Metrics::new()?);
-        record_start(&metrics, &config, &keyring);
+        record_start(&metrics, &config, &keyring, committee_count);
         let prover = Prover::new();
         if !keyring.is_empty() {
             // Paid once, here, rather than by the first duty of the node's life.
@@ -258,7 +259,7 @@ impl Node {
             Arc::clone(&metrics),
         );
 
-        let (handle, events) = verity_p2p::spawn(network_config(&config))?;
+        let (handle, events) = verity_p2p::spawn(network_config(&config, committee_count))?;
         let peer_id = handle.local_peer_id();
 
         let stage_counters = Arc::new(StageCounters::default());
@@ -310,7 +311,9 @@ impl Node {
                 )
                 .run(),
             ),
-            tokio::spawn(ProductRelay::new(product_stream, local, handle.clone()).run()),
+            tokio::spawn(
+                ProductRelay::new(product_stream, local, handle.clone(), committee_count).run(),
+            ),
             tokio::spawn(sync.run()),
             tokio::spawn(
                 BlockResponder::new(
@@ -520,7 +523,7 @@ async fn bind_optional(address: Option<SocketAddr>) -> Result<Option<BoundListen
 }
 
 /// Records the "on node start" metrics: identity, start time, and the static facts.
-fn record_start(metrics: &Metrics, config: &NodeConfig, keyring: &Keyring) {
+fn record_start(metrics: &Metrics, config: &NodeConfig, keyring: &Keyring, committee_count: u64) {
     let start_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| gauge_value(elapsed.as_secs()));
@@ -533,14 +536,19 @@ fn record_start(metrics: &Metrics, config: &NodeConfig, keyring: &Keyring) {
         .validator
         .is_aggregator
         .set(i64::from(config.is_aggregator));
+    // One gauge, one validator per node on the devnet. A follower has no subnet and reports 0.
+    let subnet = subscribed_subnets(&config.validator_indices, committee_count)
+        .first()
+        .map(|subnet| subnet.0)
+        .unwrap_or(0);
     metrics
         .network
         .attestation_committee_subnet
-        .set(gauge_value(ATTESTATION_SUBNET.0));
+        .set(gauge_value(subnet));
     metrics
         .network
         .attestation_committee_count
-        .set(gauge_value(ATTESTATION_COMMITTEE_COUNT));
+        .set(gauge_value(committee_count));
 }
 
 /// The "on scrape" sample of `lean_gossip_mesh_peers`, read off the network task's counters.
@@ -576,13 +584,13 @@ fn signed_block_source<B: StorageReader + Send + Sync + 'static>(
 }
 
 /// The network service's configuration, derived from the node's.
-fn network_config(config: &NodeConfig) -> NetworkConfig {
+fn network_config(config: &NodeConfig, committee_count: u64) -> NetworkConfig {
     let mut network = NetworkConfig::new(
         config.keypair.clone(),
         config.listen.clone(),
         config.network_name.clone(),
     );
     network.bootnodes = config.bootnodes.clone();
-    network.attestation_subnets = vec![ATTESTATION_SUBNET];
+    network.attestation_subnets = subscribed_subnets(&config.validator_indices, committee_count);
     network
 }

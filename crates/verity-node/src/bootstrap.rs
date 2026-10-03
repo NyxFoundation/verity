@@ -35,7 +35,6 @@ use std::str::FromStr;
 
 use verity_p2p::identity::{self, Keypair};
 use verity_p2p::{Multiaddr, PeerId};
-use verity_types::config::ATTESTATION_COMMITTEE_COUNT;
 
 use crate::error::ConfigError;
 
@@ -155,42 +154,37 @@ fn keypair_from_hex(text: &str) -> Result<Keypair, String> {
     Ok(Keypair::from(identity::secp256k1::Keypair::from(secret)))
 }
 
-/// Refuses a committee count the chain constants do not implement.
+/// Refuses a committee-count flag that disagrees with the genesis file.
 ///
-/// leanSpec fixes `ATTESTATION_COMMITTEE_COUNT` as a constant of the fork, and Verity
-/// transcribes it as one; the flag exists so that a lean-quickstart deployment configured for
-/// another value fails at startup, with the reason, rather than joining a network whose
-/// subnet layout it disagrees with.
+/// The file is the source of truth: peers subscribe by the count it names, and a flag that
+/// names another count would put this node on topics the rest of the network does not use.
 ///
 /// # Errors
 ///
-/// [`ConfigError::UnsupportedSetting`] when `count` is not the constant.
-pub fn check_committee_count(count: u64) -> Result<(), ConfigError> {
-    if count == ATTESTATION_COMMITTEE_COUNT {
+/// [`ConfigError::UnsupportedSetting`] when `flag` is not `genesis`.
+pub fn check_committee_count(flag: u64, genesis: u64) -> Result<(), ConfigError> {
+    if flag == genesis {
         return Ok(());
     }
     Err(ConfigError::UnsupportedSetting {
         setting: "attestation committee count",
-        reason: format!("this build implements {ATTESTATION_COMMITTEE_COUNT}, not {count}"),
+        reason: format!("genesis configures {genesis}, not {flag}"),
     })
 }
 
-/// Refuses an aggregation subnet the chain constants do not define.
+/// Refuses an aggregation subnet the genesis committee count does not define.
+///
+/// The ids are checked and not applied: this node subscribes to its own validators' subnets.
 ///
 /// # Errors
 ///
-/// [`ConfigError::UnsupportedSetting`] when any id is at or above the committee count.
-pub fn check_aggregate_subnets(subnets: &[u64]) -> Result<(), ConfigError> {
-    match subnets
-        .iter()
-        .find(|id| **id >= ATTESTATION_COMMITTEE_COUNT)
-    {
+/// [`ConfigError::UnsupportedSetting`] when any id is at or above `committee_count`.
+pub fn check_aggregate_subnets(subnets: &[u64], committee_count: u64) -> Result<(), ConfigError> {
+    match subnets.iter().find(|id| **id >= committee_count) {
         None => Ok(()),
         Some(id) => Err(ConfigError::UnsupportedSetting {
             setting: "aggregate subnet ids",
-            reason: format!(
-                "subnet {id} does not exist with {ATTESTATION_COMMITTEE_COUNT} committee(s)"
-            ),
+            reason: format!("subnet {id} does not exist with {committee_count} committee(s)"),
         }),
     }
 }
@@ -333,10 +327,14 @@ mod tests {
     }
 
     #[test]
-    fn should_accept_only_the_transcribed_committee_count() {
-        assert!(check_committee_count(ATTESTATION_COMMITTEE_COUNT).is_ok());
-        assert!(check_committee_count(ATTESTATION_COMMITTEE_COUNT + 1).is_err());
-        assert!(check_aggregate_subnets(&[0]).is_ok());
-        assert!(check_aggregate_subnets(&[0, ATTESTATION_COMMITTEE_COUNT]).is_err());
+    fn should_accept_a_flag_that_matches_the_genesis_count() {
+        assert!(check_committee_count(8, 8).is_ok());
+        assert!(check_aggregate_subnets(&[0, 7], 8).is_ok());
+    }
+
+    #[test]
+    fn should_refuse_a_flag_that_disagrees_with_the_genesis_count() {
+        assert!(check_committee_count(1, 8).is_err());
+        assert!(check_aggregate_subnets(&[0, 8], 8).is_err());
     }
 }
