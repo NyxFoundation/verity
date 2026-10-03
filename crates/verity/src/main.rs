@@ -11,10 +11,10 @@
 //! `--network-name`, which defaults to the fork's gossip digest and exists only so that a
 //! private network can partition itself off.
 //!
-//! Two flags are accepted for the deployment's sake and then checked rather than used:
-//! `--attestation-committee-count` and `--aggregate-subnet-ids`. leanSpec fixes the committee
-//! count as a constant of the fork, and this build transcribes it; a deployment asking for
-//! another value is refused at startup, with the reason, rather than joined.
+//! `--attestation-committee-count` must match the genesis file's `ATTESTATION_COMMITTEE_COUNT`
+//! (a file that omits it uses the fork constant of 1). A mismatch is refused at startup.
+//! `--aggregate-subnet-ids` is checked against that count and not applied: this node
+//! subscribes to its own validators' subnets, `index % count`, and to no others.
 //!
 //! Sync has exactly one flag, `--checkpoint-sync-url`, and that is deliberate: every other
 //! number the sync service uses is a constant in the code, because `docs/design/sync.md` puts
@@ -91,8 +91,8 @@ struct Args {
     #[arg(long)]
     is_aggregator: bool,
 
-    /// Subnets to aggregate for, comma-separated. Accepted for deployment compatibility; a
-    /// subnet the fork's committee count does not define stops the node at startup.
+    /// Subnets to aggregate for, comma-separated. Checked against the genesis committee
+    /// count and otherwise ignored: this node subscribes to its own validators' subnets.
     #[arg(
         long,
         value_name = "IDS",
@@ -101,7 +101,7 @@ struct Args {
     )]
     aggregate_subnet_ids: Vec<u64>,
 
-    /// The deployment's attestation committee count. A value other than the fork's constant
+    /// The deployment's attestation committee count. A value other than the genesis file's
     /// stops the node at startup rather than joining a network it disagrees with.
     #[arg(long, value_name = "N")]
     attestation_committee_count: Option<u64>,
@@ -148,11 +148,18 @@ async fn main() -> ExitCode {
 /// Starts the node and runs it until the process is interrupted.
 async fn run(args: Args) -> Result<(), verity_node::error::NodeError> {
     let genesis = GenesisFile::read(&args.genesis)?;
+    let committee_count = genesis.committee_count()?;
 
     if let Some(count) = args.attestation_committee_count {
-        check_committee_count(count)?;
+        check_committee_count(count, committee_count)?;
     }
-    check_aggregate_subnets(&args.aggregate_subnet_ids)?;
+    check_aggregate_subnets(&args.aggregate_subnet_ids, committee_count)?;
+    if !args.aggregate_subnet_ids.is_empty() {
+        tracing::warn!(
+            "aggregate subnet ids are checked against the genesis committee count and not \
+             subscribed; this node subscribes only to its own validators' subnets"
+        );
+    }
 
     // The keys directory decides whether this node signs at all: with no directory there is
     // no assignment to read and no key to load, which is a follower.

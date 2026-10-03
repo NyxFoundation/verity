@@ -21,7 +21,9 @@
 //!   The generator lean-quickstart runs (`generate-genesis.sh`) writes the same two keys as
 //!   `attestation_pubkey` / `proposal_pubkey`, bare hex, and adds `ATTESTATION_COMMITTEE_COUNT`,
 //!   `VALIDATOR_COUNT` and `ACTIVE_EPOCH` beside them. One format with two live writers, so
-//!   both spellings are accepted; the extra keys are informational and ignored.
+//!   both spellings are accepted. `ATTESTATION_COMMITTEE_COUNT` is how many attestation
+//!   subnets the network has, and it is read; a file that omits it uses the fork constant of
+//!   1. `VALIDATOR_COUNT` and `ACTIVE_EPOCH` stay informational and are ignored.
 //!
 //! - **The assignment file** (`validators.yaml`, beside the keys) maps each node's identifier
 //!   to the validator indices it runs. A node whose identifier is absent runs none, which is
@@ -44,6 +46,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
+use verity_types::config::ATTESTATION_COMMITTEE_COUNT;
 use verity_types::{Bytes52, Validator, ValidatorIndex, Validators};
 
 use crate::error::ConfigError;
@@ -63,6 +66,12 @@ pub struct GenesisFile {
     /// The validators present at slot 0, in registry order.
     #[serde(rename = "GENESIS_VALIDATORS")]
     pub genesis_validators: Vec<GenesisValidator>,
+    /// How many attestation subnets this network has.
+    ///
+    /// Absent means the fork constant. Zero is refused by [`Self::committee_count`]: a
+    /// network with no subnets has nowhere to publish a vote.
+    #[serde(default, rename = "ATTESTATION_COMMITTEE_COUNT")]
+    pub attestation_committee_count: Option<u64>,
 }
 
 /// One validator's two public keys, as the genesis file carries them.
@@ -122,6 +131,25 @@ impl GenesisFile {
 
         let count = validators.len();
         Validators::try_from(validators).map_err(|_| ConfigError::RegistryTooLarge { count })
+    }
+
+    /// The subnet count this network uses.
+    ///
+    /// A file that omits the key uses the fork constant. The public devnet writes a value
+    /// other than that constant, and the value in the file is the one peers subscribe by.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::UnsupportedSetting`] when the file sets the count to zero.
+    pub fn committee_count(&self) -> Result<u64, ConfigError> {
+        match self.attestation_committee_count {
+            None => Ok(ATTESTATION_COMMITTEE_COUNT),
+            Some(0) => Err(ConfigError::UnsupportedSetting {
+                setting: "attestation committee count",
+                reason: "a committee count of 0 has no subnets".to_string(),
+            }),
+            Some(count) => Ok(count),
+        }
     }
 }
 
@@ -214,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn should_read_the_generator_spelling_and_ignore_its_extra_keys() {
+    fn should_read_the_generator_spelling_and_its_committee_count() {
         let file = write(&format!(
             "GENESIS_TIME: 1763712794\nATTESTATION_COMMITTEE_COUNT: 1\nACTIVE_EPOCH: 10\nVALIDATOR_COUNT: 1\nGENESIS_VALIDATORS:\n  - attestation_pubkey: \"{}\"\n    proposal_pubkey: \"{}\"\n",
             "11".repeat(52),
@@ -224,8 +252,44 @@ mod tests {
         let validators = genesis.to_validators().expect("one validator");
 
         assert_eq!(genesis.genesis_time, 1_763_712_794);
+        assert_eq!(genesis.committee_count().expect("a count of 1"), 1);
         assert_eq!(validators[0].attestation_public_key, [0x11u8; 52]);
         assert_eq!(validators[0].proposal_public_key, [0x22u8; 52]);
+    }
+
+    #[test]
+    fn should_read_a_committee_count_other_than_the_fork_constant() {
+        let file = write(&format!(
+            "GENESIS_TIME: 1\nATTESTATION_COMMITTEE_COUNT: 8\nGENESIS_VALIDATORS:\n  - attestation_public_key: \"0x{}\"\n    proposal_public_key: \"0x{}\"\n",
+            "11".repeat(52),
+            "22".repeat(52)
+        ));
+        let genesis = GenesisFile::read(file.path()).expect("the generator's file");
+
+        assert_eq!(genesis.committee_count().expect("the file's count"), 8);
+    }
+
+    #[test]
+    fn should_use_the_fork_constant_when_the_genesis_file_omits_the_count() {
+        let file = write(&genesis_yaml(true));
+        let genesis = GenesisFile::read(file.path()).expect("a genesis file");
+
+        assert_eq!(
+            genesis.committee_count().expect("the fork constant"),
+            verity_types::config::ATTESTATION_COMMITTEE_COUNT
+        );
+    }
+
+    #[test]
+    fn should_refuse_a_committee_count_of_zero() {
+        let file = write(&format!(
+            "GENESIS_TIME: 1\nATTESTATION_COMMITTEE_COUNT: 0\nGENESIS_VALIDATORS:\n  - attestation_public_key: \"0x{}\"\n    proposal_public_key: \"0x{}\"\n",
+            "11".repeat(52),
+            "22".repeat(52)
+        ));
+        let genesis = GenesisFile::read(file.path()).expect("the file parses");
+
+        assert!(genesis.committee_count().is_err());
     }
 
     #[test]

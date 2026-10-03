@@ -103,16 +103,18 @@ reading the tooling, and that break interop silently when wrong:
   with any other value subscribes to topics nobody publishes on and hears nothing.
 - **The generator spells the genesis keys `attestation_pubkey` / `proposal_pubkey`**, bare hex,
   where leanSpec's own reader spells them `attestation_public_key` / `proposal_public_key`.
-  `GenesisFile` accepts both; the generator's extra keys (`ATTESTATION_COMMITTEE_COUNT`,
-  `VALIDATOR_COUNT`, `ACTIVE_EPOCH`) are ignored.
+  `GenesisFile` accepts both. `ATTESTATION_COMMITTEE_COUNT` is read (absent means the fork
+  constant 1); `VALIDATOR_COUNT` and `ACTIVE_EPOCH` are ignored.
 - **leanpoint probes `/v0/health`**, not `/lean/v0/health` (`convert-validator-config.py`);
   the `verity-rpc` crate inside the `verity` binary serves both on `--api-port`. "Healthy" means
   the process answered; it says nothing about sync.
 - **Bootnode ENRs are reduced to `/ip4/<ip>/udp/<quic port>/quic-v1/p2p/<peer id>`**, the peer id
   derived from the record's secp256k1 key. Every lean client derives its libp2p identity from the
   key that signs its record, which is what makes the `/p2p/` suffix safe to add.
-- `ATTESTATION_COMMITTEE_COUNT` is a leanSpec constant (1), so `--attestation-committee-count`
-  and `--aggregate-subnet-ids` are checked against it and refused otherwise, never applied.
+- Committee count comes from the genesis file's `ATTESTATION_COMMITTEE_COUNT` (absent means
+  the fork constant 1). `--attestation-committee-count` must match it or the node refuses to
+  start. `--aggregate-subnet-ids` are checked against that count and not applied: a node
+  subscribes to its own validators' subnets (`index % count`) only.
 - `Dockerfile` builds the image lean-quickstart's docker mode and hive run
   (`ghcr.io/nyxfoundation/verity`); it builds `--locked` for the reasons above.
 - **Running it locally** (what the 2026-09-11 verification did; needs docker, yq, curl, jq):

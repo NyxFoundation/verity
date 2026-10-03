@@ -18,18 +18,35 @@ use tokio::sync::{mpsc, watch};
 use verity_chain::ChainView;
 use verity_metrics::{ConnectionResult, Metrics};
 use verity_p2p::{ErrorCode, GossipKind, NetworkEvent, NetworkHandle, Request, Response, Status};
-use verity_types::SubnetId;
+use verity_types::{SubnetId, ValidatorIndex};
 use verity_validator::LocalProduct;
 
 use crate::observe::{connection_failure, direction, disconnect_reason};
 use crate::sync::{BlockRequest, BlockRequestKind, PeerEvent};
 use crate::verification::{GossipPayload, PayloadOrigin};
 
-/// The subnet this node's votes are published on.
+/// The subnet a validator publishes its vote on: `validator_index % committee_count`.
 ///
-/// leanSpec fixes `ATTESTATION_COMMITTEE_COUNT = 1`, so there is exactly one attestation
-/// subnet and every validator uses it. This becomes a computation the day that constant moves.
-pub const ATTESTATION_SUBNET: SubnetId = SubnetId(0);
+/// `committee_count` is the genesis file's value and is never zero; a zero count is refused
+/// before a node starts, because this remainder would be undefined.
+pub const fn attestation_subnet(validator_index: u64, committee_count: u64) -> SubnetId {
+    SubnetId(validator_index % committee_count)
+}
+
+/// The attestation topics this node subscribes to: one per subnet its own validators use.
+///
+/// A follower has no validators and subscribes to none. Block and aggregation topics are
+/// subscribed separately and do not depend on this set. Duplicate indices collapse, so a node
+/// that runs two validators on one subnet joins that topic once.
+pub fn subscribed_subnets(indices: &[ValidatorIndex], committee_count: u64) -> Vec<SubnetId> {
+    let mut ids: Vec<u64> = indices
+        .iter()
+        .map(|index| attestation_subnet(index.0, committee_count).0)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter().map(SubnetId).collect()
+}
 
 /// Gossip the bridge could not hand downstream.
 #[derive(Debug, Default)]
@@ -248,6 +265,8 @@ pub struct ProductRelay {
     products: mpsc::Receiver<LocalProduct>,
     chain: mpsc::Sender<LocalProduct>,
     handle: NetworkHandle,
+    /// Genesis committee count. Votes are published on `index % committee_count`.
+    committee_count: u64,
 }
 
 impl ProductRelay {
@@ -257,11 +276,13 @@ impl ProductRelay {
         products: mpsc::Receiver<LocalProduct>,
         chain: mpsc::Sender<LocalProduct>,
         handle: NetworkHandle,
+        committee_count: u64,
     ) -> Self {
         Self {
             products,
             chain,
             handle,
+            committee_count,
         }
     }
 
@@ -286,11 +307,40 @@ impl ProductRelay {
     async fn publish(&self, product: &LocalProduct) -> Result<(), verity_p2p::PublishError> {
         let (kind, payload) = match product {
             LocalProduct::Block(signed) => (GossipKind::Block, signed.to_ssz()),
-            LocalProduct::Attestation(signed) => {
-                (GossipKind::Attestation(ATTESTATION_SUBNET), signed.to_ssz())
-            }
+            LocalProduct::Attestation(signed) => (
+                GossipKind::Attestation(attestation_subnet(
+                    signed.validator_index.0,
+                    self.committee_count,
+                )),
+                signed.to_ssz(),
+            ),
             LocalProduct::Aggregate(signed) => (GossipKind::Aggregation, signed.to_ssz()),
         };
         self.handle.publish(kind, payload).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use verity_types::{SubnetId, ValidatorIndex};
+
+    use super::{attestation_subnet, subscribed_subnets};
+
+    #[test]
+    fn should_place_a_validator_on_index_modulo_the_committee_count() {
+        assert_eq!(attestation_subnet(0, 8), SubnetId(0));
+        assert_eq!(attestation_subnet(6, 8), SubnetId(6));
+        assert_eq!(attestation_subnet(10, 8), SubnetId(2));
+        assert_eq!(attestation_subnet(5, 1), SubnetId(0));
+    }
+
+    #[test]
+    fn should_subscribe_only_to_the_subnets_this_nodes_validators_use() {
+        let indices = [ValidatorIndex(0), ValidatorIndex(8), ValidatorIndex(3)];
+        assert_eq!(
+            subscribed_subnets(&indices, 8),
+            vec![SubnetId(0), SubnetId(3)]
+        );
+        assert!(subscribed_subnets(&[], 8).is_empty());
     }
 }
