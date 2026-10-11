@@ -109,9 +109,10 @@ domain model, concurrency, sync, storage, key management, and verification tooli
 
 ## Acknowledgments
 
-Verity builds on [ethlambda](https://github.com/lambdaclass/ethlambda),
+Verity builds on the work of [ethlambda](https://github.com/lambdaclass/ethlambda),
 [ream](https://github.com/ReamLabs/ream), and the wider
-[Lean Ethereum](https://leanroadmap.org/) community.
+[Lean Ethereum](https://leanroadmap.org/) community. Their clients, specifications, cryptography,
+and tooling make an independently verifiable implementation possible.
 
 ## License
 
