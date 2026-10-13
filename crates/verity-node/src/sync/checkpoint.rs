@@ -357,7 +357,7 @@ mod tests {
 
     use crate::store_open::block_from;
 
-    use super::{AnchorFailure, verify_anchor, verify_checkpoint_state};
+    use super::{AnchorFailure, CheckpointError, verify_anchor, verify_checkpoint_state};
 
     fn genesis(count: u64, genesis_time: u64) -> State {
         let mut validators = Validators::default();
@@ -505,5 +505,39 @@ mod tests {
         let empty = State::default();
         assert!(!verify_checkpoint_state(&empty));
         assert!(verify_checkpoint_state(&genesis(1, 0)));
+    }
+
+    #[test]
+    fn should_render_every_checkpoint_failure_with_context() {
+        let anchor_failures = [
+            AnchorFailure::UnusableRegistry,
+            AnchorFailure::ForeignGenesisTime,
+            AnchorFailure::ForeignRegistry,
+            AnchorFailure::SlotsOutOfOrder,
+            AnchorFailure::HeaderAheadOfState,
+            AnchorFailure::BlockIsNotTheAnchor,
+            AnchorFailure::StateIsNotTheBlocks,
+            AnchorFailure::FinalizedRootMismatch,
+            AnchorFailure::CheckpointsDisagree,
+        ];
+        for failure in anchor_failures {
+            assert!(!failure.to_string().is_empty());
+        }
+
+        let failures = [
+            CheckpointError::Unreachable {
+                url: "http://checkpoint".to_string(),
+                attempts: 5,
+                reason: "timeout".to_string(),
+            },
+            CheckpointError::Rejected {
+                url: "http://checkpoint".to_string(),
+                reason: "not found".to_string(),
+            },
+            CheckpointError::Unverified(AnchorFailure::ForeignRegistry),
+        ];
+        for failure in failures {
+            assert!(!failure.to_string().is_empty());
+        }
     }
 }

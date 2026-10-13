@@ -522,11 +522,11 @@ impl BlockProofJob {
 
 #[cfg(test)]
 mod tests {
-    use verity_types::Slot;
+    use verity_types::{Interval, Slot};
 
     use super::{
         ATTESTED_SLOT_RETENTION, DUTY_LAG_THRESHOLD, LagGate, NETWORK_STALL_THRESHOLD,
-        retains_attested_slot,
+        retains_attested_slot, should_attest, slot_of,
     };
 
     #[test]
@@ -536,6 +536,15 @@ mod tests {
             Slot(0),
             Slot(ATTESTED_SLOT_RETENTION)
         ));
+    }
+
+    #[test]
+    fn should_attest_once_per_slot_and_map_every_interval_to_its_slot() {
+        assert!(should_attest(false));
+        assert!(!should_attest(true));
+        assert_eq!(slot_of(Interval(0)), Slot(0));
+        assert_eq!(slot_of(Interval(4)), Slot(0));
+        assert_eq!(slot_of(Interval(5)), Slot(1));
     }
 
     /// A node whose head keeps up with the clock, which is also the case of a node alone on

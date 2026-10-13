@@ -671,15 +671,19 @@ mod tests {
 
     use libssz::SszEncode;
     use tokio::sync::{mpsc, watch};
-    use verity_chain::{ChainView, SlotClock, Store, generate_genesis};
+    use verity_chain::{ChainView, SlotClock, Store, generate_genesis, hash_tree_root};
     use verity_db::stored_header;
     use verity_metrics::Metrics;
     use verity_p2p::GossipKind;
     use verity_types::{
-        Block, BlockBody, SignedBlock, Slot, Validator, ValidatorIndex, Validators,
+        Block, BlockBody, SignedAggregatedAttestation, SignedBlock, Slot, Validator,
+        ValidatorIndex, Validators,
     };
 
-    use super::{GossipPayload, PayloadOrigin, StageChannels, StageCounters, VerificationStage};
+    use super::{
+        Decoded, GossipPayload, PayloadOrigin, StageChannels, StageCounters, VerificationFailure,
+        VerificationStage, decode,
+    };
     use crate::store_open::block_from;
 
     /// A stage over a snapshot of the genesis anchor, with the channels it writes to.
@@ -777,5 +781,99 @@ mod tests {
             "the first copy raised the gap"
         );
         assert!(harness.gaps.try_recv().is_err(), "the second copy did not");
+    }
+
+    #[test]
+    fn should_decode_block_and_aggregate_topics_into_their_claimed_shapes() {
+        let block = Block {
+            slot: Slot(4),
+            parent_root: [3; 32],
+            ..Block::default()
+        };
+        let decoded = decode(&block_payload(block)).expect("block payload");
+        assert_eq!(decoded.awaited_root(), [3; 32]);
+        assert_eq!(decoded.slot(), Slot(4));
+        assert_eq!(decoded.gap().waiting_slot, Slot(4));
+
+        let aggregate = SignedAggregatedAttestation::default();
+        let payload = GossipPayload {
+            kind: GossipKind::Aggregation,
+            payload: aggregate.to_ssz(),
+            origin: PayloadOrigin::Sync,
+        };
+        assert!(matches!(decode(&payload), Ok(Decoded::Aggregate(_))));
+    }
+
+    #[tokio::test]
+    async fn should_reject_malformed_bytes_on_every_topic() {
+        let mut harness = harness();
+        for kind in [
+            GossipKind::Block,
+            GossipKind::Aggregation,
+            GossipKind::Attestation(verity_types::SubnetId(0)),
+        ] {
+            assert!(
+                harness
+                    .stage
+                    .accept(GossipPayload {
+                        kind,
+                        payload: vec![0xff],
+                        origin: PayloadOrigin::Gossip,
+                    })
+                    .await
+            );
+        }
+        assert_eq!(harness.counters.rejected(), 3);
+    }
+
+    #[tokio::test]
+    async fn should_reject_a_resolved_block_with_an_unresolvable_proposer() {
+        let mut harness = harness();
+        let block = Block {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(9),
+            parent_root: hash_tree_root(&harness.anchor),
+            ..Block::default()
+        };
+
+        assert!(harness.stage.accept(block_payload(block)).await);
+
+        assert_eq!(harness.counters.rejected(), 1);
+        assert!(harness.verified.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn should_evict_the_oldest_parked_item_when_capacity_is_reached() {
+        let mut harness = harness();
+        harness.stage.pending_capacity = 1;
+        for (slot, parent) in [(1, [7; 32]), (2, [8; 32])] {
+            let orphan = Block {
+                slot: Slot(slot),
+                proposer_index: ValidatorIndex(0),
+                parent_root: parent,
+                ..Block::default()
+            };
+            assert!(harness.stage.accept(block_payload(orphan)).await);
+        }
+
+        assert_eq!(harness.stage.pending.len(), 1);
+        assert_eq!(harness.counters.evicted(), 1);
+        let gaps: Vec<_> = core::iter::from_fn(|| harness.gaps.try_recv().ok()).collect();
+        assert_eq!(gaps.len(), 3, "arrival, eviction, then the new arrival");
+        assert_eq!(gaps.last().map(|gap| gap.awaited_root), Some([8; 32]));
+    }
+
+    #[test]
+    fn should_render_every_verification_failure_for_operator_logs() {
+        let failures = [
+            VerificationFailure::Undecodable,
+            VerificationFailure::Unresolvable,
+            VerificationFailure::MalformedProof,
+            VerificationFailure::Unbound,
+            VerificationFailure::Invalid,
+        ];
+        for failure in failures {
+            assert!(!failure.to_string().is_empty());
+        }
     }
 }

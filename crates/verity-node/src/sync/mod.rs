@@ -326,3 +326,95 @@ impl SyncService {
         self.view.borrow().head_checkpoint().slot
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::{mpsc, watch};
+    use verity_chain::{ChainView, Store, generate_genesis, hash_tree_root};
+    use verity_p2p::{NetworkCommand, NetworkHandle, Request, Response, Status, identity::Keypair};
+    use verity_types::{Block, BlockBody, Checkpoint, Slot, Validator, ValidatorIndex, Validators};
+
+    use super::{SyncCounters, SyncService};
+
+    fn service() -> (
+        SyncService,
+        mpsc::Receiver<NetworkCommand>,
+        mpsc::Receiver<crate::verification::GossipPayload>,
+    ) {
+        let validators = Validators::try_from(vec![Validator {
+            attestation_public_key: [1; 52],
+            proposal_public_key: [2; 52],
+            index: ValidatorIndex(0),
+        }])
+        .expect("one validator");
+        let state = generate_genesis(0, validators);
+        let block = Block {
+            state_root: hash_tree_root(&state),
+            body: BlockBody::default(),
+            ..Block::default()
+        };
+        let store = Store::new(&state, &block, None).expect("anchor");
+        let (_view_sender, view) = watch::channel(Arc::new(ChainView::of(&store)));
+        let (_gaps, gap_stream) = mpsc::channel(1);
+        let (_events, event_stream) = mpsc::channel(1);
+        let (blocks, block_stream) = mpsc::channel(4);
+        let (handle, commands) = NetworkHandle::testing(4);
+        let (service, _) = SyncService::new(
+            handle,
+            view,
+            gap_stream,
+            event_stream,
+            blocks,
+            Arc::new(SyncCounters::default()),
+        );
+        (service, commands, block_stream)
+    }
+
+    #[tokio::test]
+    async fn should_record_a_status_response_from_the_mock_network() {
+        let (mut service, mut commands, _) = service();
+        let peer = Keypair::generate_secp256k1().public().to_peer_id();
+        service.peers.connected(peer);
+
+        let exchange = service.exchange_status(peer);
+        let respond = async {
+            let command = commands.recv().await.expect("status command");
+            let NetworkCommand::SendRequest { request, reply, .. } = command else {
+                panic!("sync sends a request");
+            };
+            assert!(matches!(request, Request::Status(_)));
+            reply
+                .send(Ok(Response::Status(Status {
+                    finalized: Checkpoint {
+                        root: [5; 32],
+                        slot: Slot(5),
+                    },
+                    head: Checkpoint {
+                        root: [8; 32],
+                        slot: Slot(8),
+                    },
+                })))
+                .expect("sync awaits the response");
+        };
+        tokio::join!(exchange, respond);
+
+        assert_eq!(service.peers.highest_claimed_head(), Some(Slot(8)));
+        assert_eq!(service.peers.network_finalized_slot(), Some(Slot(5)));
+    }
+
+    #[tokio::test]
+    async fn should_forward_every_fetched_block_without_shedding() {
+        let (service, _, mut blocks) = service();
+        assert!(service.forward(vec![vec![1], vec![2]]).await);
+        assert_eq!(service.counters.fetched(), 2);
+        for expected in [vec![1], vec![2]] {
+            let payload = blocks.recv().await.expect("forwarded block");
+            assert_eq!(payload.payload, expected);
+            assert_eq!(payload.origin, crate::verification::PayloadOrigin::Sync);
+        }
+        drop(blocks);
+        assert!(!service.forward(vec![vec![3]]).await);
+    }
+}

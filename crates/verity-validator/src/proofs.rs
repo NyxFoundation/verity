@@ -126,3 +126,42 @@ fn to_bytes(bytes: Vec<u8>) -> Result<ByteList512KiB, DutyError> {
         })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use verity_types::{AggregationBits, Validator, ValidatorIndex, Validators};
+
+    use super::{attestation_key, attestation_keys, proposal_key, to_bytes};
+
+    fn validators(attestation: [u8; 52], proposal: [u8; 52]) -> Validators {
+        Validators::try_from(vec![Validator {
+            attestation_public_key: attestation,
+            proposal_public_key: proposal,
+            index: ValidatorIndex(0),
+        }])
+        .expect("one validator")
+    }
+
+    #[test]
+    fn should_reject_registry_indices_that_do_not_exist() {
+        let registry = validators([0; 52], [0; 52]);
+        assert!(attestation_key(&registry, ValidatorIndex(1)).is_err());
+        assert!(proposal_key(&registry, ValidatorIndex(1)).is_err());
+
+        let bits = AggregationBits::try_from(vec![false, true]).expect("small bitfield");
+        assert!(attestation_keys(&registry, &bits).is_err());
+    }
+
+    #[test]
+    fn should_reject_public_keys_that_are_not_field_elements() {
+        let registry = validators([0xff; 52], [0xff; 52]);
+        assert!(attestation_key(&registry, ValidatorIndex(0)).is_err());
+        assert!(proposal_key(&registry, ValidatorIndex(0)).is_err());
+    }
+
+    #[test]
+    fn should_enforce_the_wire_proof_size_limit() {
+        assert!(to_bytes(vec![0; 512 * 1024]).is_ok());
+        assert!(to_bytes(vec![0; 512 * 1024 + 1]).is_err());
+    }
+}

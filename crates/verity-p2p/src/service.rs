@@ -268,6 +268,23 @@ pub struct NetworkHandle {
 }
 
 impl NetworkHandle {
+    /// Builds an in-process handle whose commands are inspected by orchestration tests.
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn testing(command_buffer: usize) -> (Self, mpsc::Receiver<NetworkCommand>) {
+        let (commands, receiver) = mpsc::channel(command_buffer);
+        let keypair = libp2p::identity::Keypair::generate_secp256k1();
+        (
+            Self {
+                commands,
+                local_peer_id: keypair.public().to_peer_id(),
+                counters: Arc::new(NetworkCounters::default()),
+            },
+            receiver,
+        )
+    }
+
     /// The local peer ID derived from the configured keypair.
     #[must_use]
     pub fn local_peer_id(&self) -> PeerId {
