@@ -32,7 +32,6 @@
 //! task. The signal is a `try_send` on a bounded channel: a full channel means the sync
 //! service is already busy closing gaps, and the next park re-raises the same one.
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -54,6 +53,9 @@ use verity_validator::proofs;
 use crate::clock::now_milliseconds;
 use crate::observe::{check_aggregate_proof, is_arrival_observable, record_arrival};
 use crate::sync::fetch::Gap;
+
+mod pending;
+use pending::{ParkResult, PendingBuffer};
 
 /// A block whose proof has been checked against the registry its parent fixed.
 ///
@@ -171,7 +173,7 @@ impl StageCounters {
         self.rejected.load(Ordering::Relaxed)
     }
 
-    /// Items dropped from the pending buffer to make room for newer arrivals.
+    /// Items dropped because the pending buffer had no room for them.
     pub fn evicted(&self) -> u64 {
         self.evicted.load(Ordering::Relaxed)
     }
@@ -293,8 +295,7 @@ pub struct VerificationStage {
     verified: mpsc::Sender<Verified>,
     view: watch::Receiver<Arc<ChainView>>,
     gaps: mpsc::Sender<Gap>,
-    pending: VecDeque<Decoded>,
-    pending_capacity: usize,
+    pending: PendingBuffer<Decoded>,
     counters: Arc<StageCounters>,
     clock: SlotClock,
     metrics: Arc<Metrics>,
@@ -318,8 +319,7 @@ impl VerificationStage {
             verified: channels.verified,
             view: channels.view,
             gaps: channels.gaps,
-            pending: VecDeque::with_capacity(pending_capacity),
-            pending_capacity,
+            pending: PendingBuffer::new(pending_capacity),
             counters,
             clock,
             metrics,
@@ -445,21 +445,11 @@ impl VerificationStage {
         // The buffer is taken out before the snapshot is borrowed, so the partition below
         // touches locals only — the alternative would hold a borrow of `self` across a
         // mutation of `self.pending`.
-        let parked = core::mem::take(&mut self.pending);
-        let (resolvable, retained) = {
+        let resolvable = {
             let view = self.view.borrow_and_update();
-            let mut ready = Vec::new();
-            let mut retained = VecDeque::with_capacity(parked.len());
-            for entry in parked {
-                if view.state(entry.awaited_root()).is_some() {
-                    ready.push(entry);
-                } else {
-                    retained.push_back(entry);
-                }
-            }
-            (ready, retained)
+            self.pending
+                .take_resolvable(|entry| view.state(entry.awaited_root()).is_some())
         };
-        self.pending = retained;
 
         for entry in resolvable {
             if !self.resolve(entry).await {
@@ -502,24 +492,31 @@ impl VerificationStage {
     /// the arrival because nothing has been asked for yet, and the eviction because what was
     /// asked for is now the only way that item comes back.
     fn park(&mut self, decoded: Decoded) {
-        if self.pending.contains(&decoded) {
-            self.counters.duplicates.fetch_add(1, Ordering::Relaxed);
-            tracing::debug!("dropping an item already parked");
-            return;
+        let gap = decoded.gap();
+        match self.pending.park(decoded) {
+            ParkResult::Duplicate => {
+                self.counters.duplicates.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!("dropping an item already parked");
+            }
+            ParkResult::Added { evicted } => {
+                if let Some(evicted) = evicted {
+                    self.counters.evicted.fetch_add(1, Ordering::Relaxed);
+                    self.signal_gap(evicted.gap());
+                }
+                self.signal_gap(gap);
+            }
+            ParkResult::Unbuffered(_) => {
+                // Capacity zero means every arrival is a capacity drop. Count it under the
+                // same operator-facing counter as an item displaced from a full buffer.
+                self.counters.evicted.fetch_add(1, Ordering::Relaxed);
+                self.signal_gap(gap);
+            }
         }
-        if self.pending.len() >= self.pending_capacity
-            && let Some(evicted) = self.pending.pop_front()
-        {
-            self.counters.evicted.fetch_add(1, Ordering::Relaxed);
-            self.signal_gap(&evicted);
-        }
-        self.signal_gap(&decoded);
-        self.pending.push_back(decoded);
     }
 
     /// Tells the sync service about a missing ancestor, if it is listening and not saturated.
-    fn signal_gap(&self, decoded: &Decoded) {
-        if self.gaps.try_send(decoded.gap()).is_err() {
+    fn signal_gap(&self, gap: Gap) {
+        if self.gaps.try_send(gap).is_err() {
             tracing::trace!("a gap signal was dropped; the next park raises it again");
         }
     }
@@ -753,7 +750,7 @@ mod tests {
 
         assert_eq!(harness.counters.duplicates(), 1);
         assert_eq!(harness.counters.rejected(), 0);
-        assert!(harness.stage.pending.is_empty());
+        assert!(harness.stage.pending.len() == 0);
         assert!(
             harness.verified.try_recv().is_err(),
             "nothing was forwarded"

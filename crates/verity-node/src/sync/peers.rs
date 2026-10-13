@@ -92,6 +92,24 @@ impl Peer {
     const fn weight(&self) -> u32 {
         (self.score + 1) as u32
     }
+
+    const fn has_request_capacity(&self) -> bool {
+        self.in_flight < MAX_CONCURRENT_REQUESTS
+    }
+
+    fn begin_request(&mut self) {
+        self.in_flight += 1;
+    }
+
+    fn finish_request(&mut self, outcome: Outcome) {
+        self.in_flight = self.in_flight.saturating_sub(1);
+        let delta = match outcome {
+            Outcome::Success => SUCCESS_REWARD,
+            Outcome::Failure | Outcome::Unsupported => -FAILURE_PENALTY,
+            Outcome::Neutral => 0,
+        };
+        self.score = (self.score + delta).clamp(MIN_SCORE, MAX_SCORE);
+    }
 }
 
 /// Every connected peer, with what it claims and how well it has answered.
@@ -161,8 +179,7 @@ impl PeerTable {
     /// of the draw; everyone else is in it, including a peer sitting at the score floor.
     #[must_use]
     pub fn select_for_blocks(&self, now: Instant) -> Option<PeerId> {
-        let eligible =
-            |peer: &Peer| peer.in_flight < MAX_CONCURRENT_REQUESTS && peer.serves_blocks(now);
+        let eligible = |peer: &Peer| peer.has_request_capacity() && peer.serves_blocks(now);
 
         // Two passes over the table rather than one pass into a `Vec`: the draw needs the
         // total before it can pick a ticket, and the table is a devnet's worth of peers.
@@ -190,7 +207,7 @@ impl PeerTable {
     /// Marks a request as outstanding against a peer.
     pub fn begin_request(&mut self, peer: &PeerId) {
         if let Some(entry) = self.peers.get_mut(peer) {
-            entry.in_flight += 1;
+            entry.begin_request();
         }
     }
 
@@ -199,14 +216,7 @@ impl PeerTable {
         let Some(entry) = self.peers.get_mut(peer) else {
             return;
         };
-        entry.in_flight = entry.in_flight.saturating_sub(1);
-
-        let delta = match outcome {
-            Outcome::Success => SUCCESS_REWARD,
-            Outcome::Failure | Outcome::Unsupported => -FAILURE_PENALTY,
-            Outcome::Neutral => 0,
-        };
-        entry.score = (entry.score + delta).clamp(MIN_SCORE, MAX_SCORE);
+        entry.finish_request(outcome);
 
         if outcome == Outcome::Unsupported {
             entry.unsupported_until = Some(now + CAPABILITY_TTL);
@@ -378,5 +388,44 @@ mod tests {
 
         assert!(table.is_empty());
         assert_eq!(table.network_finalized_slot(), None);
+    }
+}
+
+#[cfg(kani)]
+mod harnesses {
+    use super::{MAX_CONCURRENT_REQUESTS, MAX_SCORE, MIN_SCORE, Outcome, Peer};
+
+    fn any_outcome() -> Outcome {
+        match kani::any::<u8>() {
+            0 => Outcome::Success,
+            1 => Outcome::Failure,
+            2 => Outcome::Neutral,
+            _ => Outcome::Unsupported,
+        }
+    }
+
+    /// Every request lifecycle preserves score and concurrency bounds without underflow.
+    #[kani::proof]
+    fn peer_mutation_preserves_operational_bounds() {
+        let score: i32 = kani::any();
+        let in_flight: usize = kani::any();
+        kani::assume((MIN_SCORE..=MAX_SCORE).contains(&score));
+        let mut peer = Peer {
+            status: None,
+            score,
+            in_flight,
+            unsupported_until: None,
+        };
+        kani::assume(peer.has_request_capacity());
+
+        peer.begin_request();
+        assert!(peer.in_flight <= MAX_CONCURRENT_REQUESTS);
+        peer.finish_request(any_outcome());
+        assert!(peer.in_flight <= MAX_CONCURRENT_REQUESTS);
+        assert!(peer.score >= MIN_SCORE && peer.score <= MAX_SCORE);
+        assert!(peer.weight() >= 1);
+
+        peer.in_flight = MAX_CONCURRENT_REQUESTS;
+        assert!(!peer.has_request_capacity());
     }
 }

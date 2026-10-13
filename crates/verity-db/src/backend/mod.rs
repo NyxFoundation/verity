@@ -197,3 +197,38 @@ pub trait StorageBackend: StorageReader {
     /// [`StorageError::Backend`] when the engine fails. The batch is not partially applied.
     fn write(&mut self, batch: WriteBatch, durability: Durability) -> Result<(), StorageError>;
 }
+
+#[cfg(kani)]
+pub(crate) mod harness_support {
+    use super::{
+        ColumnFamily, Durability, Rows, StorageBackend, StorageError, StorageReader, WriteBatch,
+    };
+
+    /// A closed storage model that exposes exactly which atomic writes a repository requested.
+    #[derive(Debug, Default)]
+    pub(crate) struct RecordingBackend {
+        pub(crate) writes: Vec<(WriteBatch, Durability)>,
+    }
+
+    impl StorageReader for RecordingBackend {
+        fn get(&self, _table: ColumnFamily, _key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+            Ok(None)
+        }
+
+        fn range(
+            &self,
+            _table: ColumnFamily,
+            _start: &[u8],
+            _end: &[u8],
+        ) -> Result<Rows, StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl StorageBackend for RecordingBackend {
+        fn write(&mut self, batch: WriteBatch, durability: Durability) -> Result<(), StorageError> {
+            self.writes.push((batch, durability));
+            Ok(())
+        }
+    }
+}
