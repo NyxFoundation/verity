@@ -693,6 +693,10 @@ mod tests {
     }
 
     fn harness() -> Harness {
+        harness_with_pending_capacity(8)
+    }
+
+    fn harness_with_pending_capacity(pending_capacity: usize) -> Harness {
         let validators = Validators::try_from(vec![Validator {
             attestation_public_key: [1; 52],
             proposal_public_key: [2; 52],
@@ -715,7 +719,7 @@ mod tests {
                 view,
                 gaps: gap_sender,
             },
-            8,
+            pending_capacity,
             Arc::clone(&counters),
             SlotClock::new(0),
             Arc::new(Metrics::new().expect("registry")),
@@ -841,8 +845,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_evict_the_oldest_parked_item_when_capacity_is_reached() {
-        let mut harness = harness();
-        harness.stage.pending_capacity = 1;
+        let mut harness = harness_with_pending_capacity(1);
         for (slot, parent) in [(1, [7; 32]), (2, [8; 32])] {
             let orphan = Block {
                 slot: Slot(slot),
