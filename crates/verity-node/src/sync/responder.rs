@@ -453,7 +453,7 @@ mod tests {
         );
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct FailingReader;
 
     impl StorageReader for FailingReader {
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn should_translate_storage_failures_to_server_error() {
         let repository = Repository::open(
-            FailingReader::default(),
+            FailingReader,
             Identity {
                 chain_fingerprint: [0; 32],
                 fork_version: 1,
