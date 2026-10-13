@@ -292,11 +292,11 @@ impl ProductRelay {
     /// these are the node's own signatures, and no peer holds a copy to give back.
     pub async fn run(mut self) {
         while let Some(product) = self.products.recv().await {
-            let published = self.publish(&product).await;
+            let (kind, payload) = self.publication(&product);
             if self.chain.send(product).await.is_err() {
                 break;
             }
-            if let Err(error) = published {
+            if let Err(error) = self.handle.publish(kind, payload).await {
                 // A publish failure is a delivery problem, not a consensus one: the value is
                 // already on its way into our own store.
                 tracing::warn!(%error, "duty product not published");
@@ -304,8 +304,8 @@ impl ProductRelay {
         }
     }
 
-    async fn publish(&self, product: &LocalProduct) -> Result<(), verity_p2p::PublishError> {
-        let (kind, payload) = match product {
+    fn publication(&self, product: &LocalProduct) -> (GossipKind, Vec<u8>) {
+        match product {
             LocalProduct::Block(signed) => (GossipKind::Block, signed.to_ssz()),
             LocalProduct::Attestation(signed) => (
                 GossipKind::Attestation(attestation_subnet(
@@ -315,16 +315,18 @@ impl ProductRelay {
                 signed.to_ssz(),
             ),
             LocalProduct::Aggregate(signed) => (GossipKind::Aggregation, signed.to_ssz()),
-        };
-        self.handle.publish(kind, payload).await
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use verity_types::{SubnetId, ValidatorIndex};
+    use tokio::sync::mpsc;
+    use verity_p2p::{GossipKind, NetworkCommand, NetworkHandle, PublishError};
+    use verity_types::{SignedAggregatedAttestation, SubnetId, ValidatorIndex};
+    use verity_validator::LocalProduct;
 
-    use super::{attestation_subnet, subscribed_subnets};
+    use super::{ProductRelay, attestation_subnet, subscribed_subnets};
 
     #[test]
     fn should_place_a_validator_on_index_modulo_the_committee_count() {
@@ -342,5 +344,37 @@ mod tests {
             vec![SubnetId(0), SubnetId(3)]
         );
         assert!(subscribed_subnets(&[], 8).is_empty());
+    }
+
+    #[tokio::test]
+    async fn should_deliver_a_local_product_before_network_publication_finishes() {
+        let (products, product_stream) = mpsc::channel(1);
+        let (chain, mut chain_stream) = mpsc::channel(1);
+        let (handle, mut commands) = NetworkHandle::testing(1);
+        let relay = tokio::spawn(ProductRelay::new(product_stream, chain, handle, 1).run());
+        products
+            .send(LocalProduct::Aggregate(
+                SignedAggregatedAttestation::default(),
+            ))
+            .await
+            .expect("relay is running");
+        drop(products);
+
+        let delivered =
+            tokio::time::timeout(std::time::Duration::from_millis(100), chain_stream.recv())
+                .await
+                .expect("local delivery must not wait for publish")
+                .expect("a local product");
+        assert_eq!(delivered.kind(), "aggregate");
+
+        let command = commands.recv().await.expect("publish command");
+        let NetworkCommand::Publish { kind, reply, .. } = command else {
+            panic!("relay only publishes");
+        };
+        assert_eq!(kind, GossipKind::Aggregation);
+        reply
+            .send(Err(PublishError::InsufficientPeers))
+            .expect("relay still awaits the result");
+        relay.await.expect("relay task");
     }
 }

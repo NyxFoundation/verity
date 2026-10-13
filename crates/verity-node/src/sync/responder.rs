@@ -273,6 +273,238 @@ fn incomplete(
     )))
 }
 
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use libssz::SszDecode;
+    use verity_chain::{generate_genesis, hash_tree_root, process_block, process_slots};
+    use verity_db::{
+        AnchorCommit, BlockCommit, ColumnFamily, Identity, MemoryBackend, Repository, StorageError,
+        StorageReader, TickCommit, stored_header,
+    };
+    use verity_p2p::{
+        BlocksByRangeRequest, BlocksByRootRequest, ErrorCode, MAX_REQUEST_BLOCKS,
+        RequestedBlockRoots, Response,
+    };
+    use verity_types::{
+        Block, BlockBody, Checkpoint, Interval, MultiMessageAggregate, SignedBlock, Slot,
+        Validator, ValidatorIndex, Validators,
+    };
+
+    use super::{BlockRequestKind, answer, signed_block};
+
+    struct StoredChain {
+        repository: Repository<MemoryBackend>,
+        anchor_root: [u8; 32],
+        roots: Vec<[u8; 32]>,
+    }
+
+    fn stored_chain() -> StoredChain {
+        let validators = Validators::try_from(vec![Validator {
+            attestation_public_key: [1; 52],
+            proposal_public_key: [2; 52],
+            index: ValidatorIndex(0),
+        }])
+        .expect("one validator");
+        let genesis = generate_genesis(0, validators);
+        let anchor_body = BlockBody::default();
+        let anchor_root = hash_tree_root(&stored_header(&genesis));
+        let mut repository = Repository::open(
+            MemoryBackend::new(),
+            Identity {
+                chain_fingerprint: hash_tree_root(&genesis),
+                fork_version: 1,
+            },
+        )
+        .expect("empty repository");
+        repository
+            .commit_anchor(&AnchorCommit {
+                block_root: anchor_root,
+                state: &genesis,
+                body: Some(&anchor_body),
+                served_from_slot: Slot(0),
+            })
+            .expect("anchor");
+
+        let mut parent = genesis;
+        let mut roots = Vec::new();
+        for slot in [1, 3] {
+            let advanced = process_slots(&parent, Slot(slot)).expect("future slot");
+            let block = Block {
+                slot: Slot(slot),
+                proposer_index: ValidatorIndex(0),
+                parent_root: hash_tree_root(&advanced.latest_block_header),
+                state_root: [0; 32],
+                body: BlockBody::default(),
+            };
+            let post = process_block(&advanced, &block).expect("valid empty block");
+            let root = hash_tree_root(&stored_header(&post));
+            repository
+                .commit_block(&BlockCommit {
+                    block_root: root,
+                    body: &block.body,
+                    proof: &MultiMessageAggregate::default(),
+                    post_state: &post,
+                    parent_slot: parent.slot,
+                })
+                .expect("block");
+            let checkpoint = Checkpoint {
+                root,
+                slot: Slot(slot),
+            };
+            repository
+                .commit_tick(&TickCommit {
+                    head: root,
+                    latest_justified: checkpoint,
+                    latest_finalized: Checkpoint::default(),
+                    interval: Interval(slot * 5),
+                    merge_pending_votes: false,
+                })
+                .expect("canonical index");
+            parent = post;
+            roots.push(root);
+        }
+        StoredChain {
+            repository,
+            anchor_root,
+            roots,
+        }
+    }
+
+    fn blocks(response: Response) -> Vec<Vec<u8>> {
+        match response {
+            Response::Blocks(chunks) => chunks,
+            other => panic!("expected blocks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_serve_only_canonical_blocks_present_in_a_valid_range() {
+        let chain = stored_chain();
+        let response = answer(
+            &chain.repository,
+            Slot(3),
+            &BlockRequestKind::ByRange(BlocksByRangeRequest {
+                start_slot: Slot(1),
+                count: 3,
+            }),
+        );
+        let decoded: Vec<_> = blocks(response)
+            .iter()
+            .map(|chunk| {
+                SignedBlock::from_ssz_bytes(chunk)
+                    .expect("signed block")
+                    .block
+                    .slot
+            })
+            .collect();
+        assert_eq!(decoded, vec![Slot(1), Slot(3)]);
+    }
+
+    #[test]
+    fn should_reject_empty_and_oversized_range_counts() {
+        let chain = stored_chain();
+        for count in [0, MAX_REQUEST_BLOCKS as u64 + 1] {
+            let response = answer(
+                &chain.repository,
+                Slot(3),
+                &BlockRequestKind::ByRange(BlocksByRangeRequest {
+                    start_slot: Slot(1),
+                    count,
+                }),
+            );
+            assert!(matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::InvalidRequest,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn should_skip_unknown_roots_and_the_proofless_anchor() {
+        let chain = stored_chain();
+        let roots = RequestedBlockRoots::try_from(vec![chain.anchor_root, [9; 32], chain.roots[0]])
+            .expect("three roots");
+        let chunks = blocks(answer(
+            &chain.repository,
+            Slot(3),
+            &BlockRequestKind::ByRoot(BlocksByRootRequest { roots }),
+        ));
+        assert_eq!(chunks.len(), 1);
+        let block = SignedBlock::from_ssz_bytes(&chunks[0]).expect("signed block");
+        assert_eq!(hash_tree_root(&block.block), chain.roots[0]);
+    }
+
+    #[test]
+    fn should_return_none_for_an_unknown_or_proofless_anchor_block() {
+        let chain = stored_chain();
+        assert!(signed_block(&chain.repository, [8; 32]).unwrap().is_none());
+        assert!(
+            signed_block(&chain.repository, chain.anchor_root)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            signed_block(&chain.repository, chain.roots[1])
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[derive(Debug, Default)]
+    struct FailingReader {
+        reads: AtomicUsize,
+    }
+
+    impl StorageReader for FailingReader {
+        fn get(&self, _table: ColumnFamily, _key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+            if self.reads.fetch_add(1, Ordering::Relaxed) < 4 {
+                Ok(None)
+            } else {
+                Err(StorageError::Backend("injected read failure".to_string()))
+            }
+        }
+
+        fn range(
+            &self,
+            _table: ColumnFamily,
+            _start: &[u8],
+            _end: &[u8],
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StorageError> {
+            Err(StorageError::Backend("injected range failure".to_string()))
+        }
+    }
+
+    #[test]
+    fn should_translate_storage_failures_to_server_error() {
+        let repository = Repository::open(
+            FailingReader::default(),
+            Identity {
+                chain_fingerprint: [0; 32],
+                fork_version: 1,
+            },
+        )
+        .expect("the first identity probe sees an empty repository");
+        let roots = RequestedBlockRoots::try_from(vec![[1; 32]]).expect("one root");
+
+        assert!(matches!(
+            answer(
+                &repository,
+                Slot(1),
+                &BlockRequestKind::ByRoot(BlocksByRootRequest { roots })
+            ),
+            Response::Error {
+                code: ErrorCode::ServerError,
+                ..
+            }
+        ));
+    }
+}
+
 #[cfg(kani)]
 mod harnesses {
     use super::{MAX_REQUEST_BLOCKS, range_count_is_valid};

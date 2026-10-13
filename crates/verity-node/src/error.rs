@@ -234,3 +234,71 @@ impl From<CheckpointError> for NodeError {
         Self::Checkpoint(error)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use verity_chain::RejectionReason;
+    use verity_db::StorageError;
+    use verity_p2p::BuildError;
+    use verity_types::Slot;
+    use verity_validator::DutyError;
+
+    use super::{CheckpointError, ConfigError, NodeError};
+
+    #[test]
+    fn should_render_every_configuration_failure_with_operator_context() {
+        let failures = [
+            ConfigError::Unreadable {
+                path: PathBuf::from("genesis.yaml"),
+                reason: "denied".to_string(),
+            },
+            ConfigError::Malformed {
+                path: PathBuf::from("genesis.yaml"),
+                reason: "yaml".to_string(),
+            },
+            ConfigError::MalformedKey {
+                index: 3,
+                role: "proposal",
+            },
+            ConfigError::RegistryTooLarge { count: 99 },
+            ConfigError::MalformedBootnode {
+                source: "--bootnode".to_string(),
+                entry: "bad".to_string(),
+                reason: "invalid".to_string(),
+            },
+            ConfigError::MalformedNodeKey {
+                path: PathBuf::from("node.key"),
+                reason: "short".to_string(),
+            },
+            ConfigError::UnsupportedSetting {
+                setting: "discovery",
+                reason: "not implemented".to_string(),
+            },
+        ];
+        for failure in failures {
+            assert!(!failure.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn should_render_and_convert_runtime_startup_failures() {
+        let failures = [
+            NodeError::from(ConfigError::RegistryTooLarge { count: 2 }),
+            NodeError::from(StorageError::Backend("disk".to_string())),
+            NodeError::from(RejectionReason::AnchorStateRootMismatch),
+            NodeError::IncompleteChain { root: [0xab; 32] },
+            NodeError::from(BuildError::Listen("occupied".to_string())),
+            NodeError::from(DutyError::KeyDuplication),
+            NodeError::from(CheckpointError::Rejected {
+                url: "http://checkpoint".to_string(),
+                reason: "bad state".to_string(),
+            }),
+            NodeError::CheckpointOverPopulated { slot: Slot(42) },
+        ];
+        for failure in failures {
+            assert!(!failure.to_string().is_empty());
+        }
+    }
+}

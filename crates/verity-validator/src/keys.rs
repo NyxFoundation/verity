@@ -269,3 +269,48 @@ impl AdvancesInFlight {
         advanced
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use verity_crypto::{Role, SecretKey};
+    use verity_types::ValidatorIndex;
+
+    use super::{AdvancesInFlight, Keyring};
+
+    #[test]
+    fn should_expose_an_empty_keyring_as_a_follower() {
+        let keyring = Keyring::empty();
+        assert!(keyring.is_empty());
+        assert_eq!(keyring.validators().count(), 0);
+        assert!(keyring.keys_for(ValidatorIndex(0)).is_none());
+        assert!(keyring.advances_due(verity_types::Slot(0)).is_empty());
+        assert!(keyring.directory().as_os_str().is_empty());
+        assert!(
+            keyring
+                .duplicate(ValidatorIndex(0), Role::Attestation)
+                .expect("missing keys are not errors")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn should_drop_a_failed_key_advance_without_returning_a_replacement() {
+        let mut advances = AdvancesInFlight::default();
+        let job = tokio::task::spawn_blocking(|| -> SecretKey { panic!("injected failure") });
+        let index = ValidatorIndex(3);
+        advances.insert(index, Role::Proposal, job);
+        assert!(advances.holds(index, Role::Proposal));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::task::yield_now().await;
+            while advances.holds(index, Role::Proposal) {
+                let completed = advances.reap().await;
+                assert!(completed.is_empty(), "a failed job returned a key");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the failed worker becomes observable");
+        assert!(!advances.holds(index, Role::Proposal));
+    }
+}

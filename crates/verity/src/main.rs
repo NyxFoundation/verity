@@ -252,3 +252,99 @@ fn init_logging(verbose: bool) {
         .with_target(false)
         .init();
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use clap::Parser;
+    use tempfile::tempdir;
+
+    use super::{Args, GOSSIP_DIGEST, bootnodes, listen_address};
+
+    fn args(extra: &[&str]) -> Args {
+        let mut argv = vec!["verity", "--genesis", "genesis.yaml"];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv).expect("valid arguments")
+    }
+
+    #[test]
+    fn should_apply_safe_cli_defaults_for_a_follower() {
+        let parsed = args(&[]);
+        assert_eq!(parsed.data_dir.to_string_lossy(), "verity-data");
+        assert_eq!(parsed.network_name, GOSSIP_DIGEST);
+        assert_eq!(parsed.node_id, "verity_0");
+        assert_eq!(parsed.http_address.to_string(), "0.0.0.0");
+        assert!(!parsed.is_aggregator);
+        assert!(parsed.validator_keys.is_none());
+        assert!(parsed.api_port.is_none());
+        assert!(parsed.metrics_port.is_none());
+    }
+
+    #[test]
+    fn should_let_the_port_flag_override_the_default_listen_multiaddr() {
+        let parsed = args(&["--listen-port", "9011"]);
+        assert_eq!(
+            listen_address(&parsed).to_string(),
+            "/ip4/0.0.0.0/udp/9011/quic-v1"
+        );
+
+        let parsed = args(&["--listen", "/ip4/127.0.0.1/udp/0/quic-v1"]);
+        assert_eq!(
+            listen_address(&parsed).to_string(),
+            "/ip4/127.0.0.1/udp/0/quic-v1"
+        );
+    }
+
+    #[test]
+    fn should_reject_conflicting_or_incomplete_cli_options() {
+        assert!(
+            Args::try_parse_from([
+                "verity",
+                "--genesis",
+                "genesis.yaml",
+                "--listen",
+                "/ip4/127.0.0.1/udp/0/quic-v1",
+                "--listen-port",
+                "9011",
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "verity",
+                "--genesis",
+                "genesis.yaml",
+                "--aggregate-subnet-ids",
+                "0",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn should_append_flag_bootnodes_after_file_bootnodes() {
+        let directory = tempdir().expect("temporary directory");
+        let file = directory.path().join("nodes.yaml");
+        fs::write(&file, "- /ip4/127.0.0.1/udp/9001/quic-v1\n").expect("nodes file");
+        let parsed = args(&[
+            "--bootnodes",
+            file.to_str().expect("utf8 path"),
+            "--bootnode",
+            "/ip4/127.0.0.2/udp/9002/quic-v1",
+        ]);
+
+        let addresses = bootnodes(&parsed).expect("valid bootnodes");
+        assert_eq!(addresses.len(), 2);
+        assert!(addresses[0].to_string().contains("127.0.0.1"));
+        assert!(addresses[1].to_string().contains("127.0.0.2"));
+    }
+
+    #[test]
+    fn should_name_the_flag_when_a_bootnode_argument_is_invalid() {
+        let parsed = args(&["--bootnode", "not-an-address"]);
+        let error = bootnodes(&parsed).expect_err("invalid bootnode");
+        assert!(error.to_string().contains("--bootnode"));
+        assert!(error.to_string().contains("not-an-address"));
+    }
+}

@@ -170,3 +170,84 @@ fn proof_participants(
         })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use verity_chain::{
+        AttestationSignature, AttestationSignatureEntry, ChainView, Store, generate_genesis,
+        hash_tree_root,
+    };
+    use verity_metrics::Metrics;
+    use verity_types::{
+        AttestationData, Block, BlockBody, SingleMessageAggregate, Validator, ValidatorIndex,
+        Validators,
+    };
+
+    use super::{aggregate, votes_with_fresh_evidence};
+
+    fn store() -> Store {
+        let validators = Validators::try_from(vec![Validator {
+            attestation_public_key: [1; 52],
+            proposal_public_key: [2; 52],
+            index: ValidatorIndex(0),
+        }])
+        .expect("one validator");
+        let state = generate_genesis(0, validators);
+        let block = Block {
+            state_root: hash_tree_root(&state),
+            body: BlockBody::default(),
+            ..Block::default()
+        };
+        Store::new(&state, &block, None).expect("self-consistent anchor")
+    }
+
+    #[test]
+    fn should_deduplicate_and_sort_votes_with_fresh_evidence() {
+        let mut store = store();
+        let first = AttestationData::default();
+        let second = AttestationData {
+            slot: verity_types::Slot(1),
+            ..first
+        };
+        store.attestation_signatures = HashMap::from([
+            (
+                second,
+                HashSet::from([AttestationSignatureEntry {
+                    validator_index: ValidatorIndex(0),
+                    signature: AttestationSignature(vec![1]),
+                }]),
+            ),
+            (
+                first,
+                HashSet::from([AttestationSignatureEntry {
+                    validator_index: ValidatorIndex(0),
+                    signature: AttestationSignature(vec![2]),
+                }]),
+            ),
+        ]);
+        store.latest_new_aggregated_payloads =
+            HashMap::from([(second, HashSet::from([SingleMessageAggregate::default()]))]);
+        let view = ChainView::of(&store);
+
+        let votes = votes_with_fresh_evidence(&view);
+
+        assert_eq!(votes.len(), 2);
+        assert!(
+            votes
+                .windows(2)
+                .all(|pair| { hash_tree_root(&pair[0]) <= hash_tree_root(&pair[1]) })
+        );
+    }
+
+    #[test]
+    fn should_skip_aggregation_when_the_head_state_is_missing() {
+        let mut store = store();
+        store.states.remove(&store.head);
+        let view = ChainView::of(&store);
+        let metrics = Metrics::new().expect("registry");
+
+        assert!(aggregate(&view, &metrics).is_empty());
+    }
+}

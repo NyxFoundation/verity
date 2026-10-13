@@ -236,6 +236,220 @@ pub fn record_aggregated_payload(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use verity_types::{
+        AggregationBits, AttestationData, Checkpoint, Interval, SignedAggregatedAttestation,
+        SingleMessageAggregate, Slot, ValidatorIndex,
+    };
+
+    use crate::fork_choice::testing::{anchored_on_genesis, import_at};
+    use crate::merkle::hash_tree_root;
+
+    use super::{
+        AttestationSignature, RejectionReason, record_aggregated_payload,
+        record_attestation_signature, validate_attestation, validate_attestation_signer,
+    };
+
+    struct Chain {
+        store: crate::fork_choice::Store,
+        genesis: Checkpoint,
+        first: Checkpoint,
+        second: Checkpoint,
+    }
+
+    fn chain() -> Chain {
+        let (mut store, genesis_state) = anchored_on_genesis(2);
+        let genesis = store.latest_finalized;
+        let first_block = import_at(&mut store, &genesis_state, 1);
+        let first = Checkpoint {
+            root: hash_tree_root(&first_block),
+            slot: Slot(1),
+        };
+        let first_state = store.states[&first.root].clone();
+        let second_block = import_at(&mut store, &first_state, 2);
+        let second = Checkpoint {
+            root: hash_tree_root(&second_block),
+            slot: Slot(2),
+        };
+        store.time = Interval(10);
+        Chain {
+            store,
+            genesis,
+            first,
+            second,
+        }
+    }
+
+    fn vote(chain: &Chain) -> AttestationData {
+        AttestationData {
+            slot: Slot(2),
+            source: chain.genesis,
+            target: chain.first,
+            head: chain.second,
+        }
+    }
+
+    fn proof(bits: &[bool]) -> SingleMessageAggregate {
+        SingleMessageAggregate {
+            participants: AggregationBits::try_from(bits.to_vec()).expect("small bitfield"),
+            ..SingleMessageAggregate::default()
+        }
+    }
+
+    #[test]
+    fn should_accept_a_vote_whose_blocks_slots_ancestry_and_time_are_valid() {
+        let chain = chain();
+        assert_eq!(validate_attestation(&chain.store, &vote(&chain)), Ok(()));
+    }
+
+    fn assert_rejected(chain: &Chain, data: AttestationData, expected: RejectionReason) {
+        assert_eq!(validate_attestation(&chain.store, &data), Err(expected));
+    }
+
+    #[test]
+    fn should_name_each_unknown_checkpoint_in_validation_order() {
+        let chain = chain();
+        let valid = vote(&chain);
+        let mut data = valid;
+        data.source.root = [1; 32];
+        assert_rejected(&chain, data, RejectionReason::UnknownSourceBlock);
+        data = valid;
+        data.target.root = [2; 32];
+        assert_rejected(&chain, data, RejectionReason::UnknownTargetBlock);
+        data = valid;
+        data.head.root = [3; 32];
+        assert_rejected(&chain, data, RejectionReason::UnknownHeadBlock);
+    }
+
+    #[test]
+    fn should_reject_every_invalid_slot_relationship() {
+        let chain = chain();
+        let valid = vote(&chain);
+        let mut data = valid;
+        data.source = chain.second;
+        data.target = chain.first;
+        assert_rejected(&chain, data, RejectionReason::SourceAfterTarget);
+        data = valid;
+        data.target = chain.second;
+        data.head = chain.first;
+        assert_rejected(&chain, data, RejectionReason::HeadOlderThanTarget);
+        data = valid;
+        data.source.slot = Slot(1);
+        assert_rejected(&chain, data, RejectionReason::SourceSlotMismatch);
+        data = valid;
+        data.target.slot = Slot(0);
+        assert_rejected(&chain, data, RejectionReason::TargetSlotMismatch);
+        data = valid;
+        data.head.slot = Slot(3);
+        assert_rejected(&chain, data, RejectionReason::HeadSlotMismatch);
+        data = valid;
+        data.slot = Slot(1);
+        assert_rejected(&chain, data, RejectionReason::AttestationSlotBeforeHead);
+        data.slot = Slot(3);
+        assert_rejected(&chain, data, RejectionReason::AttestationTooFarInFuture);
+    }
+
+    #[test]
+    fn should_reject_checkpoints_that_do_not_share_the_required_ancestry() {
+        let mut chain = chain();
+        let first_state = chain.store.states[&chain.first.root].clone();
+        let sibling_block = import_at(&mut chain.store, &first_state, 3);
+        let sibling = Checkpoint {
+            root: hash_tree_root(&sibling_block),
+            slot: Slot(3),
+        };
+        chain.store.time = Interval(15);
+
+        let source_off_target = AttestationData {
+            slot: Slot(3),
+            source: chain.second,
+            target: Checkpoint {
+                slot: Slot(3),
+                ..sibling
+            },
+            head: sibling,
+        };
+        assert_eq!(
+            validate_attestation(&chain.store, &source_off_target),
+            Err(RejectionReason::SourceNotAncestorOfTarget)
+        );
+
+        let target_off_head = AttestationData {
+            slot: Slot(3),
+            source: chain.genesis,
+            target: chain.second,
+            head: sibling,
+        };
+        assert_eq!(
+            validate_attestation(&chain.store, &target_off_head),
+            Err(RejectionReason::TargetNotAncestorOfHead)
+        );
+
+        chain.store.latest_finalized = chain.second;
+        let finalized_off_head = AttestationData {
+            slot: Slot(3),
+            source: chain.genesis,
+            target: chain.genesis,
+            head: sibling,
+        };
+        assert_eq!(
+            validate_attestation(&chain.store, &finalized_off_head),
+            Err(RejectionReason::HeadNotDescendantOfFinalized)
+        );
+    }
+
+    #[test]
+    fn should_validate_and_record_only_signers_in_the_target_registry() {
+        let mut chain = chain();
+        let data = vote(&chain);
+        assert_eq!(
+            validate_attestation_signer(&chain.store, ValidatorIndex(2), &data),
+            Err(RejectionReason::ValidatorNotInState)
+        );
+
+        record_attestation_signature(
+            &mut chain.store,
+            ValidatorIndex(1),
+            data,
+            AttestationSignature(vec![7]),
+        )
+        .expect("the signer is in the target registry");
+        assert_eq!(chain.store.attestation_signatures[&data].len(), 1);
+    }
+
+    #[test]
+    fn should_reject_empty_or_out_of_registry_aggregates_without_mutating_the_pool() {
+        let mut chain = chain();
+        let data = vote(&chain);
+        let empty = SignedAggregatedAttestation {
+            data,
+            proof: proof(&[]),
+        };
+        assert_eq!(
+            record_aggregated_payload(&mut chain.store, &empty),
+            Err(RejectionReason::EmptyAggregationBits)
+        );
+
+        let outside = SignedAggregatedAttestation {
+            data,
+            proof: proof(&[false, false, true]),
+        };
+        assert_eq!(
+            record_aggregated_payload(&mut chain.store, &outside),
+            Err(RejectionReason::ValidatorNotInState)
+        );
+        assert!(chain.store.latest_new_aggregated_payloads.is_empty());
+
+        let valid = SignedAggregatedAttestation {
+            data,
+            proof: proof(&[true, false]),
+        };
+        record_aggregated_payload(&mut chain.store, &valid).expect("one known validator");
+        assert!(chain.store.latest_new_aggregated_payloads[&data].contains(&valid.proof));
+    }
+}
+
 #[cfg(kani)]
 mod harnesses {
     use verity_types::Slot;

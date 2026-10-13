@@ -21,6 +21,11 @@ publish = false
 # `verity-types` supplies the two shapes the wire protocol itself owns a copy of: the
 # `Checkpoint` pair inside `Status`, and the `Slot` in `BlocksByRangeRequest`. Response
 # chunks (blocks) are deliberately NOT decoded here — they cross the API as raw SSZ bytes.
+[features]
+default = []
+# In-process command-channel harness used by higher-level orchestration tests.
+test-utils = []
+
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true

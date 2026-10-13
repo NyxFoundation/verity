@@ -152,3 +152,61 @@ impl std::fmt::Display for ErrorCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{BuildError, CommandError, ErrorCode, PublishError, RequestError};
+
+    #[test]
+    fn should_render_every_request_failure_without_losing_its_detail() {
+        let failures = [
+            RequestError::Timeout,
+            RequestError::ConnectionClosed,
+            RequestError::UnsupportedProtocol,
+            RequestError::DialFailure,
+            RequestError::Io("reset".to_string()),
+            RequestError::ServiceStopped,
+        ];
+        for failure in failures {
+            assert!(!failure.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn should_render_every_publish_command_and_build_failure() {
+        let publish = [
+            PublishError::InsufficientPeers,
+            PublishError::Duplicate,
+            PublishError::PayloadTooLarge,
+            PublishError::Other("mesh".to_string()),
+            PublishError::ServiceStopped,
+        ];
+        for failure in publish {
+            assert!(!failure.to_string().is_empty());
+        }
+
+        for failure in [
+            CommandError::ServiceStopped,
+            CommandError::Failed("dial".to_string()),
+        ] {
+            assert!(!failure.to_string().is_empty());
+        }
+        for failure in [
+            BuildError::Behaviour("config".to_string()),
+            BuildError::Listen("bind".to_string()),
+            BuildError::Bootnode("address".to_string()),
+        ] {
+            assert!(!failure.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn should_render_every_protocol_error_code() {
+        assert_eq!(ErrorCode::InvalidRequest.to_string(), "invalid request");
+        assert_eq!(ErrorCode::ServerError.to_string(), "server error");
+        assert_eq!(
+            ErrorCode::ResourceUnavailable.to_string(),
+            "resource unavailable"
+        );
+    }
+}

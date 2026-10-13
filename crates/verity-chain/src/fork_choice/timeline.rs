@@ -95,3 +95,115 @@ pub fn update_safe_target(store: &mut Store) {
         Some(min_target_score),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use verity_types::{
+        AggregationBits, AttestationData, Checkpoint, Interval, SingleMessageAggregate, Slot,
+    };
+
+    use crate::fork_choice::testing::{anchored_on_genesis, import_at};
+    use crate::merkle::hash_tree_root;
+
+    use super::{accept_new_attestations, on_tick, update_safe_target};
+
+    fn proof(bits: &[bool]) -> SingleMessageAggregate {
+        SingleMessageAggregate {
+            participants: AggregationBits::try_from(bits.to_vec()).expect("small bitfield"),
+            ..SingleMessageAggregate::default()
+        }
+    }
+
+    #[test]
+    fn should_ignore_a_tick_that_does_not_advance_time() {
+        let (mut store, _) = anchored_on_genesis(2);
+        on_tick(&mut store, Interval(0), true);
+        assert_eq!(store.time, Interval(0));
+    }
+
+    #[test]
+    fn should_accept_pending_votes_at_interval_four() {
+        let (mut store, genesis) = anchored_on_genesis(2);
+        let block = import_at(&mut store, &genesis, 1);
+        let head = Checkpoint {
+            root: hash_tree_root(&block),
+            slot: Slot(1),
+        };
+        let data = AttestationData {
+            slot: Slot(1),
+            source: store.latest_finalized,
+            target: store.latest_finalized,
+            head,
+        };
+        store
+            .latest_new_aggregated_payloads
+            .insert(data, HashSet::from([proof(&[true, false])]));
+        store.time = Interval(0);
+
+        on_tick(&mut store, Interval(4), false);
+
+        assert_eq!(store.time, Interval(4));
+        assert!(store.latest_new_aggregated_payloads.is_empty());
+        assert!(store.latest_known_aggregated_payloads.contains_key(&data));
+    }
+
+    #[test]
+    fn should_accept_at_slot_start_only_when_the_proposal_has_landed() {
+        let (mut store, _) = anchored_on_genesis(2);
+        let data = AttestationData::default();
+        store
+            .latest_new_aggregated_payloads
+            .insert(data, HashSet::from([proof(&[true, false])]));
+        store.time = Interval(4);
+
+        on_tick(&mut store, Interval(5), false);
+        assert!(store.latest_new_aggregated_payloads.contains_key(&data));
+
+        store.time = Interval(4);
+        on_tick(&mut store, Interval(5), true);
+        assert!(store.latest_new_aggregated_payloads.is_empty());
+        assert!(store.latest_known_aggregated_payloads.contains_key(&data));
+    }
+
+    #[test]
+    fn should_merge_pending_proofs_with_existing_counted_proofs() {
+        let (mut store, _) = anchored_on_genesis(2);
+        let data = AttestationData::default();
+        store
+            .latest_known_aggregated_payloads
+            .insert(data, HashSet::from([proof(&[true, false])]));
+        store
+            .latest_new_aggregated_payloads
+            .insert(data, HashSet::from([proof(&[false, true])]));
+
+        accept_new_attestations(&mut store);
+
+        assert!(store.latest_new_aggregated_payloads.is_empty());
+        assert_eq!(store.latest_known_aggregated_payloads[&data].len(), 2);
+    }
+
+    #[test]
+    fn should_advance_the_safe_target_only_with_a_strict_supermajority() {
+        let (mut store, genesis) = anchored_on_genesis(3);
+        let block = import_at(&mut store, &genesis, 1);
+        let head = Checkpoint {
+            root: hash_tree_root(&block),
+            slot: Slot(1),
+        };
+        let data = AttestationData {
+            slot: Slot(1),
+            source: store.latest_finalized,
+            target: store.latest_finalized,
+            head,
+        };
+        store
+            .latest_new_aggregated_payloads
+            .insert(data, HashSet::from([proof(&[true, true, false])]));
+
+        update_safe_target(&mut store);
+
+        assert_eq!(store.safe_target, head.root);
+    }
+}

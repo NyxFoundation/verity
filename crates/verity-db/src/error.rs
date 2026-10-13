@@ -233,4 +233,63 @@ mod tests {
             "database was written at fork version 1, configured for 2"
         );
     }
+
+    #[test]
+    fn should_render_every_storage_failure_for_operator_diagnostics() {
+        let errors = [
+            StorageError::Backend("disk".to_string()),
+            StorageError::KeyWidth {
+                table: ColumnFamily::BlockHeaders,
+                expected: 32,
+                found: 3,
+            },
+            StorageError::MissingRow {
+                table: ColumnFamily::BlockBodies,
+                key: vec![1],
+            },
+            StorageError::MissingMetadata(crate::MetadataKey::Head),
+            StorageError::RootMismatch {
+                expected: [1; 32],
+                computed: [2; 32],
+            },
+            StorageError::ParentMismatch {
+                expected: [3; 32],
+                found: [4; 32],
+            },
+            StorageError::RejectedBatch("inconsistent"),
+            StorageError::ReplayTooLong {
+                from: [5; 32],
+                walked: 1_024,
+            },
+            StorageError::CapacityExceeded("validators"),
+        ];
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn should_render_every_identity_mismatch() {
+        let mismatches = [
+            IdentityMismatch::SchemaVersion {
+                expected: 2,
+                found: 1,
+            },
+            IdentityMismatch::ChainFingerprint {
+                expected: [1; 32],
+                found: [2; 32],
+            },
+            IdentityMismatch::ForkVersion {
+                expected: 2,
+                found: 1,
+            },
+            IdentityMismatch::SszSchemaDigest {
+                expected: [3; 32],
+                found: [4; 32],
+            },
+        ];
+        for mismatch in mismatches {
+            assert!(!mismatch.to_string().is_empty());
+        }
+    }
 }

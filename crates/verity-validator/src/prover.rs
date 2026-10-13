@@ -92,3 +92,20 @@ impl Prover {
             .map_err(|_| DutyError::ProverStopped)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Prover;
+
+    #[tokio::test]
+    async fn should_return_the_blocking_jobs_value() {
+        let prover = Prover::default();
+        assert_eq!(prover.prove(|| 42).await.expect("job completes"), 42);
+    }
+
+    #[tokio::test]
+    async fn should_report_a_panicking_job_as_a_stopped_prover() {
+        let prover = Prover::new();
+        assert!(prover.prove(|| panic!("injected failure")).await.is_err());
+    }
+}

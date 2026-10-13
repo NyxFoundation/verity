@@ -6013,6 +6013,7 @@ name = "verity"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

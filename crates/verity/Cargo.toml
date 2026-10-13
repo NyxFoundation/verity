@@ -19,5 +19,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 verity-node.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

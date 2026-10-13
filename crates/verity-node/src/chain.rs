@@ -219,10 +219,9 @@ impl<B: StorageBackend> ChainTask<B> {
             let next = Interval(self.store.time.0 + 1);
             on_tick(&mut self.store, next, false);
             self.commit_interval(next);
-        }
-
-        if target.0 % INTERVALS_PER_SLOT == 2 {
-            self.start_aggregation_round();
+            if next.0 % INTERVALS_PER_SLOT == 2 {
+                self.start_aggregation_round();
+            }
         }
     }
 
@@ -484,4 +483,104 @@ fn hex(root: Bytes32) -> String {
         .take(4)
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::{mpsc, watch};
+    use verity_chain::{Store, generate_genesis, hash_tree_root};
+    use verity_db::{AnchorCommit, Identity, MemoryBackend, Repository, stored_header};
+    use verity_metrics::Metrics;
+    use verity_types::{BlockBody, Interval, Validator, ValidatorIndex, Validators};
+
+    use crate::store_open::block_from;
+
+    use super::{ChainTask, hex};
+
+    fn task() -> (
+        ChainTask<MemoryBackend>,
+        watch::Sender<Interval>,
+        mpsc::Sender<verity_validator::LocalProduct>,
+        mpsc::Sender<crate::verification::Verified>,
+    ) {
+        let validators = Validators::try_from(vec![Validator {
+            attestation_public_key: [1; 52],
+            proposal_public_key: [2; 52],
+            index: ValidatorIndex(0),
+        }])
+        .expect("one validator");
+        let state = generate_genesis(0, validators);
+        let body = BlockBody::default();
+        let block = block_from(&stored_header(&state), body.clone());
+        let store = Store::new(&state, &block, None).expect("anchor");
+        let mut repository = Repository::open(
+            MemoryBackend::new(),
+            Identity {
+                chain_fingerprint: hash_tree_root(&state),
+                fork_version: 1,
+            },
+        )
+        .expect("empty repository");
+        repository
+            .commit_anchor(&AnchorCommit {
+                block_root: hash_tree_root(&block),
+                state: &state,
+                body: Some(&body),
+                served_from_slot: state.slot,
+            })
+            .expect("stored anchor");
+        let (clock, clock_stream) = watch::channel(Interval(0));
+        let (local, local_stream) = mpsc::channel(1);
+        let (network, network_stream) = mpsc::channel(1);
+        let (task, _) = ChainTask::new(
+            store,
+            repository,
+            clock_stream,
+            local_stream,
+            network_stream,
+            None,
+            Arc::new(Metrics::new().expect("registry")),
+        );
+        (task, clock, local, network)
+    }
+
+    #[tokio::test]
+    async fn should_run_every_interval_action_when_the_clock_coalesces_ticks() {
+        let (mut task, _, _, _) = task();
+
+        task.on_clock(Interval(8)).await;
+
+        assert_eq!(task.store.time, Interval(8));
+        assert_eq!(
+            task.metrics
+                .validator
+                .aggregator_skipped_total
+                .with_label_values(&["not_aggregator"])
+                .get(),
+            2,
+            "interval 2 must run once in each crossed slot"
+        );
+        assert_eq!(
+            task.repository.last_processed_interval().unwrap(),
+            Some(Interval(8))
+        );
+    }
+
+    #[tokio::test]
+    async fn should_stop_after_all_three_inboxes_close() {
+        let (task, clock, local, network) = task();
+        drop(clock);
+        drop(local);
+        drop(network);
+        tokio::time::timeout(std::time::Duration::from_millis(100), task.run())
+            .await
+            .expect("closed inputs stop the chain task");
+    }
+
+    #[test]
+    fn should_render_only_the_first_four_root_bytes_for_logs() {
+        assert_eq!(hex([0xab; 32]), "abababab");
+    }
 }

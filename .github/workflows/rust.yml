@@ -59,6 +59,26 @@ jobs:
       - name: Build
         run: cargo build --locked --workspace
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install coverage tooling
+        run: |
+          rustup component add llvm-tools-preview
+          cargo install --locked cargo-llvm-cov --version 0.8.7
+
+      - name: Enforce workspace line coverage
+        run: >-
+          cargo llvm-cov --locked --workspace --all-features --summary-only
+          --fail-under-lines 80
+
   deny:
     runs-on: ubuntu-latest
     steps:

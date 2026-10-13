@@ -31,3 +31,19 @@ impl LocalProduct {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use verity_types::{SignedAggregatedAttestation, SignedBlock};
+
+    use super::LocalProduct;
+
+    #[test]
+    fn should_name_block_and_aggregate_products_for_logs() {
+        assert_eq!(LocalProduct::Block(SignedBlock::default()).kind(), "block");
+        assert_eq!(
+            LocalProduct::Aggregate(SignedAggregatedAttestation::default()).kind(),
+            "aggregate"
+        );
+    }
+}
