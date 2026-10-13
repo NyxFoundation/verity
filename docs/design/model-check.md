@@ -1,6 +1,6 @@
 ---
 title: Verification Tooling Adoption Strategy
-last_updated: 2026-09-26
+last_updated: 2026-10-14
 tags:
   - verification
   - model-checking
@@ -22,10 +22,11 @@ tags:
 > this memo classifies each by **assurance strength** (how it explores state) and by
 > **zone** (where it applies). Those are the two axes the whole strategy hangs on.
 
-## Status (2026-09-26)
+## Status (2026-10-14)
 
-Kani is adopted: seven crates with Verity-owned decision or arithmetic logic carry 42
-`#[cfg(kani)]` harnesses next to the code. It runs locally (`cargo kani --workspace`), not in CI,
+Kani is adopted: seven crates with Verity-owned decision, arithmetic, or closed state-mutation
+logic carry 50 `#[cfg(kani)]` harnesses next to the code. It runs locally
+(`cargo kani --workspace`), not in CI,
 by owner decision; the proofs are re-run on the branch that changes the code they cover and the
 result is stated in the PR. Because Verity is Rust-first, the state transition and fork choice are
 Rust today, so the "boundary code" column below is, for now, the Rust consensus logic itself — the
@@ -208,7 +209,10 @@ path is later replaced by the proven Lean implementation.
 | p2p / frames | `frames_are_classified_without_overrunning_the_payload` | NET-2 overlap for framed-size accounting | Payload capped at 8 bytes; compressed frames hand off to external snap |
 | db / keys | `slot_keys_order_like_slots`, `composite_keys_order_by_slot_first`, `integer_keys_read_back`, `root_keys_read_back`, `composite_keys_read_back`, `foreign_widths_are_refused` | No catalog proposition; Rust storage-layout obligations | Wrong-width input capped at 41 bytes, one beyond the widest key |
 | db / snapshots | `boundaries_are_crossed_exactly_by_forward_gaps` | No catalog proposition | All slot pairs; exact quotient characterization is asserted |
+| db / commits and retention | `a_safe_target_update_is_one_atomic_batch`, `canonical_switch_queues_deletes_before_puts`, `finalization_controls_tick_durability`, `proof_pruning_never_crosses_finalization` | Partial STOR-2 implementation obligation | Verity's batch construction, mutation order, durability choice, and prune boundary are checked; RocksDB's atomic write guarantee remains external |
 | validator / duties | `the_gate_closes_late_and_reopens_early`, `the_attestation_gate_refuses_recorded_slots`, `attestation_retention_is_total_at_the_slot_boundary`, `intervals_land_in_one_slot` | VAL-4 overlap for the dedup decision | The `BTreeSet` implementation is trusted std; the pure gate and overflow-safe retention rule are proved |
+| node / pending verification | `pending_mutation_preserves_capacity_and_fifo_order`, `pending_resolution_partitions_without_loss`, `zero_capacity_never_retains_an_item` | No catalog proposition; I/O-edge buffering obligation | The real generic buffer is checked with symbolic entries at capacity one and a concrete three-entry partition; channels remain outside Kani |
+| node / peer lifecycle | `peer_mutation_preserves_operational_bounds` | No catalog proposition; sync policy obligation | Symbolic valid scores, request counts, and outcomes; `Instant`-based capability TTL and randomized peer selection remain under unit tests |
 | node / sync FSM | `observations_follow_the_table` | SYNC-1 overlap | Entire finite transition table |
 | node / fetch planning | `range_requests_are_bounded_and_start_past_the_head`, `gaps_split_at_the_threshold`, `plans_carry_what_the_gap_named` | No direct catalog proposition | Planning only, not responder output |
 | node / responder | `range_response_counts_are_admitted_exactly_inside_the_bound` | NET-1 overlap for request admission | Database range iteration and response materialization remain backend-dependent |
@@ -216,9 +220,12 @@ path is later replaced by the proven Lean implementation.
 | crypto / epoch | `epochs_are_exactly_the_slots_that_fit` | No catalog proposition | All `u64`; cryptographic implementation remains external |
 | metrics / narrowing | `counts_are_exact_or_saturated`, `gauges_are_exact_or_saturated` | No catalog proposition | All source integer values |
 
-This audit found one implementation defect: validator attestation-history retention added the
-retention window to a symbolic slot and could overflow near `u64::MAX`. The production predicate
-now uses a guarded subtraction, and its boundary behavior has a dedicated harness and unit test.
+The first audit found one implementation defect: validator attestation-history retention added the
+retention window to a symbolic slot and could overflow near `u64::MAX`. The state-mutation audit
+then found one defensive gap: a zero-capacity pending queue retained one item. The production type
+now makes the zero-capacity result explicit and has dedicated Kani and unit coverage. Peer request
+mutation is checked under the production precondition that selection admits only a peer below its
+concurrency cap.
 
 Catalog items not represented by a Kani harness fall into explicit categories:
 
@@ -231,8 +238,12 @@ Catalog items not represented by a Kani harness fall into explicit categories:
   key containers and file I/O are not a useful Kani target. **VAL-5** belongs to external leanSig.
 - **NET-1/NET-2:** Kani proves Verity's pure admission and size arithmetic; database iteration,
   buffering, and snappy remain integration/external concerns.
-- **STOR-1/STOR-2:** parent preservation is a map invariant across block import, and atomicity is a
-  RocksDB/backend transaction guarantee; neither is reduced to a misleading scalar harness.
+- **STOR-1/STOR-2:** Kani checks Verity's batch assembly and operation order, but parent
+  preservation remains a map invariant across block import and actual atomicity remains a
+  RocksDB/backend transaction guarantee. Direct `MemoryBackend`, fork-choice `Store`, and full
+  `BlockCommit` harnesses each exceeded the 300-second budget because they expand `BTreeMap`,
+  `HashMap`, or libssz container internals; their mutation semantics remain under unit,
+  backend-parity, and end-to-end tests rather than a misleading model of different code.
 - **SYNC-2:** there is no standalone Rust `accepts_gossip` decision in the current runtime. No Kani
   claim is made until that production gate exists; the orchestrator obligation remains open.
 

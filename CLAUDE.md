@@ -38,10 +38,10 @@ Owner-ratified ground rules for the first Rust code. Do not re-open these withou
 - **Toolchain**: Rust edition 2024, resolver 3, latest stable pinned via `rust-toolchain.toml` (external floor: leanSig requires ≥1.87; no nightly needed).
 - **License**: MIT (Nyx Foundation copyright).
 - **Devnet**: always track the latest devnet generation; never hardcode a generation in docs or code comments.
-- **Verification harness**: introduced per `docs/design/model-check.md`'s tool-to-zone mapping, not on day one. Today (2026-09-26): proptest is scoped to the SSZ round trip in `verity-types`, and **Kani** supplies 42 bounded checks across seven crates with Verity-owned decision or arithmetic logic (see **Kani** below). bolero, Loom, Shuttle and Miri are still to come.
+- **Verification harness**: introduced per `docs/design/model-check.md`'s tool-to-zone mapping, not on day one. Today (2026-10-14): proptest is scoped to the SSZ round trip in `verity-types`, and **Kani** supplies 50 bounded checks across seven crates with Verity-owned decision, arithmetic, and closed state-mutation logic (see **Kani** below). bolero, Loom, Shuttle and Miri are still to come.
 - Known caveat: leanSig internally depends on `ethereum_ssz`, so two SSZ implementations coexist transitively — harmless, but mind type conversions at the signature boundary.
 
-## Kani (2026-09-26)
+## Kani (2026-10-14)
 
 Bounded model checking of Verity's own pure logic; external crates (libssz, leanSig, leanVM,
 rust-libp2p, RocksDB, snap) are never the subject of a harness. Facts that are easy to get wrong:
@@ -74,9 +74,12 @@ rust-libp2p, RocksDB, snap) are never the subject of a harness. Facts that are e
   loop per operation), symbolic indexing into a `Vec<Bytes32>` followed by a 32-byte compare,
   equalities between two `u64` divisions by a constant (`total_intervals == slot * 5 + interval`),
   `Duration` comparisons (two divisions per `from_millis`), `u128::isqrt`, `sort_unstable`, and
-  `str::strip_prefix`, and mutation through `BTreeSet`. A harness over any of these is proving std
-  or libssz, not Verity; state the property on the pure function underneath instead, or leave it to
-  the leanSpec vectors.
+  `str::strip_prefix`, and mutation through `BTreeSet`, `BTreeMap`, or `HashMap`. Direct harnesses
+  over `MemoryBackend`, fork-choice `Store`, and a full `BlockCommit` each timed out at 300 s; the
+  repository instead uses a recording backend for batch mutations, while map semantics stay under
+  unit/integration tests. A harness over the excluded paths is proving std or libssz, not Verity;
+  state the property on the decision or mutation boundary underneath instead, or leave it to the
+  leanSpec vectors.
 - **Logging is not a Kani-reachable path.** `tracing::info!` reaches `catch_unwind`, which Kani
   0.68 cannot compile (an ICE in `intrinsics.rs`; stubbing `dispatcher::get_default` does not
   help because the callsite registration reaches it too). A decision that must be proved lives in

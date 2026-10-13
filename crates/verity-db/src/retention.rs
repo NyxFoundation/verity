@@ -34,6 +34,14 @@ pub const PROOF_RETENTION_SLOTS: u64 = 21_600;
 /// request is answered `RESOURCE_UNAVAILABLE` rather than with a short response.
 pub const MIN_SLOTS_FOR_BLOCK_REQUESTS: u64 = 3_600;
 
+const fn proof_prune_cutoff(tip_slot: Slot, finalized: Checkpoint) -> Option<Slot> {
+    let cutoff = Slot(tip_slot.0.saturating_sub(PROOF_RETENTION_SLOTS));
+    if cutoff.0 == 0 || cutoff.0 > finalized.slot.0 {
+        return None;
+    }
+    Some(cutoff)
+}
+
 impl<B: StorageBackend> Repository<B> {
     /// Deletes expired aggregate proofs, returning the exclusive cutoff when anything was
     /// deleted.
@@ -49,14 +57,18 @@ impl<B: StorageBackend> Repository<B> {
     /// [`StorageError::Backend`] when the engine fails, or [`StorageError::Decode`] when the
     /// finalized checkpoint does not decode.
     pub fn prune_block_proofs(&mut self, tip_slot: Slot) -> Result<Option<Slot>, StorageError> {
-        let cutoff = Slot(tip_slot.0.saturating_sub(PROOF_RETENTION_SLOTS));
-        if cutoff.0 == 0 {
-            return Ok(None);
-        }
         let finalized = self.latest_finalized()?.unwrap_or_default();
-        if cutoff.0 > finalized.slot.0 {
+        self.prune_block_proofs_at(tip_slot, finalized)
+    }
+
+    fn prune_block_proofs_at(
+        &mut self,
+        tip_slot: Slot,
+        finalized: Checkpoint,
+    ) -> Result<Option<Slot>, StorageError> {
+        let Some(cutoff) = proof_prune_cutoff(tip_slot, finalized) else {
             return Ok(None);
-        }
+        };
 
         let (low, high) = key::slot_and_root_bounds(Slot(0), cutoff);
         let mut batch = WriteBatch::new();
@@ -170,5 +182,32 @@ impl<B: StorageReader> Repository<B> {
         requested_slot: Slot,
     ) -> Result<bool, StorageError> {
         Ok(requested_slot.0 >= self.range_service_floor(current_slot)?.0)
+    }
+}
+
+#[cfg(kani)]
+mod harnesses {
+    use verity_types::{Checkpoint, Slot};
+
+    use super::{PROOF_RETENTION_SLOTS, proof_prune_cutoff};
+
+    /// A proof cutoff exists exactly when it is nonzero and no later than finalization.
+    #[kani::proof]
+    fn proof_pruning_never_crosses_finalization() {
+        let tip: u64 = kani::any();
+        let finalized: u64 = kani::any();
+        let cutoff = tip.saturating_sub(PROOF_RETENTION_SLOTS);
+        let expected = (cutoff > 0 && cutoff <= finalized).then_some(Slot(cutoff));
+        let actual = proof_prune_cutoff(
+            Slot(tip),
+            Checkpoint {
+                root: [0; 32],
+                slot: Slot(finalized),
+            },
+        );
+        assert!(actual == expected);
+
+        let missing: Option<Checkpoint> = None;
+        assert!(proof_prune_cutoff(Slot(tip), missing.unwrap_or_default()).is_none());
     }
 }

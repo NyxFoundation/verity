@@ -120,6 +120,28 @@ pub struct TickCommit {
     pub merge_pending_votes: bool,
 }
 
+const fn tick_durability(stored: Option<Checkpoint>, next: Checkpoint) -> Durability {
+    if let Some(stored) = stored
+        && next.slot.0 <= stored.slot.0
+    {
+        return Durability::Buffered;
+    }
+    Durability::Synced
+}
+
+fn queue_switch_edits(batch: &mut WriteBatch, switch: CanonicalSwitch) {
+    for slot in switch.leaving {
+        batch.queue_delete(ColumnFamily::CanonicalBlocks, key::slot(slot));
+    }
+    for (slot, root) in switch.joining {
+        batch.queue_put(
+            ColumnFamily::CanonicalBlocks,
+            key::slot(slot),
+            root.to_vec(),
+        );
+    }
+}
+
 impl<B: StorageBackend> Repository<B> {
     /// Writes the anchor a chain starts from, identity included.
     ///
@@ -365,14 +387,7 @@ impl<B: StorageBackend> Repository<B> {
             &tick.interval.0,
         );
 
-        let advances_finalization = self
-            .latest_finalized()?
-            .is_none_or(|stored| tick.latest_finalized.slot.0 > stored.slot.0);
-        let durability = if advances_finalization {
-            Durability::Synced
-        } else {
-            Durability::Buffered
-        };
+        let durability = tick_durability(self.latest_finalized()?, tick.latest_finalized);
         self.commit(batch, durability)
     }
 
@@ -395,16 +410,7 @@ impl<B: StorageBackend> Repository<B> {
                 joining: self.ancestry_to_canonical(new_head)?,
             },
         };
-        for slot in switch.leaving {
-            batch.queue_delete(ColumnFamily::CanonicalBlocks, key::slot(slot));
-        }
-        for (slot, root) in switch.joining {
-            batch.queue_put(
-                ColumnFamily::CanonicalBlocks,
-                key::slot(slot),
-                root.to_vec(),
-            );
-        }
+        queue_switch_edits(batch, switch);
         Ok(())
     }
 
@@ -520,4 +526,123 @@ fn check_block(commit: &BlockCommit<'_>, header: &BlockHeader) -> Result<(), Sto
         ));
     }
     Ok(())
+}
+
+#[cfg(kani)]
+mod harnesses {
+    use libssz::SszEncode;
+    use verity_types::{Checkpoint, Interval, Slot};
+
+    use crate::backend::harness_support::RecordingBackend;
+    use crate::backend::{Durability, Op, WriteBatch};
+    use crate::metadata::MetadataKey;
+    use crate::repository::Repository;
+    use crate::schema::Identity;
+
+    fn repository(backend: RecordingBackend) -> Repository<RecordingBackend> {
+        Repository::from_backend_for_harness(
+            backend,
+            Identity {
+                chain_fingerprint: [0; 32],
+                fork_version: 0,
+            },
+        )
+    }
+
+    #[allow(dead_code)]
+    fn put_metadata_stub<T: SszEncode>(batch: &mut WriteBatch, key: MetadataKey, _value: &T) {
+        batch.queue_put(crate::ColumnFamily::Metadata, key.as_bytes(), Vec::new());
+    }
+
+    /// A safe-target update is one atomic, buffered batch containing both view mutations.
+    #[kani::proof]
+    #[kani::unwind(25)]
+    #[kani::stub(crate::repository::put_metadata, put_metadata_stub)]
+    fn a_safe_target_update_is_one_atomic_batch() {
+        let mut repository = repository(RecordingBackend::default());
+        let interval = Interval(kani::any());
+        repository
+            .commit_safe_target([7; 32], interval)
+            .expect("the recording backend cannot fail");
+
+        let writes = &repository.backend().writes;
+        assert!(writes.len() == 1);
+        let (batch, durability) = &writes[0];
+        assert!(*durability == Durability::Buffered);
+        assert!(batch.len() == 2);
+        match (&batch.ops()[0], &batch.ops()[1]) {
+            (
+                Op::Put {
+                    table: first_table,
+                    key: first_key,
+                    ..
+                },
+                Op::Put {
+                    table: second_table,
+                    key: second_key,
+                    ..
+                },
+            ) => {
+                assert!(*first_table == crate::ColumnFamily::Metadata);
+                assert!(*second_table == crate::ColumnFamily::Metadata);
+                assert!(*first_key == MetadataKey::SafeTarget.as_bytes());
+                assert!(*second_key == MetadataKey::LastProcessedInterval.as_bytes());
+            }
+            _ => unreachable!("both safe-target fields are metadata puts"),
+        }
+    }
+
+    /// A reorg deletes the old slot before inserting the new root at that same slot.
+    #[kani::proof]
+    #[kani::unwind(35)]
+    fn canonical_switch_queues_deletes_before_puts() {
+        let slot = Slot(kani::any());
+        let root = [7; 32];
+        let mut batch = WriteBatch::new();
+        super::queue_switch_edits(
+            &mut batch,
+            super::CanonicalSwitch {
+                leaving: vec![slot],
+                joining: vec![(slot, root)],
+            },
+        );
+        assert!(batch.len() == 2);
+        match (&batch.ops()[0], &batch.ops()[1]) {
+            (
+                Op::Delete { key: deleted, .. },
+                Op::Put {
+                    key: inserted,
+                    value,
+                    ..
+                },
+            ) => {
+                assert!(*deleted == slot.0.to_be_bytes());
+                assert!(*inserted == slot.0.to_be_bytes());
+                assert!(*value == root);
+            }
+            _ => unreachable!("the delete precedes its replacement"),
+        }
+    }
+
+    /// Finalization advancement alone selects a synced commit for every pair of checkpoints.
+    #[kani::proof]
+    fn finalization_controls_tick_durability() {
+        let stored_slot: u64 = kani::any();
+        let next_slot: u64 = kani::any();
+        let stored = Checkpoint {
+            root: [0; 32],
+            slot: Slot(stored_slot),
+        };
+        let next = Checkpoint {
+            root: [0; 32],
+            slot: Slot(next_slot),
+        };
+        let expected = if next_slot > stored_slot {
+            Durability::Synced
+        } else {
+            Durability::Buffered
+        };
+        assert!(super::tick_durability(Some(stored), next) == expected);
+        assert!(super::tick_durability(None, next) == Durability::Synced);
+    }
 }
