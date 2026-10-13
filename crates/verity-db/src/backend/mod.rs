@@ -1,8 +1,8 @@
 //! The byte-level contract every storage engine satisfies, and nothing above it.
 //!
-//! The trait exposes exactly four operations: point reads, lexicographically ordered
-//! half-open range reads, atomic write batches spanning column families, and half-open range
-//! deletes. Range deletes are an operation *inside* a batch rather than a method beside it,
+//! The trait exposes point reads, table-emptiness probes, lexicographically ordered half-open
+//! range reads, atomic write batches spanning column families, and half-open range deletes.
+//! Range deletes are an operation *inside* a batch rather than a method beside it,
 //! which is what lets a proof expiry and the metadata that records it commit together.
 //!
 //! No RocksDB behavior may leak past this contract without being named in it. The in-memory
@@ -175,6 +175,13 @@ pub trait StorageReader {
     /// [`StorageError::Backend`] when the engine fails.
     fn get(&self, table: ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError>;
 
+    /// Whether `table` contains no rows, without materializing its contents.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::Backend`] when the engine fails.
+    fn table_is_empty(&self, table: ColumnFamily) -> Result<bool, StorageError>;
+
     /// Reads every pair in `[start, end)`, in ascending lexicographic key order.
     ///
     /// The result is materialized rather than streamed. Every caller in the repository scans
@@ -213,6 +220,10 @@ pub(crate) mod harness_support {
     impl StorageReader for RecordingBackend {
         fn get(&self, _table: ColumnFamily, _key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
             Ok(None)
+        }
+
+        fn table_is_empty(&self, _table: ColumnFamily) -> Result<bool, StorageError> {
+            Ok(true)
         }
 
         fn range(

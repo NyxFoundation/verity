@@ -9,6 +9,8 @@
 //! Write-ahead logging is left at its default, which is on. [`Durability`] chooses only
 //! whether that log is fsynced before the call returns.
 
+use std::collections::BTreeSet;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -61,23 +63,27 @@ pub struct RocksBackend {
 }
 
 impl RocksBackend {
-    /// Opens, creating the database and any missing column family.
+    /// Opens a database, creating the complete schema only in a new, empty directory.
     ///
-    /// Creating missing column families is safe here and is not a way of tolerating a
-    /// damaged database: identity checking happens a layer up, in
-    /// [`crate::Repository::open`], which refuses a populated database whose metadata does
-    /// not match. An empty new table in an otherwise populated directory would fail that
-    /// check on its missing metadata rather than being silently adopted.
+    /// An existing database must contain exactly the schema's column families. Missing tables
+    /// are corruption rather than a migration request, so opening never recreates them.
     ///
     /// # Errors
     ///
-    /// [`StorageError::Backend`] when RocksDB cannot open the directory.
+    /// - [`StorageError::ColumnFamilySet`] when an existing directory has a different schema.
+    /// - [`StorageError::Backend`] when RocksDB cannot inspect or open the directory.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref().to_path_buf();
 
+        let existing = existing_column_families(&path)?;
+        if let Some(column_families) = &existing {
+            validate_column_families(column_families)?;
+        }
+
+        let is_new = existing.is_none();
         let mut db_options = Options::default();
-        db_options.create_if_missing(true);
-        db_options.create_missing_column_families(true);
+        db_options.create_if_missing(is_new);
+        db_options.create_missing_column_families(is_new);
 
         let descriptors = ColumnFamily::ALL
             .map(|table| ColumnFamilyDescriptor::new(table.name(), table_options(table)));
@@ -123,6 +129,51 @@ fn table_options(table: ColumnFamily) -> Options {
     options
 }
 
+fn existing_column_families(path: &Path) -> Result<Option<Vec<String>>, StorageError> {
+    match DB::list_cf(&Options::default(), path) {
+        Ok(column_families) => Ok(Some(column_families)),
+        Err(error) => {
+            if directory_is_empty(path)? {
+                return Ok(None);
+            }
+            Err(backend(error))
+        }
+    }
+}
+
+fn directory_is_empty(path: &Path) -> Result<bool, StorageError> {
+    let mut entries = match path.read_dir() {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(StorageError::Backend(error.to_string())),
+    };
+    entries
+        .next()
+        .transpose()
+        .map(|entry| entry.is_none())
+        .map_err(|error| StorageError::Backend(error.to_string()))
+}
+
+fn validate_column_families(actual: &[String]) -> Result<(), StorageError> {
+    let expected: BTreeSet<String> = std::iter::once("default".to_string())
+        .chain(
+            ColumnFamily::ALL
+                .into_iter()
+                .map(|table| table.name().to_string()),
+        )
+        .collect();
+    let actual: BTreeSet<String> = actual.iter().cloned().collect();
+    let missing: Vec<String> = expected.difference(&actual).cloned().collect();
+    let unexpected: Vec<String> = actual.difference(&expected).cloned().collect();
+    if missing.is_empty() && unexpected.is_empty() {
+        return Ok(());
+    }
+    Err(StorageError::ColumnFamilySet {
+        missing,
+        unexpected,
+    })
+}
+
 fn backend(error: rocksdb::Error) -> StorageError {
     StorageError::Backend(error.to_string())
 }
@@ -130,6 +181,16 @@ fn backend(error: rocksdb::Error) -> StorageError {
 impl StorageReader for RocksReader {
     fn get(&self, table: ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
         self.db.get_cf(self.handle(table)?, key).map_err(backend)
+    }
+
+    fn table_is_empty(&self, table: ColumnFamily) -> Result<bool, StorageError> {
+        let mut rows = self
+            .db
+            .iterator_cf(self.handle(table)?, IteratorMode::Start);
+        match rows.next() {
+            None => Ok(true),
+            Some(row) => row.map(|_| false).map_err(backend),
+        }
     }
 
     fn range(&self, table: ColumnFamily, start: &[u8], end: &[u8]) -> Result<Rows, StorageError> {
@@ -159,6 +220,10 @@ impl StorageReader for RocksReader {
 impl StorageReader for RocksBackend {
     fn get(&self, table: ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
         self.reader.get(table, key)
+    }
+
+    fn table_is_empty(&self, table: ColumnFamily) -> Result<bool, StorageError> {
+        self.reader.table_is_empty(table)
     }
 
     fn range(&self, table: ColumnFamily, start: &[u8], end: &[u8]) -> Result<Rows, StorageError> {

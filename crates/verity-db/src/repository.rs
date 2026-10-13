@@ -9,9 +9,11 @@
 //! missing row, decode failure, or integrity failure stops the node and preserves the
 //! directory: it is never treated as an empty database and never overwritten automatically.
 
+use std::collections::HashSet;
+
 use libssz::{SszDecode, SszEncode};
-use verity_types::Checkpoint;
 use verity_types::primitives::{Bytes32, Interval, Slot};
+use verity_types::{BlockHeader, Checkpoint};
 
 use crate::backend::{Durability, Rows, StorageBackend, StorageReader, WriteBatch};
 use crate::column::ColumnFamily;
@@ -45,9 +47,9 @@ impl<B: StorageReader> Repository<B> {
 
     /// Opens `backend` as the repository of the chain described by `identity`.
     ///
-    /// An empty database — one carrying none of the four identity values — opens and waits
-    /// for an anchor commit to write them. A database carrying any of them must carry all
-    /// four and must agree with `identity` and with this build's schema.
+    /// A truly empty database opens and waits for an anchor commit. A database carrying any
+    /// row must carry all four identity values and agree with `identity` and this build's
+    /// schema; chain data cannot be adopted after its identity metadata is removed.
     ///
     /// # Errors
     ///
@@ -81,8 +83,8 @@ impl<B: StorageReader> Repository<B> {
     ///
     /// [`StorageError::Backend`] when the engine fails.
     pub fn is_populated(&self) -> Result<bool, StorageError> {
-        for key in MetadataKey::IDENTITY {
-            if self.raw_metadata(key)?.is_some() {
+        for table in ColumnFamily::ALL {
+            if !self.backend.table_is_empty(table)? {
                 return Ok(true);
             }
         }
@@ -165,6 +167,31 @@ impl<B: StorageReader> Repository<B> {
             })
     }
 
+    /// Reads and validates the next edge of a stored ancestry walk.
+    pub(crate) fn checked_parent(
+        &self,
+        child: Bytes32,
+        child_header: &BlockHeader,
+        visited: &mut HashSet<Bytes32>,
+    ) -> Result<Option<(Bytes32, BlockHeader)>, StorageError> {
+        let parent = child_header.parent_root;
+        if !visited.insert(parent) {
+            return Err(StorageError::AncestryCycle { root: parent });
+        }
+        let Some(parent_header) = self.block_header(parent)? else {
+            return Ok(None);
+        };
+        if parent_header.slot.0 >= child_header.slot.0 {
+            return Err(StorageError::NonDecreasingAncestry {
+                child,
+                child_slot: child_header.slot,
+                parent,
+                parent_slot: parent_header.slot,
+            });
+        }
+        Ok(Some((parent, parent_header)))
+    }
+
     /// Reads a half-open key range, in ascending key order.
     pub(crate) fn scan(
         &self,
@@ -176,10 +203,6 @@ impl<B: StorageReader> Repository<B> {
     }
 
     // --- Metadata -------------------------------------------------------------------------
-
-    fn raw_metadata(&self, key: MetadataKey) -> Result<Option<Vec<u8>>, StorageError> {
-        self.backend.get(ColumnFamily::Metadata, key.as_bytes())
-    }
 
     /// Decodes a metadata value, or `None` when it has never been written.
     ///

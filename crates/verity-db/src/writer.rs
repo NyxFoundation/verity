@@ -12,6 +12,8 @@
 //!
 //! Transcribed from `docs/design/storage.md`, "Writer, batches, and restart".
 
+use std::collections::HashSet;
+
 use verity_types::config::INTERVALS_PER_SLOT;
 use verity_types::primitives::{Bytes32, Interval, Slot, ValidatorIndex};
 use verity_types::{
@@ -358,6 +360,8 @@ impl<B: StorageBackend> Repository<B> {
     /// - [`StorageError::MissingRow`] when walking to the common ancestor reaches a block
     ///   whose header is absent, which means the fork-choice index and the block store
     ///   disagree.
+    /// - [`StorageError::AncestryCycle`] or [`StorageError::NonDecreasingAncestry`] when
+    ///   stored parent links cannot form a finite backwards walk.
     /// - [`StorageError::Backend`] when the engine fails.
     pub fn commit_tick(&mut self, tick: &TickCommit) -> Result<(), StorageError> {
         let mut batch = WriteBatch::new();
@@ -424,18 +428,19 @@ impl<B: StorageBackend> Repository<B> {
         previous: Bytes32,
         new_head: Bytes32,
     ) -> Result<CanonicalSwitch, StorageError> {
-        let (mut old, mut new) = (previous, new_head);
+        let mut old = (previous, self.required_header(previous)?);
+        let mut new = (new_head, self.required_header(new_head)?);
+        let mut old_visited = HashSet::from([previous]);
+        let mut new_visited = HashSet::from([new_head]);
         let mut switch = CanonicalSwitch::default();
 
-        while old != new {
-            let old_header = self.required_header(old)?;
-            let new_header = self.required_header(new)?;
-            if old_header.slot.0 >= new_header.slot.0 {
-                switch.leaving.push(old_header.slot);
-                old = old_header.parent_root;
+        while old.0 != new.0 {
+            if old.1.slot.0 >= new.1.slot.0 {
+                switch.leaving.push(old.1.slot);
+                old = self.required_parent(old.0, &old.1, &mut old_visited)?;
             } else {
-                switch.joining.push((new_header.slot, new));
-                new = new_header.parent_root;
+                switch.joining.push((new.1.slot, new.0));
+                new = self.required_parent(new.0, &new.1, &mut new_visited)?;
             }
         }
         Ok(switch)
@@ -445,15 +450,28 @@ impl<B: StorageBackend> Repository<B> {
     /// at its own slot.
     fn ancestry_to_canonical(&self, head: Bytes32) -> Result<Vec<(Slot, Bytes32)>, StorageError> {
         let mut joining = Vec::new();
-        let mut cursor = head;
+        let mut cursor = (head, self.required_header(head)?);
+        let mut visited = HashSet::from([head]);
         loop {
-            let header = self.required_header(cursor)?;
-            if self.canonical_root(header.slot)? == Some(cursor) {
+            if self.canonical_root(cursor.1.slot)? == Some(cursor.0) {
                 return Ok(joining);
             }
-            joining.push((header.slot, cursor));
-            cursor = header.parent_root;
+            joining.push((cursor.1.slot, cursor.0));
+            cursor = self.required_parent(cursor.0, &cursor.1, &mut visited)?;
         }
+    }
+
+    fn required_parent(
+        &self,
+        child: Bytes32,
+        child_header: &BlockHeader,
+        visited: &mut HashSet<Bytes32>,
+    ) -> Result<(Bytes32, BlockHeader), StorageError> {
+        self.checked_parent(child, child_header, visited)?
+            .ok_or_else(|| StorageError::MissingRow {
+                table: ColumnFamily::BlockHeaders,
+                key: key::root(child_header.parent_root).to_vec(),
+            })
     }
 
     fn required_header(&self, root: Bytes32) -> Result<BlockHeader, StorageError> {

@@ -9,6 +9,7 @@
 use core::fmt;
 
 use verity_types::Bytes32;
+use verity_types::primitives::Slot;
 
 use crate::column::ColumnFamily;
 use crate::metadata::MetadataKey;
@@ -18,6 +19,13 @@ use crate::metadata::MetadataKey;
 pub enum StorageError {
     /// The backend engine itself failed. Carries the engine's own message.
     Backend(String),
+    /// An existing RocksDB directory does not contain exactly the schema's column families.
+    ColumnFamilySet {
+        /// Expected column families absent from the directory.
+        missing: Vec<String>,
+        /// Column families present in the directory but absent from the schema.
+        unexpected: Vec<String>,
+    },
     /// A stored value did not decode as the SSZ type its table declares.
     Decode {
         /// The table the value came from.
@@ -58,6 +66,22 @@ pub enum StorageError {
         expected: Bytes32,
         /// The parent the stored row names.
         found: Bytes32,
+    },
+    /// A stored ancestry walk returned to a block it had already visited.
+    AncestryCycle {
+        /// The repeated block root.
+        root: Bytes32,
+    },
+    /// A stored parent is at the same or a later slot than its child.
+    NonDecreasingAncestry {
+        /// The child block root.
+        child: Bytes32,
+        /// The child block slot.
+        child_slot: Slot,
+        /// The parent block root.
+        parent: Bytes32,
+        /// The parent block slot.
+        parent_slot: Slot,
     },
     /// A batch was refused before it reached the backend.
     ///
@@ -115,6 +139,15 @@ impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Backend(message) => write!(f, "storage backend failed: {message}"),
+            Self::ColumnFamilySet {
+                missing,
+                unexpected,
+            } => write!(
+                f,
+                "database column families differ from the schema (missing: [{}], unexpected: [{}])",
+                missing.join(", "),
+                unexpected.join(", ")
+            ),
             Self::Decode { table, key } => {
                 write!(f, "value in {table} at {} did not decode", Hex(key))
             }
@@ -139,6 +172,22 @@ impl fmt::Display for StorageError {
                 "child names parent {} but the stored link names {}",
                 Hex(expected),
                 Hex(found)
+            ),
+            Self::AncestryCycle { root } => {
+                write!(f, "stored ancestry contains a cycle at {}", Hex(root))
+            }
+            Self::NonDecreasingAncestry {
+                child,
+                child_slot,
+                parent,
+                parent_slot,
+            } => write!(
+                f,
+                "stored parent {} at slot {} does not precede child {} at slot {}",
+                Hex(parent),
+                parent_slot.0,
+                Hex(child),
+                child_slot.0
             ),
             Self::RejectedBatch(reason) => write!(f, "batch refused: {reason}"),
             Self::ReplayTooLong { from, walked } => write!(
@@ -203,7 +252,7 @@ impl fmt::Display for Hex<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ColumnFamily, Hex, IdentityMismatch, StorageError};
+    use super::{ColumnFamily, Hex, IdentityMismatch, Slot, StorageError};
 
     #[test]
     fn should_render_keys_as_hex_so_a_message_is_greppable() {
@@ -238,6 +287,10 @@ mod tests {
     fn should_render_every_storage_failure_for_operator_diagnostics() {
         let errors = [
             StorageError::Backend("disk".to_string()),
+            StorageError::ColumnFamilySet {
+                missing: vec!["metadata".to_string()],
+                unexpected: vec!["old_metadata".to_string()],
+            },
             StorageError::KeyWidth {
                 table: ColumnFamily::BlockHeaders,
                 expected: 32,
@@ -255,6 +308,13 @@ mod tests {
             StorageError::ParentMismatch {
                 expected: [3; 32],
                 found: [4; 32],
+            },
+            StorageError::AncestryCycle { root: [5; 32] },
+            StorageError::NonDecreasingAncestry {
+                child: [6; 32],
+                child_slot: Slot(6),
+                parent: [7; 32],
+                parent_slot: Slot(7),
             },
             StorageError::RejectedBatch("inconsistent"),
             StorageError::ReplayTooLong {

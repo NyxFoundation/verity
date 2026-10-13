@@ -12,6 +12,8 @@
 //!
 //! Transcribed from `docs/design/storage.md`, "Retention and range sync".
 
+use std::collections::HashSet;
+
 use verity_types::Checkpoint;
 use verity_types::primitives::{Bytes32, Slot};
 
@@ -85,8 +87,9 @@ impl<B: StorageBackend> Repository<B> {
     ///
     /// # Errors
     ///
-    /// [`StorageError::Decode`] on a damaged vote row, [`StorageError::Backend`] on engine
-    /// failure.
+    /// [`StorageError::Decode`] on a damaged row, [`StorageError::AncestryCycle`] or
+    /// [`StorageError::NonDecreasingAncestry`] on corrupt parent links, and
+    /// [`StorageError::Backend`] on engine failure.
     pub fn prune_stale_votes(&mut self) -> Result<usize, StorageError> {
         let Some(finalized) = self.latest_finalized()? else {
             return Ok(0);
@@ -125,18 +128,25 @@ impl<B: StorageBackend> Repository<B> {
     /// An unknown block answers `false`: descent that cannot be shown is not descent, and a
     /// vote for a block this node never processed is not one it can count.
     fn descends_from(&self, root: Bytes32, ancestor: Checkpoint) -> Result<bool, StorageError> {
-        let mut cursor = root;
+        if root == ancestor.root {
+            return Ok(true);
+        }
+        let Some(header) = self.block_header(root)? else {
+            return Ok(false);
+        };
+        let mut cursor = (root, header);
+        let mut visited = HashSet::from([root]);
         loop {
-            if cursor == ancestor.root {
+            if cursor.0 == ancestor.root {
                 return Ok(true);
             }
-            let Some(header) = self.block_header(cursor)? else {
-                return Ok(false);
-            };
-            if header.slot.0 <= ancestor.slot.0 {
+            if cursor.1.slot.0 <= ancestor.slot.0 {
                 return Ok(false);
             }
-            cursor = header.parent_root;
+            let Some(parent) = self.checked_parent(cursor.0, &cursor.1, &mut visited)? else {
+                return Ok(false);
+            };
+            cursor = parent;
         }
     }
 }

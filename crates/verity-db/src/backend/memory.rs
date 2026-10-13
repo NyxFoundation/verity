@@ -74,6 +74,10 @@ impl StorageReader for MemoryBackend {
             .cloned())
     }
 
+    fn table_is_empty(&self, table: ColumnFamily) -> Result<bool, StorageError> {
+        Ok(self.tables.get(&table).is_none_or(BTreeMap::is_empty))
+    }
+
     fn range(&self, table: ColumnFamily, start: &[u8], end: &[u8]) -> Result<Rows, StorageError> {
         // A reversed interval is empty, not an error, matching a RocksDB iterator positioned past
         // its upper bound.

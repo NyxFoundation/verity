@@ -2,9 +2,10 @@
 
 mod common;
 
-use common::{anchor_root, chain, identity_of, proof};
+use common::{anchor_root, chain, corrupt_parent, identity_of, proof};
 use verity_db::{
-    AnchorCommit, BlockCommit, MemoryBackend, PROOF_RETENTION_SLOTS, Repository, TickCommit,
+    AnchorCommit, BlockCommit, MemoryBackend, PROOF_RETENTION_SLOTS, Repository, StorageError,
+    TickCommit,
 };
 use verity_types::primitives::{Interval, Slot, ValidatorIndex};
 use verity_types::{AttestationData, Checkpoint};
@@ -148,6 +149,42 @@ fn should_discard_votes_the_fork_choice_can_no_longer_be_moved_by() {
         repository.known_vote(ValidatorIndex(2)).unwrap(),
         None,
         "descent that cannot be shown is not descent"
+    );
+}
+
+#[test]
+fn should_reject_a_parent_cycle_while_pruning_votes() {
+    let (mut repository, links) = with_chain(&[1, 2]);
+    let finalized = Checkpoint {
+        root: links[0].root,
+        slot: Slot(1),
+    };
+    let live = vote(
+        2,
+        Checkpoint {
+            root: links[1].root,
+            slot: Slot(2),
+        },
+    );
+    repository
+        .record_pending_votes(&[(ValidatorIndex(0), live)], Interval(6))
+        .unwrap();
+    repository
+        .commit_tick(&TickCommit {
+            head: links[1].root,
+            latest_justified: finalized,
+            latest_finalized: finalized,
+            interval: Interval(9),
+            merge_pending_votes: true,
+        })
+        .unwrap();
+
+    let mut repository = corrupt_parent(&repository, links[1].root, links[1].root);
+    assert_eq!(
+        repository.prune_stale_votes().unwrap_err(),
+        StorageError::AncestryCycle {
+            root: links[1].root,
+        }
     );
 }
 
