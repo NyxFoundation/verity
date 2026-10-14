@@ -6,10 +6,16 @@
 
 mod common;
 
+use std::path::Path;
+
 use common::{anchor_root, chain, identity_of, proof};
+use rocksdb::{DB, Options};
 use tempfile::tempdir;
 use verity_db::backend::StorageBackend;
-use verity_db::{AnchorCommit, BlockCommit, MemoryBackend, Repository, RocksBackend, TickCommit};
+use verity_db::{
+    AnchorCommit, BlockCommit, ColumnFamily, MemoryBackend, MetadataKey, Repository, RocksBackend,
+    StorageError, TickCommit,
+};
 use verity_types::Checkpoint;
 use verity_types::primitives::{Interval, Slot};
 
@@ -85,6 +91,94 @@ fn should_reopen_a_rocksdb_directory_it_wrote() {
         .expect("its own directory reopens");
     assert_eq!(reopened.head().unwrap(), Some(root));
     assert_eq!(reopened.state_at(root).unwrap(), genesis);
+}
+
+#[test]
+fn should_reject_every_missing_column_family_in_an_existing_database() {
+    for table in ColumnFamily::ALL {
+        let directory = tempdir().expect("a writable temporary directory");
+        drop(RocksBackend::open(directory.path()).expect("a new database opens"));
+
+        let mut database = open_raw(directory.path());
+        database
+            .drop_cf(table.name())
+            .expect("the test removes one column family");
+        drop(database);
+
+        assert_eq!(
+            RocksBackend::open(directory.path()).unwrap_err(),
+            StorageError::ColumnFamilySet {
+                missing: vec![table.name().to_string()],
+                unexpected: Vec::new(),
+            },
+            "a database missing {table} must not be repaired on open"
+        );
+    }
+}
+
+#[test]
+fn should_reject_an_unexpected_column_family_in_an_existing_database() {
+    let directory = tempdir().expect("a writable temporary directory");
+    drop(RocksBackend::open(directory.path()).expect("a new database opens"));
+
+    let mut database = open_raw(directory.path());
+    database
+        .create_cf("legacy_blocks", &Options::default())
+        .expect("the test adds one obsolete column family");
+    drop(database);
+
+    assert_eq!(
+        RocksBackend::open(directory.path()).unwrap_err(),
+        StorageError::ColumnFamilySet {
+            missing: Vec::new(),
+            unexpected: vec!["legacy_blocks".to_string()],
+        }
+    );
+}
+
+#[test]
+fn should_reject_chain_data_after_all_identity_metadata_was_removed() {
+    let directory = tempdir().expect("a writable temporary directory");
+    let (genesis, _) = chain(4, &[]);
+    let identity = identity_of(&genesis);
+
+    {
+        let mut repository = Repository::open(
+            RocksBackend::open(directory.path()).expect("a new database opens"),
+            identity,
+        )
+        .unwrap();
+        repository
+            .commit_anchor(&AnchorCommit {
+                block_root: anchor_root(&genesis),
+                state: &genesis,
+                body: None,
+                served_from_slot: Slot(0),
+            })
+            .unwrap();
+    }
+
+    let database = open_raw(directory.path());
+    let metadata = database
+        .cf_handle(ColumnFamily::Metadata.name())
+        .expect("metadata exists before corruption");
+    for key in MetadataKey::IDENTITY {
+        database
+            .delete_cf(metadata, key.as_bytes())
+            .expect("the test removes identity metadata");
+    }
+    drop(database);
+
+    assert_eq!(
+        Repository::open(RocksBackend::open(directory.path()).unwrap(), identity).unwrap_err(),
+        StorageError::MissingMetadata(MetadataKey::SchemaVersion),
+    );
+}
+
+fn open_raw(path: &Path) -> DB {
+    let options = Options::default();
+    let column_families = DB::list_cf(&options, path).expect("the RocksDB directory is valid");
+    DB::open_cf(&options, path, column_families).expect("the test opens the raw database")
 }
 
 #[test]

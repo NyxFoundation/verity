@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Link, anchor_root, chain, extend, identity_of, proof};
+use common::{Link, anchor_root, chain, corrupt_parent, extend, identity_of, proof};
 use verity_db::{AnchorCommit, BlockCommit, MemoryBackend, Repository, StorageError, TickCommit};
 use verity_types::primitives::{Interval, Slot};
 use verity_types::{Checkpoint, State};
@@ -225,6 +225,47 @@ fn should_move_the_canonical_index_to_the_new_branch_on_a_reorg() {
         "the common ancestor is untouched"
     );
     assert_eq!(repository.head().unwrap(), Some(long.root));
+}
+
+#[test]
+fn should_reject_a_non_decreasing_parent_during_a_canonical_switch() {
+    let (genesis, base) = chain(4, &[1]);
+    let head = extend(&base[0].post, 2);
+    let impossible_parent = extend(&base[0].post, 3);
+    let mut repository = stored(
+        &genesis,
+        &[base[0].clone(), head.clone(), impossible_parent.clone()],
+    );
+    repository
+        .commit_tick(&TickCommit {
+            head: head.root,
+            latest_justified: Checkpoint::default(),
+            latest_finalized: Checkpoint::default(),
+            interval: Interval(14),
+            merge_pending_votes: false,
+        })
+        .unwrap();
+
+    let mut repository = corrupt_parent(&repository, head.root, impossible_parent.root);
+    let error = repository
+        .commit_tick(&TickCommit {
+            head: anchor_root(&genesis),
+            latest_justified: Checkpoint::default(),
+            latest_finalized: Checkpoint::default(),
+            interval: Interval(15),
+            merge_pending_votes: false,
+        })
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        StorageError::NonDecreasingAncestry {
+            child: head.root,
+            child_slot: Slot(2),
+            parent: impossible_parent.root,
+            parent_slot: Slot(3),
+        }
+    );
 }
 
 #[test]

@@ -275,8 +275,6 @@ fn incomplete(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use libssz::SszDecode;
     use verity_chain::{generate_genesis, hash_tree_root, process_block, process_slots};
     use verity_db::{
@@ -455,18 +453,16 @@ mod tests {
         );
     }
 
-    #[derive(Debug, Default)]
-    struct FailingReader {
-        reads: AtomicUsize,
-    }
+    #[derive(Debug)]
+    struct FailingReader;
 
     impl StorageReader for FailingReader {
         fn get(&self, _table: ColumnFamily, _key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
-            if self.reads.fetch_add(1, Ordering::Relaxed) < 4 {
-                Ok(None)
-            } else {
-                Err(StorageError::Backend("injected read failure".to_string()))
-            }
+            Err(StorageError::Backend("injected read failure".to_string()))
+        }
+
+        fn table_is_empty(&self, _table: ColumnFamily) -> Result<bool, StorageError> {
+            Ok(true)
         }
 
         fn range(
@@ -482,7 +478,7 @@ mod tests {
     #[test]
     fn should_translate_storage_failures_to_server_error() {
         let repository = Repository::open(
-            FailingReader::default(),
+            FailingReader,
             Identity {
                 chain_fingerprint: [0; 32],
                 fork_version: 1,

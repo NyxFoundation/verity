@@ -8,8 +8,12 @@
 //! reconstruction that does not reproduce `state_root` — only appear against states the
 //! transition actually produced.
 
+use libssz::SszEncode;
 use verity_chain::{generate_genesis, hash_tree_root, process_block, process_slots};
-use verity_db::{Identity, stored_header};
+use verity_db::{
+    ColumnFamily, Durability, Identity, MemoryBackend, Repository, StorageBackend, WriteBatch,
+    stored_header,
+};
 use verity_types::primitives::{Bytes32, Slot, ZERO_HASH};
 use verity_types::{
     Block, BlockBody, MultiMessageAggregate, State, Validator, ValidatorIndex, Validators,
@@ -102,6 +106,27 @@ pub fn chain(validators: u64, slots: &[u64]) -> (State, Vec<Link>) {
         links.push(extend(parent, *slot));
     }
     (genesis, links)
+}
+
+/// Returns a copy of `repository` whose stored `child` header names a corrupt parent.
+pub fn corrupt_parent(
+    repository: &Repository<MemoryBackend>,
+    child: Bytes32,
+    parent: Bytes32,
+) -> Repository<MemoryBackend> {
+    let mut header = repository
+        .block_header(child)
+        .expect("the stored header decodes")
+        .expect("the child header exists");
+    header.parent_root = parent;
+
+    let mut backend = repository.backend().clone();
+    let mut batch = WriteBatch::new();
+    batch.queue_put(ColumnFamily::BlockHeaders, child.to_vec(), header.to_ssz());
+    backend
+        .write(batch, Durability::Synced)
+        .expect("the test corrupts the stored parent link");
+    Repository::open(backend, repository.identity()).expect("identity metadata remains intact")
 }
 
 /// A proof stand-in. Nothing in `verity-db` verifies a proof; it stores the bytes it is given.
