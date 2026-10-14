@@ -6127,6 +6127,7 @@ dependencies = [
  "hex",
  "libssz",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
