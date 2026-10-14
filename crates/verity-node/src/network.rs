@@ -17,7 +17,9 @@ use tokio::sync::{mpsc, watch};
 
 use verity_chain::ChainView;
 use verity_metrics::{ConnectionResult, Metrics};
-use verity_p2p::{ErrorCode, GossipKind, NetworkEvent, NetworkHandle, Request, Response, Status};
+use verity_p2p::{
+    CommandError, ErrorCode, GossipKind, NetworkEvent, NetworkHandle, Request, Response, Status,
+};
 use verity_types::{SubnetId, ValidatorIndex};
 use verity_validator::LocalProduct;
 
@@ -217,9 +219,9 @@ impl NetworkBridge {
         let kind = match request {
             Request::Status(_) => {
                 let response = Response::Status(status_of(&self.view));
-                let answered = self.handle.respond(channel, response).await.is_ok();
-                tracing::trace!(%peer, "answered a status handshake");
-                return answered;
+                return self
+                    .respond_and_should_continue(peer, channel, response)
+                    .await;
             }
             Request::BlocksByRoot(roots) => BlockRequestKind::ByRoot(roots),
             Request::BlocksByRange(range) => BlockRequestKind::ByRange(range),
@@ -239,10 +241,34 @@ impl NetworkBridge {
                     code: ErrorCode::ServerError,
                     message: "the block responder is saturated".to_string(),
                 };
-                self.handle.respond(request.channel, response).await.is_ok()
+                self.respond_and_should_continue(request.peer, request.channel, response)
+                    .await
             }
             // The responder is gone, which means the node is shutting down.
             mpsc::error::TrySendError::Closed(_) => false,
+        }
+    }
+
+    /// Tries one response and reports whether the bridge itself remains healthy.
+    ///
+    /// A peer-local rejection keeps the bridge running; only loss of the network service
+    /// stops it. The return value deliberately describes lifecycle, not delivery success.
+    async fn respond_and_should_continue(
+        &self,
+        peer: verity_p2p::PeerId,
+        channel: verity_p2p::ResponseChannel,
+        response: Response,
+    ) -> bool {
+        match self.handle.respond(channel, response).await {
+            Ok(()) => {
+                tracing::trace!(%peer, "answered an inbound request");
+                true
+            }
+            Err(CommandError::Failed(error)) => {
+                tracing::debug!(%peer, %error, "inbound response was rejected");
+                true
+            }
+            Err(CommandError::ServiceStopped) => false,
         }
     }
 }

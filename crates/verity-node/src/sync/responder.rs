@@ -22,8 +22,8 @@ use tokio::sync::{mpsc, watch};
 use verity_chain::ChainView;
 use verity_db::{Repository, StorageError, StorageReader};
 use verity_p2p::{
-    BlocksByRangeRequest, BlocksByRootRequest, ErrorCode, MAX_REQUEST_BLOCKS, NetworkHandle,
-    PeerId, Response, ResponseChannel,
+    BlocksByRangeRequest, BlocksByRootRequest, CommandError, ErrorCode, MAX_REQUEST_BLOCKS,
+    NetworkHandle, PeerId, Response, ResponseChannel,
 };
 use verity_types::{Bytes32, SignedBlock, Slot};
 
@@ -105,15 +105,21 @@ impl<B: StorageReader + Send + Sync + 'static> BlockResponder<B> {
                 break;
             };
 
-            self.counters.record_served(match &response {
+            let block_count = match &response {
                 Response::Blocks(chunks) => chunks.len(),
                 // A refusal is a served request that carried no blocks.
                 _ => 0,
-            });
-            if self.handle.respond(channel, response).await.is_err() {
-                break;
+            };
+            match self.handle.respond(channel, response).await {
+                Ok(()) => {
+                    self.counters.record_served(block_count);
+                    tracing::trace!(%peer, "served a block request");
+                }
+                Err(CommandError::Failed(error)) => {
+                    tracing::debug!(%peer, %error, "block response was rejected");
+                }
+                Err(CommandError::ServiceStopped) => break,
             }
-            tracing::trace!(%peer, "served a block request");
         }
     }
 }

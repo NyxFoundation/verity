@@ -10,8 +10,9 @@ use libssz::SszEncode;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use verity_p2p::{
-    BlocksByRangeRequest, BlocksByRootRequest, ErrorCode, GossipKind, Multiaddr, NetworkConfig,
-    NetworkEvent, NetworkHandle, PublishError, Request, RequestError, Response, Status, identity,
+    BlocksByRangeRequest, BlocksByRootRequest, CommandError, ErrorCode, GossipKind, Multiaddr,
+    NetworkConfig, NetworkEvent, NetworkHandle, PublishError, Request, RequestError, Response,
+    Status, identity,
 };
 use verity_types::{Checkpoint, SignedBlock, Slot};
 
@@ -91,6 +92,35 @@ fn run_responder(
             }
         }
     });
+}
+
+async fn connected_nodes() -> (
+    NetworkHandle,
+    mpsc::Receiver<NetworkEvent>,
+    NetworkHandle,
+    mpsc::Receiver<NetworkEvent>,
+    verity_p2p::PeerId,
+) {
+    let (handle_a, mut events_a) = verity_p2p::spawn(node_config()).expect("spawn node A");
+    let listen_a = wait_for(&mut events_a, |event| match event {
+        NetworkEvent::NewListenAddr(address) => Some(address),
+        _ => None,
+    })
+    .await;
+    let addr_a = listen_a
+        .with_p2p(handle_a.local_peer_id())
+        .expect("address with peer id");
+
+    let mut config_b = node_config();
+    config_b.bootnodes = vec![addr_a];
+    let (handle_b, mut events_b) = verity_p2p::spawn(config_b).expect("spawn node B");
+    let peer_a = handle_a.local_peer_id();
+    wait_for(&mut events_b, |event| match event {
+        NetworkEvent::PeerConnected { peer, .. } if peer == peer_a => Some(()),
+        _ => None,
+    })
+    .await;
+    (handle_a, events_a, handle_b, events_b, peer_a)
 }
 
 /// Publishes with retries while the mesh forms; gossipsub refuses to publish before a
@@ -188,6 +218,72 @@ async fn should_serve_gossip_and_all_reqresp_protocols_between_two_nodes() {
         .expect("gossip channel closed");
     assert_eq!(kind, GossipKind::Block);
     assert_eq!(received, payload);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn should_report_a_response_sent_after_the_request_timeout() {
+    let (handle_a, mut events_a, handle_b, _events_b, peer_a) = connected_nodes().await;
+    let request = tokio::spawn(async move {
+        handle_b
+            .request(peer_a, Request::Status(Status::default()))
+            .await
+    });
+    let channel = wait_for(&mut events_a, |event| match event {
+        NetworkEvent::InboundRequest { channel, .. } => Some(channel),
+        _ => None,
+    })
+    .await;
+
+    let request_result = timeout(STAGE_TIMEOUT, request)
+        .await
+        .expect("request timeout was not reported")
+        .expect("request task");
+    // Both ends share the deadline: the requester can report its own timeout, or EOF when
+    // the responder expires the stream first.
+    assert!(matches!(
+        request_result,
+        Err(RequestError::Timeout | RequestError::Io(_))
+    ));
+    // Allow A's swarm to consume its timeout event before submitting the late response.
+    sleep(Duration::from_secs(1)).await;
+
+    let result = handle_a
+        .respond(channel, Response::Status(sample_status()))
+        .await;
+    assert!(matches!(result, Err(CommandError::Failed(_))));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn should_report_a_response_channel_closed_with_its_peer() {
+    let (handle_a, mut events_a, handle_b, events_b, peer_a) = connected_nodes().await;
+    let request = tokio::spawn({
+        let handle = handle_b.clone();
+        async move {
+            handle
+                .request(peer_a, Request::Status(Status::default()))
+                .await
+        }
+    });
+    let (peer_b, channel) = wait_for(&mut events_a, |event| match event {
+        NetworkEvent::InboundRequest { peer, channel, .. } => Some((peer, channel)),
+        _ => None,
+    })
+    .await;
+
+    request.abort();
+    let _ = request.await;
+    drop(handle_b);
+    drop(events_b);
+    wait_for(&mut events_a, |event| match event {
+        NetworkEvent::PeerDisconnected { peer, .. } if peer == peer_b => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let result = handle_a
+        .respond(channel, Response::Status(sample_status()))
+        .await;
+    assert!(matches!(result, Err(CommandError::Failed(_))));
 }
 
 #[tokio::test(flavor = "multi_thread")]
