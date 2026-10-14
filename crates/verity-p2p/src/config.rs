@@ -50,10 +50,13 @@ pub const fn max_compressed_len(uncompressed: usize) -> usize {
 ///
 /// leanSpec `networking/reqresp/handler.py` permits `n + n/6 + 1024`, which covers
 /// Snappy's expansion plus reserved skippable chunks. A tighter raw-block bound rejects
-/// streams the reference node accepts.
+/// streams the reference node accepts. Inputs beyond the protocol cap saturate instead
+/// of wrapping the public size calculation.
 #[must_use]
 pub const fn max_framed_compressed_len(uncompressed: usize) -> usize {
-    uncompressed + uncompressed / 6 + 1024
+    uncompressed
+        .saturating_add(uncompressed / 6)
+        .saturating_add(1024)
 }
 
 /// Configuration for [`crate::service::spawn`].
@@ -109,6 +112,11 @@ mod tests {
         assert_eq!(max_framed_compressed_len(1), 1025);
         assert_eq!(max_framed_compressed_len(MAX_PAYLOAD_SIZE), 12_234_410);
         assert!(max_framed_compressed_len(1) > max_compressed_len(1));
+    }
+
+    #[test]
+    fn should_saturate_the_framed_bound_when_input_exceeds_the_protocol_cap() {
+        assert_eq!(max_framed_compressed_len(usize::MAX), usize::MAX);
     }
 }
 
