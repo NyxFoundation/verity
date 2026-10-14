@@ -27,6 +27,7 @@ verity-types.workspace = true
 # would, rather than calling handlers in-process.
 [dev-dependencies]
 reqwest.workspace = true
+rustls.workspace = true
 verity-db.workspace = true
 
 [lints]

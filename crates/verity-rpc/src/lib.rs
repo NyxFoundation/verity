@@ -50,13 +50,17 @@ mod sample;
 
 pub use routes::{api_router, metrics_router};
 
+/// An error reading the signed block from its node-owned source.
+pub type SignedBlockSourceError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 /// Resolves a block root to its signed block, proof included, or to nothing.
 ///
 /// The view holds blocks without their proofs — a proof is verified once and stored, never
 /// read again on the consensus path — so serving a finalized `SignedBlock` is a database
-/// read the node wires in. Returning `None` means "not available", which the route reports
-/// as 404 exactly as leanSpec does for a root its source cannot produce.
-pub type SignedBlockSource = Arc<dyn Fn(Bytes32) -> Option<SignedBlock> + Send + Sync>;
+/// read the node wires in. `Ok(None)` means "not available" and becomes 404; `Err` remains
+/// distinguishable at the route and becomes 500 without exposing its detail to the peer.
+pub type SignedBlockSource =
+    Arc<dyn Fn(Bytes32) -> Result<Option<SignedBlock>, SignedBlockSourceError> + Send + Sync>;
 
 /// A gauge refresh the node wires into the scrape, for a value the view does not carry.
 ///

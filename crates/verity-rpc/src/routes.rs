@@ -129,15 +129,24 @@ async fn finalized_state(State(context): State<Shared>) -> Response {
 async fn finalized_block(State(context): State<Shared>) -> Response {
     let root = context.view.borrow().latest_finalized().root;
     let source = Arc::clone(&context.signed_block);
-    let encoded =
-        tokio::task::spawn_blocking(move || source(root).map(|block| block.to_ssz())).await;
+    let encoded = tokio::task::spawn_blocking(move || {
+        source(root).map(|block| block.map(|block| block.to_ssz()))
+    })
+    .await;
 
     match encoded {
-        Ok(Some(bytes)) => ssz(bytes),
-        Ok(None) => problem(
+        Ok(Ok(Some(bytes))) => ssz(bytes),
+        Ok(Ok(None)) => problem(
             StatusCode::NOT_FOUND,
             "Finalized signed block not available",
         ),
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "cannot read the finalized block for the API");
+            problem(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Finalized signed block could not be read",
+            )
+        }
         Err(_) => problem(StatusCode::INTERNAL_SERVER_ERROR, "Encoding failed"),
     }
 }

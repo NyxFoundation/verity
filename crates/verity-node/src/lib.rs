@@ -66,7 +66,8 @@ use verity_db::{Repository, RocksBackend, StorageReader};
 use verity_metrics::{Metrics, gauge_value};
 use verity_p2p::{NetworkConfig, NetworkCounters, PeerId, identity::Keypair};
 use verity_rpc::{
-    ApiContext, BoundListener, HttpServer, Sampler, SignedBlockSource, api_router, metrics_router,
+    ApiContext, BoundListener, HttpServer, Sampler, SignedBlockSource, SignedBlockSourceError,
+    api_router, metrics_router,
 };
 use verity_types::ValidatorIndex;
 use verity_validator::{DutyService, Keyring, Prover};
@@ -565,22 +566,13 @@ fn mesh_sampler(counters: Arc<NetworkCounters>) -> Sampler {
 }
 
 /// The finalized-block read the HTTP API performs, over the responder's database handle.
-///
-/// A storage error is reported as "not available" and logged: the route cannot repair the
-/// database, and the responder's next range read will surface the same damage as a
-/// `SERVER_ERROR` where it matters.
 fn signed_block_source<B: StorageReader + Send + Sync + 'static>(
     repository: Arc<Repository<B>>,
 ) -> SignedBlockSource {
-    Arc::new(
-        move |root| match sync::responder::signed_block(&repository, root) {
-            Ok(block) => block,
-            Err(error) => {
-                tracing::warn!(%error, "cannot read the finalized block for the API");
-                None
-            }
-        },
-    )
+    Arc::new(move |root| {
+        sync::responder::signed_block(&repository, root)
+            .map_err(|error| Box::new(error) as SignedBlockSourceError)
+    })
 }
 
 /// The network service's configuration, derived from the node's.
