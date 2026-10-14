@@ -16,7 +16,7 @@ use std::io::{self, Read, Write};
 
 use futures::{AsyncRead, AsyncReadExt};
 
-use crate::config::max_compressed_len;
+use crate::config::max_framed_compressed_len;
 
 /// Frame-type byte for the stream identifier ("sNaPpY").
 const FRAME_STREAM_IDENTIFIER: u8 = 0xff;
@@ -83,13 +83,13 @@ pub fn compress_framed(payload: &[u8]) -> io::Result<Vec<u8>> {
 ///
 /// Refuses reserved unskippable frames, a malformed stream identifier, a frame sequence
 /// whose decompressed size oversteps the declared length, and a compressed byte count
-/// beyond [`max_compressed_len`] of the declared length. CRC verification happens in the
-/// final decode pass over the collected frames.
+/// beyond [`max_framed_compressed_len`] of the declared length. CRC verification happens
+/// in the final decode pass over the collected frames.
 pub async fn read_framed<T>(io: &mut T, uncompressed_len: usize) -> io::Result<Vec<u8>>
 where
     T: AsyncRead + Unpin + Send,
 {
-    let max_compressed = max_compressed_len(uncompressed_len);
+    let max_compressed = max_framed_compressed_len(uncompressed_len);
     let mut collected: Vec<u8> = Vec::new();
     let mut decompressed_total = 0usize;
     // Every framed section begins with the stream identifier — even a zero-length one,
@@ -188,6 +188,8 @@ mod tests {
     use futures::executor::block_on;
     use futures::io::Cursor;
 
+    use crate::config::max_framed_compressed_len;
+
     use super::*;
 
     #[test]
@@ -239,6 +241,36 @@ mod tests {
         let mut rest = Vec::new();
         block_on(cursor.read_to_end(&mut rest)).expect("rest");
         assert_eq!(rest, b"XX");
+    }
+
+    #[test]
+    fn should_accept_a_lean_spec_framed_stream_with_a_skippable_chunk() {
+        // Declared length 1. leanSpec permits 1025 compressed bytes; the raw-block bound
+        // is 33 and used to reject this 43-byte stream before its data frame.
+        let wire = hex_bytes(
+            "ff060000734e6150705980140000505050505050505050505050505050505050505001050000503daa6178",
+        );
+        let restored = block_on(read_framed(&mut Cursor::new(wire), 1)).expect("read");
+        assert_eq!(restored, b"x");
+    }
+
+    #[test]
+    fn should_reject_frames_when_they_exceed_the_lean_spec_compressed_bound() {
+        let mut wire = STREAM_IDENTIFIER_FRAME.to_vec();
+        let over = max_framed_compressed_len(1) + 1;
+        let padding = over - wire.len() - 4;
+        wire.push(0x80);
+        wire.extend_from_slice(&(padding as u32).to_le_bytes()[..3]);
+        wire.extend(std::iter::repeat_n(0x50, padding));
+        let err = block_on(read_framed(&mut Cursor::new(wire), 1)).expect_err("over bound");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    fn hex_bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("hex"))
+            .collect()
     }
 
     #[test]
