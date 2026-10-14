@@ -164,6 +164,8 @@ pub enum NetworkCommand {
         channel: ResponseChannel,
         /// The response to send.
         response: Response,
+        /// Resolves with whether libp2p accepted the response channel.
+        reply: oneshot::Sender<Result<(), CommandError>>,
     },
 }
 
@@ -336,16 +338,22 @@ impl NetworkHandle {
         response.await.map_err(|_| RequestError::ServiceStopped)?
     }
 
-    /// Answers an inbound request.
+    /// Answers an inbound request, resolving once libp2p accepts or rejects its channel.
     pub async fn respond(
         &self,
         channel: ResponseChannel,
         response: Response,
     ) -> Result<(), CommandError> {
+        let (reply, accepted) = oneshot::channel();
         self.commands
-            .send(NetworkCommand::Respond { channel, response })
+            .send(NetworkCommand::Respond {
+                channel,
+                response,
+                reply,
+            })
             .await
-            .map_err(|_| CommandError::ServiceStopped)
+            .map_err(|_| CommandError::ServiceStopped)?;
+        accepted.await.map_err(|_| CommandError::ServiceStopped)?
     }
 }
 
@@ -510,16 +518,22 @@ impl Service {
                 };
                 self.pending.insert((protocol, id), reply);
             }
-            NetworkCommand::Respond { channel, response } => {
+            NetworkCommand::Respond {
+                channel,
+                response,
+                reply,
+            } => {
                 // `send_response` only feeds the channel that arrived with the request;
                 // which behaviour instance relays it is immaterial, so the status
-                // behaviour serves all three protocols here. A `Err` return means the
-                // inbound stream already timed out — nothing to do but let it go.
-                let _ = self
+                // behaviour serves all three protocols here. An error means the inbound
+                // stream expired before the response reached libp2p.
+                let result = self
                     .swarm
                     .behaviour_mut()
                     .status
-                    .send_response(channel, response);
+                    .send_response(channel, response)
+                    .map_err(|_| CommandError::Failed("response channel expired".to_string()));
+                let _ = reply.send(result);
             }
         }
     }
