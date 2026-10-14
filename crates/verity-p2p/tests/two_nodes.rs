@@ -238,8 +238,13 @@ async fn should_report_a_response_sent_after_the_request_timeout() {
         .await
         .expect("request timeout was not reported")
         .expect("request task");
-    assert_eq!(request_result, Err(RequestError::Timeout));
-    // Both ends use the same deadline; allow A's swarm to consume its timeout event too.
+    // Both ends share the deadline: the requester can report its own timeout, or EOF when
+    // the responder expires the stream first.
+    assert!(matches!(
+        request_result,
+        Err(RequestError::Timeout | RequestError::Io(_))
+    ));
+    // Allow A's swarm to consume its timeout event before submitting the late response.
     sleep(Duration::from_secs(1)).await;
 
     let result = handle_a
