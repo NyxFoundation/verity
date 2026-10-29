@@ -1,6 +1,16 @@
+---
+title: Summary
+last_updated: 2026-10-29
+tags: []
+---
+
 # Summary
 
 [Introduction](./introduction.md)
+
+# Project
+
+- [Release Strategy](./release-strategy.md)
 
 # Design Philosophy
 
