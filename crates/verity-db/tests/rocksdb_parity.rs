@@ -45,6 +45,7 @@ fn run<B: StorageBackend>(backend: B) -> Vec<(Slot, [u8; 32])> {
     repository
         .commit_tick(&TickCommit {
             head: links[2].root,
+            safe_target: None,
             latest_justified: Checkpoint::default(),
             latest_finalized: Checkpoint::default(),
             interval: Interval(24),

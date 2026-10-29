@@ -360,6 +360,7 @@ mod tests {
             repository
                 .commit_tick(&TickCommit {
                     head: root,
+                    safe_target: None,
                     latest_justified: checkpoint,
                     latest_finalized: Checkpoint::default(),
                     interval: Interval(slot * 5),

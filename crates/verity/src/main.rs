@@ -139,13 +139,13 @@ async fn main() -> ExitCode {
     match run(args).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            tracing::error!(%error, "verity could not start");
+            tracing::error!(%error, "verity stopped with an error");
             ExitCode::FAILURE
         }
     }
 }
 
-/// Starts the node and runs it until the process is interrupted.
+/// Starts the node and runs it until interrupted or a fatal runtime error occurs.
 async fn run(args: Args) -> Result<(), verity_node::error::NodeError> {
     let genesis = GenesisFile::read(&args.genesis)?;
     let committee_count = genesis.committee_count()?;
@@ -182,7 +182,7 @@ async fn run(args: Args) -> Result<(), verity_node::error::NodeError> {
     let listen = listen_address(&args);
     let bootnodes = bootnodes(&args)?;
 
-    let node = Node::start(NodeConfig {
+    let mut node = Node::start(NodeConfig {
         genesis,
         data_directory: args.data_dir,
         listen,
@@ -203,13 +203,22 @@ async fn run(args: Args) -> Result<(), verity_node::error::NodeError> {
     })
     .await?;
 
-    // The one shutdown trigger. Everything downstream of it is channel closure.
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        tracing::error!(%error, "cannot listen for an interrupt; stopping");
-    }
-    tracing::info!("interrupted; shutting down");
+    let runtime_error = tokio::select! {
+        interrupt = tokio::signal::ctrl_c() => {
+            if let Err(error) = interrupt {
+                tracing::error!(%error, "cannot listen for an interrupt; stopping");
+            }
+            tracing::info!("interrupted; shutting down");
+            None
+        }
+        error = node.wait_for_runtime_error() => Some(error),
+    };
+
     node.shutdown().await;
-    Ok(())
+    match runtime_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// The bind address: the port flag when given, the full multiaddr otherwise.

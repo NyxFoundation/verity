@@ -76,8 +76,8 @@ rust-libp2p, RocksDB, snap) are never the subject of a harness. Facts that are e
   `Duration` comparisons (two divisions per `from_millis`), `u128::isqrt`, `sort_unstable`, and
   `str::strip_prefix`, and mutation through `BTreeSet`, `BTreeMap`, or `HashMap`. Direct harnesses
   over `MemoryBackend`, fork-choice `Store`, and a full `BlockCommit` each timed out at 300 s; the
-  repository instead uses a recording backend for batch mutations, while map semantics stay under
-  unit/integration tests. A harness over the excluded paths is proving std or libssz, not Verity;
+  repository instead proves pure batch-construction helpers directly, while backend and map
+  semantics stay under unit/integration tests. A harness over the excluded paths is proving std or libssz, not Verity;
   state the property on the decision or mutation boundary underneath instead, or leave it to the
   leanSpec vectors.
 - **Logging is not a Kani-reachable path.** `tracing::info!` reaches `catch_unwind`, which Kani

@@ -34,7 +34,7 @@ use verity_chain::{
     record_attestation_signature,
 };
 use verity_crypto::containers::SignedAttestation;
-use verity_db::{BlockCommit, Repository, StorageBackend, TickCommit};
+use verity_db::{BlockCommit, Repository, StorageBackend, StorageError, TickCommit};
 use verity_metrics::{Metrics, SkipReason, observe_elapsed};
 use verity_types::config::INTERVALS_PER_SLOT;
 use verity_types::{
@@ -109,7 +109,12 @@ impl<B: StorageBackend> ChainTask<B> {
     /// Closure is the whole shutdown protocol: the binary stops the producers at the edge,
     /// each stopped producer drops its sender, and this loop ends once all three are gone.
     /// Duty products are drained to the end — they are never dropped, shutdown included.
-    pub async fn run(mut self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns the first storage failure. No snapshot containing the uncommitted mutation is
+    /// published, and the node runtime treats the error as fatal.
+    pub async fn run(mut self) -> Result<(), StorageError> {
         // The clock's current interval is already in the watch when this task starts, and
         // `changed()` below waits for the *next* one. Consuming it here is what stops a node
         // that starts mid-chain from spending its first interval believing it is still at
@@ -118,7 +123,7 @@ impl<B: StorageBackend> ChainTask<B> {
         // gone — nothing re-requests it, because it failed after the verification stage
         // rather than in it.
         let start = *self.clock.borrow_and_update();
-        self.on_clock(start).await;
+        self.on_clock(start).await?;
         self.publish();
 
         let mut clock_open = true;
@@ -146,10 +151,10 @@ impl<B: StorageBackend> ChainTask<B> {
             match event {
                 Event::Tick => {
                     let target = *self.clock.borrow_and_update();
-                    self.on_clock(target).await;
+                    self.on_clock(target).await?;
                 }
-                Event::Local(product) => self.on_local(product),
-                Event::Verified(verified) => self.on_verified(verified),
+                Event::Local(product) => self.on_local(product)?,
+                Event::Verified(verified) => self.on_verified(verified)?,
                 Event::ClockClosed => {
                     clock_open = false;
                     // The aggregation handoff holds a sender into channel ②. Keeping it past
@@ -173,6 +178,7 @@ impl<B: StorageBackend> ChainTask<B> {
         }
 
         tracing::info!(head = %hex(self.store.head), "chain task stopped");
+        Ok(())
     }
 
     /// Counts a reorg when the event just applied moved the head off its own chain.
@@ -210,43 +216,34 @@ impl<B: StorageBackend> ChainTask<B> {
     ///
     /// `has_proposal` is false here, matching leanSpec's own node: interval 0's acceptance is
     /// the proposer's private step, and the tick loop of a following node does not take it.
-    async fn on_clock(&mut self, target: Interval) {
+    async fn on_clock(&mut self, target: Interval) -> Result<(), StorageError> {
         if target.0 <= self.store.time.0 {
-            return;
+            return Ok(());
         }
 
         while self.store.time.0 < target.0 {
             let next = Interval(self.store.time.0 + 1);
             on_tick(&mut self.store, next, false);
-            self.commit_interval(next);
+            self.commit_interval(next)?;
             if next.0 % INTERVALS_PER_SLOT == 2 {
                 self.start_aggregation_round();
             }
         }
+        Ok(())
     }
 
     /// Persists what an interval changed, in the one batch a restart reads back.
-    fn commit_interval(&mut self, interval: Interval) {
+    fn commit_interval(&mut self, interval: Interval) -> Result<(), StorageError> {
         let position = interval.0 % INTERVALS_PER_SLOT;
-
-        if position == 3
-            && let Err(error) = self
-                .repository
-                .commit_safe_target(self.store.safe_target, interval)
-        {
-            tracing::error!(%error, interval = interval.0, "cannot persist the safe target");
-        }
-
         let tick = TickCommit {
             head: self.store.head,
+            safe_target: (position == 3).then_some(self.store.safe_target),
             latest_justified: self.store.latest_justified,
             latest_finalized: self.store.latest_finalized,
             interval,
             merge_pending_votes: position == 4,
         };
-        if let Err(error) = self.repository.commit_tick(&tick) {
-            tracing::error!(%error, interval = interval.0, "cannot persist the interval tick");
-        }
+        self.repository.commit_tick(&tick)
     }
 
     /// Hands the slot's evidence to the aggregation worker, and does not wait for it.
@@ -308,23 +305,26 @@ impl<B: StorageBackend> ChainTask<B> {
     ///
     /// These skip verification by construction: they were produced from this node's own view,
     /// with this node's own keys, by the same functions that would check them.
-    fn on_local(&mut self, product: LocalProduct) {
+    fn on_local(&mut self, product: LocalProduct) -> Result<(), StorageError> {
         match product {
             LocalProduct::Block(signed) => {
                 let root = hash_tree_root(&signed.block);
-                self.import(root, signed.block, signed.proof);
+                self.import(root, signed.block, signed.proof)
             }
-            LocalProduct::Attestation(signed) => self.record_vote(signed),
+            LocalProduct::Attestation(signed) => {
+                self.record_vote(signed);
+                Ok(())
+            }
             LocalProduct::Aggregate(aggregate) => self.record_aggregate(aggregate),
         }
     }
 
     /// Applies one item the verification stage has cleared.
-    fn on_verified(&mut self, verified: Verified) {
+    fn on_verified(&mut self, verified: Verified) -> Result<(), StorageError> {
         match verified {
             Verified::Block(block) => {
                 let (root, block, proof) = block.into_parts();
-                self.import(root, block, proof);
+                self.import(root, block, proof)?;
             }
             Verified::Attestation(attestation) => {
                 let (validator_index, data, signature) = attestation.into_parts();
@@ -336,8 +336,9 @@ impl<B: StorageBackend> ChainTask<B> {
                     tracing::debug!(validator = validator_index.0, %reason, "vote not pooled");
                 }
             }
-            Verified::Aggregate(aggregate) => self.record_aggregate(aggregate.into_inner()),
+            Verified::Aggregate(aggregate) => self.record_aggregate(aggregate.into_inner())?,
         }
+        Ok(())
     }
 
     /// Imports a block and persists it with the proof that made it acceptable.
@@ -345,13 +346,18 @@ impl<B: StorageBackend> ChainTask<B> {
     /// The store is written first and the database second, deliberately: `on_block` is the
     /// thing that can reject, and it leaves the store untouched when it does, so nothing
     /// unacceptable ever reaches a batch.
-    fn import(&mut self, root: Bytes32, block: Block, proof: MultiMessageAggregate) {
+    fn import(
+        &mut self,
+        root: Bytes32,
+        block: Block,
+        proof: MultiMessageAggregate,
+    ) -> Result<(), StorageError> {
         // The verification stage drops what the snapshot already holds, but a block verified
         // just before this import's own snapshot was published slips past it. `on_block` is
         // a no-op for a known root; the commit and the log would not be.
         if self.store.blocks.contains_key(&root) {
             tracing::debug!(slot = block.slot.0, "block already imported");
-            return;
+            return Ok(());
         }
 
         let parent_slot = self
@@ -369,16 +375,16 @@ impl<B: StorageBackend> ChainTask<B> {
         );
         if let Err(reason) = outcome {
             tracing::debug!(slot = block.slot.0, %reason, "block not imported");
-            return;
+            return Ok(());
         }
 
         let Some(post_state) = self.store.states.get(&root) else {
             // `on_block` inserts the post-state for every block it accepts, so this is only
             // reachable for a block that was already in the store — nothing left to persist.
-            return;
+            return Ok(());
         };
         let Some(parent_slot) = parent_slot else {
-            return;
+            return Ok(());
         };
 
         let commit = BlockCommit {
@@ -388,10 +394,7 @@ impl<B: StorageBackend> ChainTask<B> {
             post_state,
             parent_slot,
         };
-        if let Err(error) = self.repository.commit_block(&commit) {
-            tracing::error!(%error, slot = block.slot.0, "cannot persist an imported block");
-            return;
-        }
+        self.repository.commit_block(&commit)?;
 
         tracing::info!(
             slot = block.slot.0,
@@ -400,6 +403,7 @@ impl<B: StorageBackend> ChainTask<B> {
             finalized = self.store.latest_finalized.slot.0,
             "imported"
         );
+        Ok(())
     }
 
     /// Pools this node's own vote, so its own aggregation round can fold it in.
@@ -424,31 +428,33 @@ impl<B: StorageBackend> ChainTask<B> {
     /// Dropping them is leanSpec's own step at the end of an aggregation round: the proof now
     /// covers those voters, so keeping the raw copies would only have later rounds re-prove
     /// what is already proved.
-    fn record_aggregate(&mut self, aggregate: SignedAggregatedAttestation) {
+    fn record_aggregate(
+        &mut self,
+        aggregate: SignedAggregatedAttestation,
+    ) -> Result<(), StorageError> {
         let started = Instant::now();
         let outcome = record_aggregated_payload(&mut self.store, &aggregate);
         self.record_validation(started, outcome.is_ok());
         if let Err(reason) = outcome {
             tracing::debug!(slot = aggregate.data.slot.0, %reason, "aggregate not recorded");
-            return;
+            return Ok(());
         }
         self.store.attestation_signatures.remove(&aggregate.data);
-        self.persist_pending_votes(&aggregate);
+        self.persist_pending_votes(&aggregate)
     }
 
     /// Writes the votes an aggregate carries, so a restart keeps the weight it gave the head.
-    fn persist_pending_votes(&mut self, aggregate: &SignedAggregatedAttestation) {
+    fn persist_pending_votes(
+        &mut self,
+        aggregate: &SignedAggregatedAttestation,
+    ) -> Result<(), StorageError> {
         let votes: Vec<(ValidatorIndex, AttestationData)> =
             verity_chain::fork_choice::participants(&aggregate.proof.participants)
                 .map(|validator| (validator, aggregate.data))
                 .collect();
 
-        if let Err(error) = self
-            .repository
+        self.repository
             .record_pending_votes(&votes, self.store.time)
-        {
-            tracing::error!(%error, "cannot persist the votes an aggregate carries");
-        }
     }
 
     /// Publishes the snapshot every reader answers from.
@@ -488,23 +494,68 @@ fn hex(root: Bytes32) -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use tokio::sync::{mpsc, watch};
-    use verity_chain::{Store, generate_genesis, hash_tree_root};
-    use verity_db::{AnchorCommit, Identity, MemoryBackend, Repository, stored_header};
+    use verity_chain::{Store, generate_genesis, hash_tree_root, process_block, process_slots};
+    use verity_db::{
+        AnchorCommit, ColumnFamily, Durability, Identity, MemoryBackend, Repository,
+        StorageBackend, StorageError, StorageReader, WriteBatch, stored_header,
+    };
     use verity_metrics::Metrics;
-    use verity_types::{BlockBody, Interval, Validator, ValidatorIndex, Validators};
+    use verity_types::{
+        AggregationBits, AttestationData, Block, BlockBody, Interval, MultiMessageAggregate,
+        SignedAggregatedAttestation, SingleMessageAggregate, Slot, Validator, ValidatorIndex,
+        Validators,
+    };
 
     use crate::store_open::block_from;
 
     use super::{ChainTask, hex};
 
-    fn task() -> (
-        ChainTask<MemoryBackend>,
+    #[derive(Debug, Clone)]
+    struct FailingBackend {
+        inner: MemoryBackend,
+        fail_writes: Arc<AtomicBool>,
+    }
+
+    impl StorageReader for FailingBackend {
+        fn get(&self, table: ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+            self.inner.get(table, key)
+        }
+
+        fn table_is_empty(&self, table: ColumnFamily) -> Result<bool, StorageError> {
+            self.inner.table_is_empty(table)
+        }
+
+        fn range(
+            &self,
+            table: ColumnFamily,
+            start: &[u8],
+            end: &[u8],
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StorageError> {
+            self.inner.range(table, start, end)
+        }
+    }
+
+    impl StorageBackend for FailingBackend {
+        fn write(&mut self, batch: WriteBatch, durability: Durability) -> Result<(), StorageError> {
+            if self.fail_writes.load(Ordering::Relaxed) {
+                return Err(StorageError::Backend("injected write failure".to_string()));
+            }
+            self.inner.write(batch, durability)
+        }
+    }
+
+    type TaskParts<B> = (
+        ChainTask<B>,
         watch::Sender<Interval>,
         mpsc::Sender<verity_validator::LocalProduct>,
         mpsc::Sender<crate::verification::Verified>,
-    ) {
+        watch::Receiver<Arc<verity_chain::ChainView>>,
+    );
+
+    fn task_with_backend<B: StorageBackend>(backend: B) -> TaskParts<B> {
         let validators = Validators::try_from(vec![Validator {
             attestation_public_key: [1; 52],
             proposal_public_key: [2; 52],
@@ -516,7 +567,7 @@ mod tests {
         let block = block_from(&stored_header(&state), body.clone());
         let store = Store::new(&state, &block, None).expect("anchor");
         let mut repository = Repository::open(
-            MemoryBackend::new(),
+            backend,
             Identity {
                 chain_fingerprint: hash_tree_root(&state),
                 fork_version: 1,
@@ -534,7 +585,7 @@ mod tests {
         let (clock, clock_stream) = watch::channel(Interval(0));
         let (local, local_stream) = mpsc::channel(1);
         let (network, network_stream) = mpsc::channel(1);
-        let (task, _) = ChainTask::new(
+        let (task, view) = ChainTask::new(
             store,
             repository,
             clock_stream,
@@ -543,14 +594,102 @@ mod tests {
             None,
             Arc::new(Metrics::new().expect("registry")),
         );
+        (task, clock, local, network, view)
+    }
+
+    fn task() -> (
+        ChainTask<MemoryBackend>,
+        watch::Sender<Interval>,
+        mpsc::Sender<verity_validator::LocalProduct>,
+        mpsc::Sender<crate::verification::Verified>,
+    ) {
+        let (task, clock, local, network, _view) = task_with_backend(MemoryBackend::new());
         (task, clock, local, network)
+    }
+
+    #[tokio::test]
+    async fn should_stop_without_publishing_when_tick_persistence_fails() {
+        let fail_writes = Arc::new(AtomicBool::new(false));
+        let backend = FailingBackend {
+            inner: MemoryBackend::new(),
+            fail_writes: Arc::clone(&fail_writes),
+        };
+        let (task, clock, _local, _network, view) = task_with_backend(backend);
+        fail_writes.store(true, Ordering::Relaxed);
+        clock.send_replace(Interval(1));
+
+        let error = tokio::time::timeout(std::time::Duration::from_millis(100), task.run())
+            .await
+            .expect("persistence failure stops the chain task")
+            .expect_err("the injected write must fail");
+
+        assert!(matches!(error, StorageError::Backend(_)));
+        assert_eq!(view.borrow().time(), Interval(0));
+    }
+
+    #[tokio::test]
+    async fn should_propagate_block_persistence_failures() {
+        let fail_writes = Arc::new(AtomicBool::new(false));
+        let backend = FailingBackend {
+            inner: MemoryBackend::new(),
+            fail_writes: Arc::clone(&fail_writes),
+        };
+        let (mut task, _, _, _, _) = task_with_backend(backend);
+        task.on_clock(Interval(5))
+            .await
+            .expect("clock setup persists");
+        let parent = task.store.states.get(&task.store.head).expect("head state");
+        let advanced = process_slots(parent, Slot(1)).expect("advance to block slot");
+        let mut block = Block {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(0),
+            parent_root: hash_tree_root(&advanced.latest_block_header),
+            state_root: [0; 32],
+            body: BlockBody::default(),
+        };
+        let post = process_block(&advanced, &block).expect("valid empty block");
+        block.state_root = hash_tree_root(&post);
+        let root = hash_tree_root(&block);
+        fail_writes.store(true, Ordering::Relaxed);
+
+        let error = task
+            .import(root, block, MultiMessageAggregate::default())
+            .expect_err("the injected block write must fail");
+
+        assert!(matches!(error, StorageError::Backend(_)));
+    }
+
+    #[test]
+    fn should_propagate_pending_vote_persistence_failures() {
+        let fail_writes = Arc::new(AtomicBool::new(false));
+        let backend = FailingBackend {
+            inner: MemoryBackend::new(),
+            fail_writes: Arc::clone(&fail_writes),
+        };
+        let (mut task, _, _, _, _) = task_with_backend(backend);
+        let aggregate = SignedAggregatedAttestation {
+            data: AttestationData::default(),
+            proof: SingleMessageAggregate {
+                participants: AggregationBits::try_from(vec![true]).expect("one participant"),
+                ..SingleMessageAggregate::default()
+            },
+        };
+        fail_writes.store(true, Ordering::Relaxed);
+
+        let error = task
+            .persist_pending_votes(&aggregate)
+            .expect_err("the injected vote write must fail");
+
+        assert!(matches!(error, StorageError::Backend(_)));
     }
 
     #[tokio::test]
     async fn should_run_every_interval_action_when_the_clock_coalesces_ticks() {
         let (mut task, _, _, _) = task();
 
-        task.on_clock(Interval(8)).await;
+        task.on_clock(Interval(8))
+            .await
+            .expect("memory persistence succeeds");
 
         assert_eq!(task.store.time, Interval(8));
         assert_eq!(
@@ -576,7 +715,8 @@ mod tests {
         drop(network);
         tokio::time::timeout(std::time::Duration::from_millis(100), task.run())
             .await
-            .expect("closed inputs stop the chain task");
+            .expect("closed inputs stop the chain task")
+            .expect("memory persistence succeeds");
     }
 
     #[test]

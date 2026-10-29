@@ -1,6 +1,6 @@
 ---
 title: Verification Tooling Adoption Strategy
-last_updated: 2026-10-14
+last_updated: 2026-10-29
 tags:
   - verification
   - model-checking
@@ -209,7 +209,7 @@ path is later replaced by the proven Lean implementation.
 | p2p / frames | `frames_are_classified_without_overrunning_the_payload` | NET-2 overlap for framed-size accounting | Payload capped at 8 bytes; compressed frames hand off to external snap |
 | db / keys | `slot_keys_order_like_slots`, `composite_keys_order_by_slot_first`, `integer_keys_read_back`, `root_keys_read_back`, `composite_keys_read_back`, `foreign_widths_are_refused` | No catalog proposition; Rust storage-layout obligations | Wrong-width input capped at 41 bytes, one beyond the widest key |
 | db / snapshots | `boundaries_are_crossed_exactly_by_forward_gaps` | No catalog proposition | All slot pairs; exact quotient characterization is asserted |
-| db / commits and retention | `a_safe_target_update_is_one_atomic_batch`, `canonical_switch_queues_deletes_before_puts`, `finalization_controls_tick_durability`, `proof_pruning_never_crosses_finalization` | Partial STOR-2 implementation obligation | Verity's batch construction, mutation order, durability choice, and prune boundary are checked; RocksDB's atomic write guarantee remains external |
+| db / commits and retention | `a_safe_target_update_is_part_of_the_tick_batch`, `canonical_switch_queues_deletes_before_puts`, `finalization_controls_tick_durability`, `proof_pruning_never_crosses_finalization` | Partial STOR-2 implementation obligation | Verity's batch construction, mutation order, durability choice, and prune boundary are checked; RocksDB's atomic write guarantee remains external |
 | validator / duties | `the_gate_closes_late_and_reopens_early`, `the_attestation_gate_refuses_recorded_slots`, `attestation_retention_is_total_at_the_slot_boundary`, `intervals_land_in_one_slot` | VAL-4 overlap for the dedup decision | The `BTreeSet` implementation is trusted std; the pure gate and overflow-safe retention rule are proved |
 | node / pending verification | `pending_mutation_preserves_capacity_and_fifo_order`, `pending_resolution_partitions_without_loss`, `zero_capacity_never_retains_an_item` | No catalog proposition; I/O-edge buffering obligation | The real generic buffer is checked with symbolic entries at capacity one and a concrete three-entry partition; channels remain outside Kani |
 | node / peer lifecycle | `peer_mutation_preserves_operational_bounds` | No catalog proposition; sync policy obligation | Symbolic valid scores, request counts, and outcomes; `Instant`-based capability TTL and randomized peer selection remain under unit tests |

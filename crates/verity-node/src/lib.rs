@@ -172,6 +172,8 @@ pub struct Node {
     ticker: JoinHandle<()>,
     bridge: JoinHandle<()>,
     draining: Vec<JoinHandle<()>>,
+    runtime_errors: mpsc::UnboundedReceiver<NodeError>,
+    _runtime_error_guard: mpsc::UnboundedSender<NodeError>,
     stage_counters: Arc<StageCounters>,
     bridge_counters: Arc<BridgeCounters>,
     sync_counters: Arc<SyncCounters>,
@@ -306,6 +308,15 @@ impl Node {
         // Order matters only in one place: the chain task is spawned last so that every
         // sender into it already exists, and it therefore never sees an empty inbox that
         // looks like shutdown.
+        let (runtime_error_tx, runtime_errors) = mpsc::unbounded_channel();
+        let runtime_error_guard = runtime_error_tx.clone();
+        let chain_task = tokio::spawn(async move {
+            if let Err(error) = chain.run().await {
+                tracing::error!(%error, "chain persistence failed; stopping the node");
+                let _ = runtime_error_tx.send(NodeError::Storage(error));
+            }
+        });
+
         let signed_block = signed_block_source(Arc::clone(&served));
         let draining = vec![
             tokio::spawn(
@@ -348,7 +359,7 @@ impl Node {
                 )
                 .run(),
             ),
-            tokio::spawn(chain.run()),
+            chain_task,
         ];
 
         let context = Arc::new(ApiContext {
@@ -374,6 +385,8 @@ impl Node {
             ticker,
             bridge,
             draining,
+            runtime_errors,
+            _runtime_error_guard: runtime_error_guard,
             stage_counters,
             bridge_counters,
             sync_counters,
@@ -466,6 +479,17 @@ impl Node {
     #[must_use]
     pub fn sync_counters(&self) -> &SyncCounters {
         &self.sync_counters
+    }
+
+    /// Waits until the chain task reports a fatal runtime storage error.
+    ///
+    /// The sender guard owned by the node keeps this wait pending during healthy operation;
+    /// only an explicit failure resolves it.
+    pub async fn wait_for_runtime_error(&mut self) -> NodeError {
+        self.runtime_errors
+            .recv()
+            .await
+            .expect("the node retains a runtime-error sender")
     }
 
     /// Stops the node, and waits for the work already in flight to finish.
