@@ -18,7 +18,8 @@ use tokio::sync::{mpsc, watch};
 use verity_chain::ChainView;
 use verity_metrics::{ConnectionResult, Metrics};
 use verity_p2p::{
-    CommandError, ErrorCode, GossipKind, NetworkEvent, NetworkHandle, Request, Response, Status,
+    CommandError, ErrorCode, GossipKind, NetworkEvent, NetworkEvents, NetworkHandle, Request,
+    Response, Status,
 };
 use verity_types::{SubnetId, ValidatorIndex};
 use verity_validator::LocalProduct;
@@ -83,7 +84,7 @@ pub struct BridgeChannels {
 
 /// Drains the network task's event stream.
 pub struct NetworkBridge {
-    events: mpsc::Receiver<NetworkEvent>,
+    events: NetworkEvents,
     inbound: mpsc::Sender<GossipPayload>,
     blocks: mpsc::Sender<BlockRequest>,
     peers: mpsc::Sender<PeerEvent>,
@@ -99,7 +100,7 @@ impl NetworkBridge {
     /// Wires the network task's events to the verification stage.
     #[must_use = "a bridge does nothing until it is run"]
     pub fn new(
-        events: mpsc::Receiver<NetworkEvent>,
+        events: NetworkEvents,
         channels: BridgeChannels,
         handle: NetworkHandle,
         view: watch::Receiver<Arc<ChainView>>,

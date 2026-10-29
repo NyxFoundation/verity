@@ -80,8 +80,8 @@ pub struct NetworkConfig {
     pub attestation_subnets: Vec<SubnetId>,
     /// Capacity of the command channel into the network task.
     pub command_buffer: usize,
-    /// Capacity of the event channel out of the network task — the single drop point of
-    /// the inbound pipeline.
+    /// Capacity of the bounded lossy event channel out of the network task — the single
+    /// drop point of the inbound pipeline. Lifecycle control events use a separate queue.
     pub event_buffer: usize,
 }
 
