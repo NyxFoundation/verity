@@ -27,6 +27,12 @@ impl SyncState {
     pub const fn is_caught_up(self) -> bool {
         matches!(self, Self::Synced)
     }
+
+    /// Whether inbound gossip may enter verification in this state.
+    #[must_use]
+    pub const fn accepts_gossip(self) -> bool {
+        matches!(self, Self::Syncing | Self::Synced)
+    }
 }
 
 impl core::fmt::Display for SyncState {
@@ -50,6 +56,17 @@ impl SyncMachine {
     #[must_use]
     pub const fn new() -> Self {
         Self { state: None }
+    }
+
+    /// A machine starting with the complete genesis state.
+    ///
+    /// Genesis validators can process gossip immediately without waiting for a peer status
+    /// exchange, matching leanSpec's `genesis_start` behavior.
+    #[must_use]
+    pub const fn at_genesis() -> Self {
+        Self {
+            state: Some(SyncState::Syncing),
+        }
     }
 
     /// The current state.
@@ -154,6 +171,14 @@ mod tests {
         let mut machine = SyncMachine::new();
         assert_eq!(machine.observe(Slot(0), None), SyncState::Idle);
         assert!(!machine.state().is_caught_up());
+    }
+
+    #[test]
+    fn should_accept_gossip_immediately_when_starting_from_genesis() {
+        let machine = SyncMachine::at_genesis();
+
+        assert_eq!(machine.state(), SyncState::Syncing);
+        assert!(machine.state().accepts_gossip());
     }
 
     #[test]

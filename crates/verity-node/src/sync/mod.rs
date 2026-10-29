@@ -118,6 +118,7 @@ pub struct SyncService {
     peer_events: mpsc::Receiver<PeerEvent>,
     blocks: mpsc::Sender<GossipPayload>,
     synced: watch::Sender<bool>,
+    state: watch::Sender<SyncState>,
     counters: Arc<SyncCounters>,
     peers: PeerTable,
     machine: SyncMachine,
@@ -126,7 +127,8 @@ pub struct SyncService {
 impl SyncService {
     /// Wires the service to the network, the snapshot channel, and the verification stage.
     ///
-    /// Returns the service and a `watch` carrying whether the node is caught up. That is an
+    /// Returns the service, a `watch` carrying whether the node is caught up, and a `watch`
+    /// carrying the full sync state for the inbound-gossip gate. The boolean is an
     /// observation, not the duty gate: duties turn on head-versus-clock lag in
     /// `verity-validator` (`docs/design/sync.md`, Decision 1).
     #[must_use = "a service does nothing until it is run"]
@@ -137,8 +139,15 @@ impl SyncService {
         peer_events: mpsc::Receiver<PeerEvent>,
         blocks: mpsc::Sender<GossipPayload>,
         counters: Arc<SyncCounters>,
-    ) -> (Self, watch::Receiver<bool>) {
+        genesis_start: bool,
+    ) -> (Self, watch::Receiver<bool>, watch::Receiver<SyncState>) {
+        let machine = if genesis_start {
+            SyncMachine::at_genesis()
+        } else {
+            SyncMachine::new()
+        };
         let (synced, gate) = watch::channel(false);
+        let (state, state_rx) = watch::channel(machine.state());
         (
             Self {
                 handle,
@@ -147,11 +156,13 @@ impl SyncService {
                 peer_events,
                 blocks,
                 synced,
+                state,
                 counters,
                 peers: PeerTable::new(),
-                machine: SyncMachine::new(),
+                machine,
             },
             gate,
+            state_rx,
         )
     }
 
@@ -252,6 +263,7 @@ impl SyncService {
             .machine
             .observe(head, self.peers.network_finalized_slot());
         self.synced.send_replace(state.is_caught_up());
+        self.state.send_replace(state);
 
         if state != SyncState::Syncing {
             return true;
@@ -336,13 +348,16 @@ mod tests {
     use verity_p2p::{NetworkCommand, NetworkHandle, Request, Response, Status, identity::Keypair};
     use verity_types::{Block, BlockBody, Checkpoint, Slot, Validator, ValidatorIndex, Validators};
 
-    use super::{SyncCounters, SyncService};
+    use super::{SyncCounters, SyncService, SyncState};
 
-    fn service() -> (
+    type TestService = (
         SyncService,
         mpsc::Receiver<NetworkCommand>,
         mpsc::Receiver<crate::verification::GossipPayload>,
-    ) {
+        watch::Receiver<SyncState>,
+    );
+
+    fn service_with_start(genesis_start: bool) -> TestService {
         let validators = Validators::try_from(vec![Validator {
             attestation_public_key: [1; 52],
             proposal_public_key: [2; 52],
@@ -361,15 +376,37 @@ mod tests {
         let (_events, event_stream) = mpsc::channel(1);
         let (blocks, block_stream) = mpsc::channel(4);
         let (handle, commands) = NetworkHandle::testing(4);
-        let (service, _) = SyncService::new(
+        let (service, _, state) = SyncService::new(
             handle,
             view,
             gap_stream,
             event_stream,
             blocks,
             Arc::new(SyncCounters::default()),
+            genesis_start,
         );
-        (service, commands, block_stream)
+        (service, commands, block_stream, state)
+    }
+
+    fn service() -> (
+        SyncService,
+        mpsc::Receiver<NetworkCommand>,
+        mpsc::Receiver<crate::verification::GossipPayload>,
+    ) {
+        let (service, commands, blocks, _state) = service_with_start(false);
+        (service, commands, blocks)
+    }
+
+    #[test]
+    fn should_publish_idle_before_the_first_peer_status() {
+        let (_, _, _, state) = service_with_start(false);
+        assert_eq!(*state.borrow(), SyncState::Idle);
+    }
+
+    #[test]
+    fn should_publish_syncing_for_a_genesis_start() {
+        let (_, _, _, state) = service_with_start(true);
+        assert_eq!(*state.borrow(), SyncState::Syncing);
     }
 
     #[tokio::test]
