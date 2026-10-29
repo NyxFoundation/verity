@@ -420,23 +420,29 @@ mod tests {
     use crate::store_open::block_from;
 
     use super::{
-        AnchorFailure, Attempt, CheckpointError, attempt_fetch, install_crypto_provider,
+        AnchorFailure, Attempt, CheckpointError, attempt_fetch, fetch, install_crypto_provider,
         verify_anchor, verify_checkpoint_state,
     };
 
     async fn serve_once(response: &'static str) -> String {
+        serve_responses(vec![response]).await
+    }
+
+    async fn serve_responses(responses: Vec<&'static str>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test server");
         let address = listener.local_addr().expect("server address");
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept request");
-            let mut request = [0u8; 1024];
-            let _ = stream.read(&mut request).await;
-            stream
-                .write_all(response.as_bytes())
-                .await
-                .expect("write response");
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request).await;
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
         });
         format!("http://{address}/checkpoint")
     }
@@ -490,6 +496,21 @@ mod tests {
             proof: MultiMessageAggregate::default(),
         };
         (state, block)
+    }
+
+    #[tokio::test]
+    async fn should_retry_a_transient_checkpoint_response() {
+        let url = serve_responses(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nokay",
+        ])
+        .await;
+
+        let body = fetch(&client(), &url, 4)
+            .await
+            .expect("second attempt works");
+
+        assert_eq!(body, b"okay");
     }
 
     #[tokio::test]

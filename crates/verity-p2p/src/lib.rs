@@ -46,7 +46,7 @@
 //!     "/ip4/127.0.0.1/udp/0/quic-v1".parse()?,
 //!     "00000000".to_string(),
 //! );
-//! let (node_a, mut events_a) = verity_p2p::spawn(config_a)?;
+//! let (node_a, mut events_a, _task_a) = verity_p2p::spawn(config_a).await?;
 //! let peer_a = node_a.local_peer_id();
 //!
 //! // The bound address (with the real port) arrives as an event; appending `/p2p/<id>`
@@ -78,7 +78,7 @@
 //!     "00000000".to_string(),
 //! );
 //! config_b.bootnodes = vec![addr_a];
-//! let (node_b, mut _events_b) = verity_p2p::spawn(config_b)?;
+//! let (node_b, mut _events_b, _task_b) = verity_p2p::spawn(config_b).await?;
 //!
 //! // Ask A for its status, and publish a block payload (raw SSZ bytes — the caller
 //! // encodes; this crate only compresses). Publishing can fail with
@@ -118,7 +118,7 @@ pub use reqresp::messages::{
 };
 pub use service::{
     ConnectFailure, Direction, DisconnectReason, NetworkCommand, NetworkCounters, NetworkEvent,
-    NetworkEvents, NetworkHandle, ResponseChannel, spawn,
+    NetworkEvents, NetworkHandle, NetworkTask, ResponseChannel, spawn,
 };
 
 // Re-exported so consumers can name addresses and peers without depending on libp2p

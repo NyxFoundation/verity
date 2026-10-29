@@ -58,11 +58,11 @@ use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use verity_chain::{ChainView, SlotClock, generate_genesis};
 
-use verity_db::{Repository, RocksBackend, StorageReader};
+use verity_db::{Repository, RocksBackend, StorageError, StorageReader};
 use verity_metrics::{Metrics, gauge_value};
 use verity_p2p::{NetworkConfig, NetworkCounters, PeerId, identity::Keypair};
 use verity_rpc::{
@@ -169,8 +169,8 @@ pub struct Node {
     listening: watch::Receiver<Vec<Multiaddr>>,
     peer_id: PeerId,
     network: Option<verity_p2p::NetworkHandle>,
-    ticker: JoinHandle<()>,
-    bridge: JoinHandle<()>,
+    ticker: AbortHandle,
+    bridge: AbortHandle,
     draining: Vec<JoinHandle<()>>,
     runtime_errors: mpsc::UnboundedReceiver<NodeError>,
     _runtime_error_guard: mpsc::UnboundedSender<NodeError>,
@@ -181,6 +181,45 @@ pub struct Node {
     aggregator: Arc<AtomicBool>,
     api: Option<HttpServer>,
     metrics_server: Option<HttpServer>,
+}
+
+fn supervise_task(
+    name: &'static str,
+    task: JoinHandle<()>,
+    errors: mpsc::UnboundedSender<NodeError>,
+) -> (AbortHandle, JoinHandle<()>) {
+    let abort = task.abort_handle();
+    let monitor = tokio::spawn(async move {
+        let _ = task.await;
+        let _ = errors.send(NodeError::EssentialTaskStopped { task: name });
+    });
+    (abort, monitor)
+}
+
+fn supervise_chain(
+    task: JoinHandle<Result<(), StorageError>>,
+    errors: mpsc::UnboundedSender<NodeError>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let error = match task.await {
+            Ok(Err(error)) => NodeError::Storage(error),
+            Ok(Ok(())) | Err(_) => NodeError::EssentialTaskStopped { task: "chain" },
+        };
+        let _ = errors.send(error);
+    })
+}
+
+fn supervise_network(
+    task: verity_p2p::NetworkTask,
+    errors: mpsc::UnboundedSender<NodeError>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let error = match task.await {
+            Ok(Err(error)) => NodeError::Network(error),
+            Ok(Ok(())) | Err(_) => NodeError::EssentialTaskStopped { task: "network" },
+        };
+        let _ = errors.send(error);
+    })
 }
 
 impl Node {
@@ -212,20 +251,8 @@ impl Node {
         let api_listener = bind_optional(config.api_address).await?;
         let metrics_listener = bind_optional(config.metrics_address).await?;
 
-        // The store carries one validator index, which is only ever used to attribute the
-        // node's own votes; the keyring below is what actually decides which duties run.
-        let backend = RocksBackend::open(&config.data_directory)?;
-        // Taken before the backend moves into the writer: this is the same open database,
-        // and it is the only handle the responder ever gets.
-        let reader = backend.reader();
-        let (repository, store) = store_open::open(
-            backend,
-            &genesis_state,
-            checkpoint.as_ref(),
-            config.validator_indices.first().copied(),
-        )?;
-        let served = Arc::new(store_open::open_reader(reader, &genesis_state)?);
-
+        // Keys, metrics, crypto warm-up, and the real QUIC bind all precede the database.
+        // A failure in any of them must not leave a durable anchor behind.
         let keyring = load_keys(&config)?;
         let metrics = Arc::new(Metrics::new()?);
         record_start(&metrics, &config, &keyring, committee_count);
@@ -234,6 +261,34 @@ impl Node {
             // Paid once, here, rather than by the first duty of the node's life.
             prover.warm_up().await?;
         }
+        let (handle, events, network_task) =
+            verity_p2p::spawn(network_config(&config, committee_count)).await?;
+        let peer_id = handle.local_peer_id();
+
+        // The store carries one validator index, which is only ever used to attribute the
+        // node's own votes; the keyring above is what actually decides which duties run.
+        let storage = (|| {
+            let backend = RocksBackend::open(&config.data_directory)?;
+            // Taken before the backend moves into the writer: this is the same open database,
+            // and it is the only handle the responder ever gets.
+            let reader = backend.reader();
+            let (repository, store) = store_open::open(
+                backend,
+                &genesis_state,
+                checkpoint.as_ref(),
+                config.validator_indices.first().copied(),
+            )?;
+            let served = Arc::new(store_open::open_reader(reader, &genesis_state)?);
+            Ok::<_, NodeError>((repository, store, served))
+        })();
+        let (repository, store, served) = match storage {
+            Ok(storage) => storage,
+            Err(error) => {
+                drop(handle);
+                let _ = network_task.await;
+                return Err(error);
+            }
+        };
 
         let (ticks, ticker) = clock::spawn(clock, Arc::clone(&metrics));
         let (products, product_stream) = mpsc::channel(PRODUCT_CAPACITY);
@@ -262,9 +317,6 @@ impl Node {
             Arc::clone(&metrics),
         );
 
-        let (handle, events) = verity_p2p::spawn(network_config(&config, committee_count))?;
-        let peer_id = handle.local_peer_id();
-
         let stage_counters = Arc::new(StageCounters::default());
         let bridge_counters = Arc::new(BridgeCounters::default());
         let sync_counters = Arc::new(SyncCounters::default());
@@ -286,8 +338,13 @@ impl Node {
             genesis_start,
         );
 
+        let (runtime_error_tx, runtime_errors) = mpsc::unbounded_channel();
+        let runtime_error_guard = runtime_error_tx.clone();
+        let (ticker, ticker_monitor) = supervise_task("clock", ticker, runtime_error_tx.clone());
+        let network_monitor = supervise_network(network_task, runtime_error_tx.clone());
+
         let (listening, bound) = watch::channel(Vec::new());
-        let bridge = tokio::spawn(
+        let bridge_task = tokio::spawn(
             NetworkBridge::new(
                 events,
                 BridgeChannels {
@@ -304,62 +361,78 @@ impl Node {
             )
             .run(),
         );
+        let (bridge, bridge_monitor) =
+            supervise_task("network bridge", bridge_task, runtime_error_tx.clone());
 
-        // Order matters only in one place: the chain task is spawned last so that every
-        // sender into it already exists, and it therefore never sees an empty inbox that
-        // looks like shutdown.
-        let (runtime_error_tx, runtime_errors) = mpsc::unbounded_channel();
-        let runtime_error_guard = runtime_error_tx.clone();
-        let chain_task = tokio::spawn(async move {
-            if let Err(error) = chain.run().await {
-                tracing::error!(%error, "chain persistence failed; stopping the node");
-                let _ = runtime_error_tx.send(NodeError::Storage(error));
-            }
-        });
+        let duty_task = tokio::spawn(
+            DutyService::new(
+                keyring,
+                prover,
+                products,
+                view.clone(),
+                ticks,
+                Arc::clone(&metrics),
+            )
+            .run(),
+        );
+        let (_, duty_monitor) =
+            supervise_task("validator duties", duty_task, runtime_error_tx.clone());
+        let relay_task = tokio::spawn(
+            ProductRelay::new(product_stream, local, handle.clone(), committee_count).run(),
+        );
+        let (_, relay_monitor) =
+            supervise_task("product relay", relay_task, runtime_error_tx.clone());
+        let sync_task = tokio::spawn(sync.run());
+        let (_, sync_monitor) = supervise_task("sync", sync_task, runtime_error_tx.clone());
+        let responder_task = tokio::spawn(
+            BlockResponder::new(
+                Arc::clone(&served),
+                view.clone(),
+                block_request_stream,
+                handle.clone(),
+                Arc::clone(&sync_counters),
+            )
+            .run(),
+        );
+        let (_, responder_monitor) =
+            supervise_task("block responder", responder_task, runtime_error_tx.clone());
+        let verification_task = tokio::spawn(
+            VerificationStage::new(
+                StageChannels {
+                    inbound: raw_gossip_stream,
+                    verified,
+                    view: view.clone(),
+                    gaps,
+                },
+                PENDING_CAPACITY,
+                Arc::clone(&stage_counters),
+                clock,
+                Arc::clone(&metrics),
+            )
+            .run(),
+        );
+        let (_, verification_monitor) = supervise_task(
+            "gossip verification",
+            verification_task,
+            runtime_error_tx.clone(),
+        );
+
+        // Spawned last so every sender into it already exists; an empty inbox means shutdown.
+        let chain_task = tokio::spawn(chain.run());
+        let chain_monitor = supervise_chain(chain_task, runtime_error_tx);
 
         let signed_block = signed_block_source(Arc::clone(&served));
         let draining = vec![
-            tokio::spawn(
-                DutyService::new(
-                    keyring,
-                    prover,
-                    products,
-                    view.clone(),
-                    ticks,
-                    Arc::clone(&metrics),
-                )
-                .run(),
-            ),
-            tokio::spawn(
-                ProductRelay::new(product_stream, local, handle.clone(), committee_count).run(),
-            ),
-            tokio::spawn(sync.run()),
-            tokio::spawn(
-                BlockResponder::new(
-                    served,
-                    view.clone(),
-                    block_request_stream,
-                    handle.clone(),
-                    Arc::clone(&sync_counters),
-                )
-                .run(),
-            ),
-            tokio::spawn(
-                VerificationStage::new(
-                    StageChannels {
-                        inbound: raw_gossip_stream,
-                        verified,
-                        view: view.clone(),
-                        gaps,
-                    },
-                    PENDING_CAPACITY,
-                    Arc::clone(&stage_counters),
-                    clock,
-                    Arc::clone(&metrics),
-                )
-                .run(),
-            ),
-            chain_task,
+            ticker_monitor,
+            bridge_monitor,
+            duty_monitor,
+            relay_monitor,
+            sync_monitor,
+            responder_monitor,
+            verification_monitor,
+            chain_monitor,
+            // Every task holding a network handle must drain before the service can exit.
+            network_monitor,
         ];
 
         let context = Arc::new(ApiContext {
@@ -435,11 +508,11 @@ impl Node {
 
     /// The addresses the network service actually bound.
     ///
-    /// Empty until the swarm reports its first listener, which happens shortly *after*
-    /// `start` returns: binding is synchronous but the address arrives as an event. A caller
-    /// that needs a dialable address should await [`Node::listening`] rather than read this
-    /// once. With port 0 in the configuration this is the only place the bound port appears,
-    /// so it is read here rather than from a log line.
+    /// Binding is complete before `start` returns, but the bridge may not yet have forwarded
+    /// the swarm's address event into this watch channel. A caller that needs a dialable
+    /// address should await [`Node::listening`] rather than read this once. With port 0 in the
+    /// configuration this is the only place the bound port appears, so it is read here rather
+    /// than from a log line.
     #[must_use]
     pub fn listen_addresses(&self) -> Vec<Multiaddr> {
         self.listening.borrow().clone()
@@ -481,7 +554,7 @@ impl Node {
         &self.sync_counters
     }
 
-    /// Waits until the chain task reports a fatal runtime storage error.
+    /// Waits until storage, networking, or an essential task reports a fatal runtime error.
     ///
     /// The sender guard owned by the node keeps this wait pending during healthy operation;
     /// only an explicit failure resolves it.
@@ -616,4 +689,26 @@ fn network_config(config: &NodeConfig, committee_count: u64) -> NetworkConfig {
     network.bootnodes = config.bootnodes.clone();
     network.attestation_subnets = subscribed_subnets(&config.validator_indices, committee_count);
     network
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use super::{NodeError, supervise_task};
+
+    #[tokio::test]
+    async fn should_report_when_an_essential_task_stops() {
+        let (errors, mut error_stream) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async {});
+        let (_, monitor) = supervise_task("test task", task, errors);
+
+        let error = error_stream.recv().await.expect("supervisor reports exit");
+        monitor.await.expect("supervisor finishes");
+
+        assert!(matches!(
+            error,
+            NodeError::EssentialTaskStopped { task: "test task" }
+        ));
+    }
 }
