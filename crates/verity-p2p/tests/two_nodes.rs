@@ -7,12 +7,13 @@
 use std::time::Duration;
 
 use libssz::SszEncode;
+use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use verity_p2p::{
-    BlocksByRangeRequest, BlocksByRootRequest, CommandError, ErrorCode, GossipKind, Multiaddr,
-    NetworkConfig, NetworkEvent, NetworkEvents, NetworkHandle, PublishError, Request, RequestError,
-    Response, Status, identity,
+    BlocksByRangeRequest, BlocksByRootRequest, BuildError, CommandError, ErrorCode, GossipKind,
+    Multiaddr, NetworkConfig, NetworkEvent, NetworkEvents, NetworkHandle, PublishError, Request,
+    RequestError, Response, Status, identity,
 };
 use verity_types::{Checkpoint, SignedBlock, Slot};
 
@@ -101,7 +102,9 @@ async fn connected_nodes() -> (
     NetworkEvents,
     verity_p2p::PeerId,
 ) {
-    let (handle_a, mut events_a) = verity_p2p::spawn(node_config()).expect("spawn node A");
+    let (handle_a, mut events_a, _task_a) = verity_p2p::spawn(node_config())
+        .await
+        .expect("spawn node A");
     let listen_a = wait_for(&mut events_a, |event| match event {
         NetworkEvent::NewListenAddr(address) => Some(address),
         _ => None,
@@ -113,7 +116,8 @@ async fn connected_nodes() -> (
 
     let mut config_b = node_config();
     config_b.bootnodes = vec![addr_a];
-    let (handle_b, mut events_b) = verity_p2p::spawn(config_b).expect("spawn node B");
+    let (handle_b, mut events_b, _task_b) =
+        verity_p2p::spawn(config_b).await.expect("spawn node B");
     let peer_a = handle_a.local_peer_id();
     wait_for(&mut events_b, |event| match event {
         NetworkEvent::PeerConnected { peer, .. } if peer == peer_a => Some(()),
@@ -142,7 +146,9 @@ async fn publish_when_meshed(handle: &NetworkHandle, kind: GossipKind, payload: 
 #[tokio::test(flavor = "multi_thread")]
 async fn should_serve_gossip_and_all_reqresp_protocols_between_two_nodes() {
     // Node A listens; its bound address becomes known through the event stream.
-    let (handle_a, mut events_a) = verity_p2p::spawn(node_config()).expect("spawn node A");
+    let (handle_a, mut events_a, _task_a) = verity_p2p::spawn(node_config())
+        .await
+        .expect("spawn node A");
     let listen_a = wait_for(&mut events_a, |event| match event {
         NetworkEvent::NewListenAddr(address) => Some(address),
         _ => None,
@@ -155,7 +161,8 @@ async fn should_serve_gossip_and_all_reqresp_protocols_between_two_nodes() {
     // Node B boots with A as its only bootnode.
     let mut config_b = node_config();
     config_b.bootnodes = vec![addr_a];
-    let (handle_b, mut events_b) = verity_p2p::spawn(config_b).expect("spawn node B");
+    let (handle_b, mut events_b, _task_b) =
+        verity_p2p::spawn(config_b).await.expect("spawn node B");
     let peer_a = handle_a.local_peer_id();
 
     let direction = wait_for(&mut events_b, |event| match event {
@@ -287,8 +294,24 @@ async fn should_report_a_response_channel_closed_with_its_peer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn should_reject_a_listen_address_whose_udp_port_is_occupied() {
+    let occupied = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("reserve a UDP port");
+    let port = occupied.local_addr().expect("local address").port();
+    let mut config = node_config();
+    config.listen = format!("/ip4/127.0.0.1/udp/{port}/quic-v1")
+        .parse()
+        .expect("multiaddr");
+
+    let result = verity_p2p::spawn(config).await;
+
+    assert!(matches!(result, Err(BuildError::Listen(_))));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn should_report_dial_failure_when_peer_has_no_known_address() {
-    let (handle, _events) = verity_p2p::spawn(node_config()).expect("spawn");
+    let (handle, _events, _task) = verity_p2p::spawn(node_config()).await.expect("spawn");
     let stranger = identity::Keypair::generate_secp256k1()
         .public()
         .to_peer_id();

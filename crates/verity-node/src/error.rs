@@ -1,9 +1,8 @@
-//! What can stop a node from starting.
+//! What can stop a node from starting or force a running node to stop.
 //!
-//! Everything here is a startup failure. Once the tasks are up, a failure is a dropped
-//! message, a rejected block, or a missed duty — all of which are handled where they happen
-//! and logged, because a consensus node that exits on bad input is a node an adversary can
-//! turn off.
+//! Bad peer input stays local to the task that rejects it. Failures of owned infrastructure
+//! — storage, listeners, and essential tasks — are fatal because continuing would advertise
+//! a node whose consensus pipeline is no longer complete.
 
 use core::fmt;
 use std::path::PathBuf;
@@ -153,6 +152,11 @@ pub enum NodeError {
     /// Fatal rather than skipped: a node started with `--api-port` is a node something else
     /// will probe, and a silent absence would be diagnosed there, much later.
     Http(BindError),
+    /// An essential task ended while the node was supposed to be running.
+    EssentialTaskStopped {
+        /// The stable operator-facing task name.
+        task: &'static str,
+    },
 }
 
 impl fmt::Display for NodeError {
@@ -181,6 +185,9 @@ impl fmt::Display for NodeError {
             ),
             Self::Metrics(error) => write!(f, "{error}"),
             Self::Http(error) => write!(f, "http: {error}"),
+            Self::EssentialTaskStopped { task } => {
+                write!(f, "essential task {task} stopped unexpectedly")
+            }
         }
     }
 }
@@ -296,6 +303,7 @@ mod tests {
                 reason: "bad state".to_string(),
             }),
             NodeError::CheckpointOverPopulated { slot: Slot(42) },
+            NodeError::EssentialTaskStopped { task: "sync" },
         ];
         for failure in failures {
             assert!(!failure.to_string().is_empty());

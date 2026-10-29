@@ -389,9 +389,14 @@ impl NetworkHandle {
     }
 }
 
-/// Builds the swarm, subscribes the configured topics, dials the bootnodes, and spawns
-/// the network task. Returns the handle and the event stream.
-pub fn spawn(config: NetworkConfig) -> Result<(NetworkHandle, NetworkEvents), BuildError> {
+/// The owned network task. Callers supervise it and await it during shutdown.
+pub type NetworkTask = tokio::task::JoinHandle<Result<(), BuildError>>;
+
+/// Builds the swarm, starts its task, and waits until the listen address is actually bound.
+/// Returns the handle, event stream, and owned task.
+pub async fn spawn(
+    config: NetworkConfig,
+) -> Result<(NetworkHandle, NetworkEvents, NetworkTask), BuildError> {
     validate_channel_capacities(&config)?;
     let mut swarm = build_swarm(&config)?;
     let local_peer_id = *swarm.local_peer_id();
@@ -408,6 +413,7 @@ pub fn spawn(config: NetworkConfig) -> Result<(NetworkHandle, NetworkEvents), Bu
 
     let (command_tx, command_rx) = mpsc::channel(config.command_buffer);
     let (event_tx, control_tx, event_rx) = event_channels(config.event_buffer);
+    let (ready_tx, ready_rx) = oneshot::channel();
     let counters = Arc::new(NetworkCounters::default());
 
     let service = Service {
@@ -418,17 +424,31 @@ pub fn spawn(config: NetworkConfig) -> Result<(NetworkHandle, NetworkEvents), Bu
         pending: HashMap::new(),
         network_name: config.network_name,
         counters: Arc::clone(&counters),
+        ready: Some(ready_tx),
     };
-    tokio::spawn(service.run());
+    let task = tokio::spawn(service.run());
 
-    Ok((
-        NetworkHandle {
-            commands: command_tx,
-            local_peer_id,
-            counters,
+    match ready_rx.await {
+        Ok(Ok(())) => Ok((
+            NetworkHandle {
+                commands: command_tx,
+                local_peer_id,
+                counters,
+            },
+            event_rx,
+            task,
+        )),
+        Ok(Err(reason)) => {
+            let _ = task.await;
+            Err(BuildError::Listen(reason))
+        }
+        Err(_) => match task.await {
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(())) | Err(_) => Err(BuildError::Listen(
+                "network task stopped before binding the listen address".to_string(),
+            )),
         },
-        event_rx,
-    ))
+    }
 }
 
 fn event_channels(
@@ -518,10 +538,11 @@ struct Service {
         HashMap<(Protocol, OutboundRequestId), oneshot::Sender<Result<Response, RequestError>>>,
     network_name: String,
     counters: Arc<NetworkCounters>,
+    ready: Option<oneshot::Sender<Result<(), String>>>,
 }
 
 impl Service {
-    async fn run(mut self) {
+    async fn run(mut self) -> Result<(), BuildError> {
         let mut mesh_sample = tokio::time::interval(MESH_SAMPLE_INTERVAL);
         mesh_sample.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -534,11 +555,21 @@ impl Service {
                     Some(command) => self.handle_command(command),
                     // Every handle dropped: shutdown. Pending oneshots drop with the
                     // task, resolving their awaiters to ServiceStopped.
-                    None => break,
+                    None => {
+                        self.fail_startup("network service stopped before listening".to_string());
+                        break;
+                    },
                 },
-                event = self.swarm.select_next_some() => self.handle_swarm_event(event),
+                event = self.swarm.select_next_some() => self.handle_swarm_event(event)?,
                 _ = mesh_sample.tick() => self.sample_mesh(),
             }
+        }
+        Ok(())
+    }
+
+    fn fail_startup(&mut self, reason: String) {
+        if let Some(ready) = self.ready.take() {
+            let _ = ready.send(Err(reason));
         }
     }
 
@@ -615,10 +646,26 @@ impl Service {
             .map_err(PublishError::from)
     }
 
-    fn handle_swarm_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
+    fn handle_swarm_event(&mut self, event: SwarmEvent<BehaviourEvent>) -> Result<(), BuildError> {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
+                if let Some(ready) = self.ready.take() {
+                    let _ = ready.send(Ok(()));
+                }
                 self.emit_control(NetworkEvent::NewListenAddr(address));
+            }
+            SwarmEvent::ListenerError { error, .. } if self.ready.is_some() => {
+                let reason = error.to_string();
+                self.fail_startup(reason.clone());
+                return Err(BuildError::Listen(reason));
+            }
+            SwarmEvent::ListenerClosed { reason, .. } => {
+                let reason = reason.map_or_else(
+                    |error| error.to_string(),
+                    |()| "network listener closed unexpectedly".to_string(),
+                );
+                self.fail_startup(reason.clone());
+                return Err(BuildError::Listen(reason));
             }
             SwarmEvent::ConnectionEstablished {
                 peer_id,
@@ -674,11 +721,11 @@ impl Service {
                 self.handle_reqresp(Protocol::BlocksByRange, event);
             }
             // Identify runs for gossipsub interop only; gossipsub's own subscription
-            // and peer bookkeeping events need no reaction; the remaining swarm-level
-            // events (dial progress, listener lifecycle, ...) carry no obligation for
-            // this task.
+            // and peer bookkeeping events need no reaction. Dial progress and non-fatal
+            // listener errors after startup carry no obligation for this task.
             _ => {}
         }
+        Ok(())
     }
 
     /// Topic check and deduplication only — the gossipsub behaviour has already
@@ -850,18 +897,18 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn should_reject_a_zero_command_capacity() {
+    #[tokio::test]
+    async fn should_reject_a_zero_command_capacity() {
         assert!(matches!(
-            spawn(config(0, 1)),
+            spawn(config(0, 1)).await,
             Err(BuildError::InvalidCommandCapacity(0))
         ));
     }
 
-    #[test]
-    fn should_reject_a_zero_event_capacity() {
+    #[tokio::test]
+    async fn should_reject_a_zero_event_capacity() {
         assert!(matches!(
-            spawn(config(1, 0)),
+            spawn(config(1, 0)).await,
             Err(BuildError::InvalidEventCapacity(0))
         ));
     }

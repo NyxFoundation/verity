@@ -1,6 +1,6 @@
 ---
 title: Verity Concurrency Model
-last_updated: 2026-08-30
+last_updated: 2026-10-29
 tags:
   - concurrency
   - runtime
@@ -249,31 +249,25 @@ verification stage.
 
 ## Lifecycle
 
-Startup runs the dependency arrows backwards. The `verity` binary — the owner of all wiring —
-opens the database, validates its identity values ([storage.md](storage.md)), and hands the
-chain task its handle; the chain task loads the finalized anchor and reconstructs `Store` and
-`State` (initial values, `Store.time` included, per leanSpec's store initialization), then
-publishes the **first `ChainView`** — that publication is the readiness signal every other
-component waits on; only then do the verification stage, network, validator-duty, and RPC
-tasks **begin serving**. What the first `ChainView` gates is serving, not construction:
-initialization that needs no consensus state — validator key preparation above all
-([key-management.md](key-management.md)) — is spawned by the binary at process start and runs
-in parallel with this sequence. The first `ChainView` is a *necessary* serving gate for every
-component, not always a *sufficient* one: a component may add its own readiness conditions,
-and the validator-duty loop does — it serves only once its keys are also prepared
-([key-management.md](key-management.md)) and the node is `SYNCED`
-([sync.md](sync.md)) — a join of three gates. Shutdown inverts it, and **channel closure is the only
-signal** — there is no shutdown broadcast. The binary stops the producers at the edge; each
-stopped producer drops its sender; every downstream task exits when its inputs return `None`
-(a closed-and-empty channel), with no side-channel bookkeeping. Concretely: the network task
-stops and drops its sender; the verification stage, on `None` from its input, stops accepting
-work, lets verifications already running on `spawn_blocking` finish and **discards their
-results** (blocking work is uncancellable by nature — nothing waits on it), drops its pending
-buffer (peer-recoverable, like any network-edge drop), and drops its own
-sender, closing ③; the validator tasks stop, closing ②; the chain task consumes ② and ③ to
-`None` — duty products are never dropped, in shutdown included — then persists and stops. Process-level
-orchestration — signal handling, restart policy — belongs to the `verity` binary and is out of
-scope here.
+Startup is fail-safe with respect to the durable anchor. The `verity` binary — the owner of
+all wiring — validates genesis and checkpoint inputs, binds both HTTP listeners, loads
+validator keys, warms the prover, and waits for the QUIC listener's actual bound-address event
+**before** opening the database. If storage setup then fails, it drops the network handle and
+awaits the already-started network task before returning the error. Only after every external
+configuration and listener dependency is ready does it write or resume the anchor, reconstruct
+`Store` and `State`, and publish the first **`ChainView`**. The verification, sync,
+validator-duty, responder, bridge, and RPC tasks are constructed from that view and then begin
+serving. Validator duties add the `SYNCED` gate from [sync.md](sync.md); the first view alone is
+necessary but not sufficient.
+
+Shutdown inverts the dependency graph. The binary aborts the two edge producers (the clock and
+network bridge), then channel closure drains duties, relay, sync, verification, responder, and
+finally the chain writer; duty products already accepted are not dropped. Network-handle
+clones disappear as those tasks finish, allowing the owned network task to exit last. Every
+task has an owned join handle and a supervisor: storage or listener errors retain their typed
+cause, while any other essential task exit is fatal as `EssentialTaskStopped`. The binary
+selects that runtime-error stream alongside the OS shutdown signal, so it never continues as a
+partially functioning consensus node. There is no detached task and no shutdown broadcast.
 
 ## Deliberately deferred to implementation
 
