@@ -161,11 +161,18 @@ impl GenesisFile {
 ///
 /// # Errors
 ///
-/// [`ConfigError::Malformed`] when the file exists but is not a mapping of node identifier to
-/// a list of indices.
+/// [`ConfigError::Unreadable`] when the file exists but cannot be read, and
+/// [`ConfigError::Malformed`] when it is not a mapping of node identifier to a list of indices.
 pub fn assigned_validators(path: &Path, node_id: &str) -> Result<Vec<ValidatorIndex>, ConfigError> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Ok(Vec::new());
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(ConfigError::Unreadable {
+                path: path.to_path_buf(),
+                reason: error.to_string(),
+            });
+        }
     };
 
     let assignment: HashMap<String, Vec<u64>> =
@@ -195,6 +202,7 @@ mod tests {
     use verity_types::ValidatorIndex;
 
     use super::{GenesisFile, assigned_validators};
+    use crate::error::ConfigError;
 
     fn write(contents: &str) -> tempfile::NamedTempFile {
         let mut file = tempfile::NamedTempFile::new().expect("a temporary file");
@@ -352,10 +360,34 @@ mod tests {
 
     #[test]
     fn should_run_no_validators_when_the_assignment_file_is_absent() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("validators.yaml");
+
         assert!(
-            assigned_validators(std::path::Path::new("/nonexistent/validators.yaml"), "any")
+            assigned_validators(&path, "any")
                 .expect("an absent file is a follower configuration")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn should_report_an_unreadable_assignment_file() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path();
+
+        match assigned_validators(path, "any") {
+            Err(ConfigError::Unreadable { path: actual, .. }) => assert_eq!(actual, path),
+            other => panic!("expected Unreadable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_report_an_invalid_assignment_file() {
+        let file = write("verity_0: [not-valid-yaml");
+
+        assert!(matches!(
+            assigned_validators(file.path(), "verity_0"),
+            Err(ConfigError::Malformed { .. })
+        ));
     }
 }
