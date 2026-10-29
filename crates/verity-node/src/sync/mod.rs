@@ -141,13 +141,17 @@ impl SyncService {
         counters: Arc<SyncCounters>,
         genesis_start: bool,
     ) -> (Self, watch::Receiver<bool>, watch::Receiver<SyncState>) {
-        let machine = if genesis_start {
-            SyncMachine::at_genesis()
+        let machine = SyncMachine::new();
+        let initial_state = if genesis_start {
+            // Open the gossip gate immediately, but keep the machine's first-observation
+            // guard. Otherwise an equal finalized slot would move straight to `Synced`
+            // before the service fetches a peer's higher, not-yet-finalized head.
+            SyncState::Syncing
         } else {
-            SyncMachine::new()
+            SyncState::Idle
         };
         let (synced, gate) = watch::channel(false);
-        let (state, state_rx) = watch::channel(machine.state());
+        let (state, state_rx) = watch::channel(initial_state);
         (
             Self {
                 handle,
@@ -404,9 +408,11 @@ mod tests {
     }
 
     #[test]
-    fn should_publish_syncing_for_a_genesis_start() {
-        let (_, _, _, state) = service_with_start(true);
+    fn should_open_the_genesis_gossip_gate_without_skipping_the_first_observation() {
+        let (service, _, _, state) = service_with_start(true);
+
         assert_eq!(*state.borrow(), SyncState::Syncing);
+        assert_eq!(service.machine.state(), SyncState::Idle);
     }
 
     #[tokio::test]
