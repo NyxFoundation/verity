@@ -105,8 +105,9 @@ matrix.
 User-facing documentation is published at
 [docs.verityclient.com](https://docs.verityclient.com). Internal design records covering the
 domain model, concurrency, sync, storage, key management, and verification tooling live in
-[`docs/design/`](./docs/design/). Aeneas-generated Lean and its correspondence proofs against
-formal-leanSpec live in
+[`docs/design/`](./docs/design/). The versioning and proof-gated release policy is documented in
+the [release strategy](./docs/src/release-strategy.md). Aeneas-generated Lean and its
+correspondence proofs against formal-leanSpec live in
 [`verity-aeneas-proofs`](https://github.com/NyxFoundation/verity-aeneas-proofs).
 
 ## Acknowledgments
