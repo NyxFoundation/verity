@@ -19,7 +19,9 @@ use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::request_response;
 use libssz::{SszDecode, SszEncode};
 
-use crate::config::{MAX_ERROR_MESSAGE_SIZE, MAX_PAYLOAD_SIZE, MAX_REQUEST_BLOCKS};
+use crate::config::{
+    MAX_BLOCKS_RESPONSE_SIZE, MAX_ERROR_MESSAGE_SIZE, MAX_PAYLOAD_SIZE, MAX_REQUEST_BLOCKS,
+};
 use crate::reqresp::messages::{ErrorCode, Protocol, RESPONSE_CODE_SUCCESS, Request, Response};
 use crate::wire::snappy::{compress_framed, read_framed};
 use crate::wire::varint::{read_varint, write_varint};
@@ -124,13 +126,32 @@ async fn read_chunk_payload<T>(io: &mut T, max: usize) -> io::Result<Vec<u8>>
 where
     T: AsyncRead + Unpin + Send,
 {
+    read_chunk_payload_with_total(io, max, max).await
+}
+
+/// Reads one chunk while enforcing both its own cap and the bytes remaining in the complete
+/// response. Both checks happen on the declared length before framed decompression allocates.
+async fn read_chunk_payload_with_total<T>(
+    io: &mut T,
+    max_chunk: usize,
+    remaining_total: usize,
+) -> io::Result<Vec<u8>>
+where
+    T: AsyncRead + Unpin + Send,
+{
     let declared = read_varint(io).await?;
-    let declared = checked_declared_len(declared, max).ok_or_else(|| {
+    let declared = checked_declared_len(declared, max_chunk).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "chunk declares a length above the protocol cap",
         )
     })?;
+    if declared > remaining_total {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "response declares more bytes than the total response cap",
+        ));
+    }
     read_framed(io, declared).await
 }
 
@@ -155,7 +176,15 @@ async fn read_blocks_response<T>(io: &mut T) -> io::Result<Response>
 where
     T: AsyncRead + Unpin + Send,
 {
+    read_blocks_response_with_limit(io, MAX_BLOCKS_RESPONSE_SIZE).await
+}
+
+async fn read_blocks_response_with_limit<T>(io: &mut T, max_total: usize) -> io::Result<Response>
+where
+    T: AsyncRead + Unpin + Send,
+{
     let mut chunks: Vec<Vec<u8>> = Vec::new();
+    let mut total = 0usize;
     loop {
         let mut code = [0u8; 1];
         if io.read(&mut code).await? == 0 {
@@ -169,7 +198,10 @@ where
                         "more response chunks than MAX_REQUEST_BLOCKS",
                     ));
                 }
-                chunks.push(read_chunk_payload(io, MAX_PAYLOAD_SIZE).await?);
+                let remaining = max_total.saturating_sub(total);
+                let chunk = read_chunk_payload_with_total(io, MAX_PAYLOAD_SIZE, remaining).await?;
+                total += chunk.len();
+                chunks.push(chunk);
             }
             Some(code) => return read_error_chunk(io, code).await,
         }
@@ -205,11 +237,17 @@ fn encode_response(protocol: Protocol, response: &Response) -> io::Result<Vec<u8
                     "more block chunks than MAX_REQUEST_BLOCKS",
                 ));
             }
-            let mut wire = Vec::new();
-            for chunk in chunks {
+            let total = chunks.iter().try_fold(0usize, |total, chunk| {
                 if chunk.len() > MAX_PAYLOAD_SIZE {
                     return Err(io::Error::other("block chunk above the payload cap"));
                 }
+                total
+                    .checked_add(chunk.len())
+                    .filter(|total| *total <= MAX_BLOCKS_RESPONSE_SIZE)
+                    .ok_or_else(|| io::Error::other("blocks response above the total size cap"))
+            })?;
+            let mut wire = Vec::with_capacity(total);
+            for chunk in chunks {
                 wire.push(RESPONSE_CODE_SUCCESS);
                 wire.extend_from_slice(&encode_chunk_payload(chunk)?);
             }
@@ -403,6 +441,23 @@ mod tests {
                     message: "boom".to_string(),
                 }
             );
+        });
+    }
+
+    #[test]
+    fn should_reject_blocks_when_the_complete_response_exceeds_its_cap() {
+        block_on(async {
+            let mut wire = vec![RESPONSE_CODE_SUCCESS];
+            wire.extend_from_slice(&encode_chunk_payload(b"abc").expect("encode first chunk"));
+            wire.push(RESPONSE_CODE_SUCCESS);
+            wire.extend_from_slice(&encode_chunk_payload(b"def").expect("encode second chunk"));
+            let mut wire = Cursor::new(wire);
+
+            let error = read_blocks_response_with_limit(&mut wire, 5)
+                .await
+                .expect_err("six bytes exceed the five-byte response cap");
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         });
     }
 

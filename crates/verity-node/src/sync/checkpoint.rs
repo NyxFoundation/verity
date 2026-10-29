@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use libssz::SszDecode;
 use verity_chain::hash_tree_root;
+use verity_p2p::MAX_PAYLOAD_SIZE;
 use verity_types::config::VALIDATOR_REGISTRY_LIMIT;
 use verity_types::{SignedBlock, State};
 
@@ -37,6 +38,16 @@ pub const FINALIZED_BLOCK_ENDPOINT: &str = "/lean/v0/blocks/finalized";
 /// Seconds allowed per request. A finalized state runs to tens of megabytes, so the transfer
 /// needs a wide window (leanSpec's own timeout).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Maximum finalized-state response body (160 MiB).
+///
+/// The largest legal state is about 145 MiB when every bounded collection is full. The
+/// headroom covers the fixed SSZ section while keeping an untrusted HTTP body finite.
+pub const MAX_CHECKPOINT_STATE_SIZE: usize = 160 * 1024 * 1024;
+
+/// Maximum finalized-block response body. Checkpoint blocks share the network's signed-block
+/// wire shape, so they use the same 10 MiB payload cap.
+pub const MAX_CHECKPOINT_BLOCK_SIZE: usize = MAX_PAYLOAD_SIZE;
 
 /// How many times a transient failure is retried before the node gives up and exits.
 pub const MAX_ATTEMPTS: u32 = 5;
@@ -153,7 +164,12 @@ pub async fn fetch_anchor(url: &str, genesis: &State) -> Result<CheckpointAnchor
             reason: error.to_string(),
         })?;
 
-    let state_bytes = fetch(&client, &format!("{base}{FINALIZED_STATE_ENDPOINT}")).await?;
+    let state_bytes = fetch(
+        &client,
+        &format!("{base}{FINALIZED_STATE_ENDPOINT}"),
+        MAX_CHECKPOINT_STATE_SIZE,
+    )
+    .await?;
     let state = decode::<State>(&state_bytes, base, "state")?;
     tracing::info!(
         slot = state.slot.0,
@@ -161,7 +177,12 @@ pub async fn fetch_anchor(url: &str, genesis: &State) -> Result<CheckpointAnchor
         "fetched a finalized state"
     );
 
-    let block_bytes = fetch(&client, &format!("{base}{FINALIZED_BLOCK_ENDPOINT}")).await?;
+    let block_bytes = fetch(
+        &client,
+        &format!("{base}{FINALIZED_BLOCK_ENDPOINT}"),
+        MAX_CHECKPOINT_BLOCK_SIZE,
+    )
+    .await?;
     let block = decode::<SignedBlock>(&block_bytes, base, "block")?;
     tracing::info!(slot = block.block.slot.0, "fetched the finalized block");
 
@@ -186,12 +207,16 @@ fn install_crypto_provider() {
 }
 
 /// One endpoint, retried while the failures are transient.
-async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, CheckpointError> {
+async fn fetch(
+    client: &reqwest::Client,
+    url: &str,
+    max_size: usize,
+) -> Result<Vec<u8>, CheckpointError> {
     let mut backoff = BACKOFF_BASE;
     let mut last = String::new();
 
     for attempt in 1..=MAX_ATTEMPTS {
-        match attempt_fetch(client, url).await {
+        match attempt_fetch(client, url, max_size).await {
             Ok(bytes) => return Ok(bytes),
             Err(Attempt::Definitive(reason)) => {
                 return Err(CheckpointError::Rejected {
@@ -225,7 +250,11 @@ enum Attempt {
     Definitive(String),
 }
 
-async fn attempt_fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Attempt> {
+async fn attempt_fetch(
+    client: &reqwest::Client,
+    url: &str,
+    max_size: usize,
+) -> Result<Vec<u8>, Attempt> {
     // The endpoints return raw SSZ, not JSON.
     let response = client
         .get(url)
@@ -242,11 +271,42 @@ async fn attempt_fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, A
         return Err(Attempt::Transient(format!("HTTP {status}")));
     }
 
-    response
-        .bytes()
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_size as u64)
+    {
+        return Err(Attempt::Definitive(format!(
+            "response body exceeds the {max_size}-byte cap"
+        )));
+    }
+
+    read_bounded_body(response, max_size).await
+}
+
+async fn read_bounded_body(
+    mut response: reqwest::Response,
+    max_size: usize,
+) -> Result<Vec<u8>, Attempt> {
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or(0)
+        .min(max_size);
+    let mut body = Vec::with_capacity(capacity);
+
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map(|bytes| bytes.to_vec())
-        .map_err(|error| Attempt::Transient(error.to_string()))
+        .map_err(|error| Attempt::Transient(error.to_string()))?
+    {
+        if chunk.len() > max_size.saturating_sub(body.len()) {
+            return Err(Attempt::Definitive(format!(
+                "response body exceeds the {max_size}-byte cap"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Decodes a payload, or refuses the server for good.
@@ -348,6 +408,8 @@ pub fn verify_anchor(
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use verity_chain::{generate_genesis, hash_tree_root};
     use verity_db::stored_header;
     use verity_types::{
@@ -357,7 +419,39 @@ mod tests {
 
     use crate::store_open::block_from;
 
-    use super::{AnchorFailure, CheckpointError, verify_anchor, verify_checkpoint_state};
+    use super::{
+        AnchorFailure, Attempt, CheckpointError, attempt_fetch, install_crypto_provider,
+        verify_anchor, verify_checkpoint_state,
+    };
+
+    async fn serve_once(response: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request).await;
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+        format!("http://{address}/checkpoint")
+    }
+
+    fn client() -> reqwest::Client {
+        install_crypto_provider();
+        reqwest::Client::new()
+    }
+
+    fn assert_oversized(result: Result<Vec<u8>, Attempt>) {
+        match result {
+            Err(Attempt::Definitive(reason)) => assert!(reason.contains("5-byte cap"), "{reason}"),
+            _ => panic!("expected a definitive oversized-response failure"),
+        }
+    }
 
     fn genesis(count: u64, genesis_time: u64) -> State {
         let mut validators = Validators::default();
@@ -396,6 +490,25 @@ mod tests {
             proof: MultiMessageAggregate::default(),
         };
         (state, block)
+    }
+
+    #[tokio::test]
+    async fn should_reject_an_http_body_whose_content_length_exceeds_the_cap() {
+        let url =
+            serve_once("HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nabcdef")
+                .await;
+
+        assert_oversized(attempt_fetch(&client(), &url, 5).await);
+    }
+
+    #[tokio::test]
+    async fn should_reject_a_chunked_http_body_when_its_total_exceeds_the_cap() {
+        let url = serve_once(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n",
+        )
+        .await;
+
+        assert_oversized(attempt_fetch(&client(), &url, 5).await);
     }
 
     #[test]
