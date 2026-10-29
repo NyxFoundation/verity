@@ -267,33 +267,40 @@ impl Node {
         let bridge_counters = Arc::new(BridgeCounters::default());
         let sync_counters = Arc::new(SyncCounters::default());
 
+        // A node holding only genesis has the complete starting state and may accept gossip
+        // immediately. A checkpoint or resumed node waits for peer status before opening the
+        // gate, matching leanSpec's explicit `genesis_start` behavior.
+        let genesis_start = view.borrow().head_checkpoint().slot.0 == 0;
+
+        // Fetched blocks re-enter on the same channel gossip arrives on, so the sync path has
+        // no side door into the chain task.
+        let (sync, synced, sync_state) = SyncService::new(
+            handle.clone(),
+            view.clone(),
+            gap_stream,
+            peer_event_stream,
+            raw_gossip.clone(),
+            Arc::clone(&sync_counters),
+            genesis_start,
+        );
+
         let (listening, bound) = watch::channel(Vec::new());
         let bridge = tokio::spawn(
             NetworkBridge::new(
                 events,
                 BridgeChannels {
-                    gossip: raw_gossip.clone(),
+                    gossip: raw_gossip,
                     blocks: block_requests,
                     peers: peer_events,
                     listening,
                 },
                 handle.clone(),
                 view.clone(),
+                sync_state,
                 Arc::clone(&bridge_counters),
                 Arc::clone(&metrics),
             )
             .run(),
-        );
-
-        // Fetched blocks re-enter on the same channel gossip arrives on, so the sync path has
-        // no side door into the chain task.
-        let (sync, synced) = SyncService::new(
-            handle.clone(),
-            view.clone(),
-            gap_stream,
-            peer_event_stream,
-            raw_gossip,
-            Arc::clone(&sync_counters),
         );
 
         // Order matters only in one place: the chain task is spawned last so that every

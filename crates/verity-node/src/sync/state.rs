@@ -27,6 +27,12 @@ impl SyncState {
     pub const fn is_caught_up(self) -> bool {
         matches!(self, Self::Synced)
     }
+
+    /// Whether inbound gossip may enter verification in this state.
+    #[must_use]
+    pub const fn accepts_gossip(self) -> bool {
+        matches!(self, Self::Syncing | Self::Synced)
+    }
 }
 
 impl core::fmt::Display for SyncState {

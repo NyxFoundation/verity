@@ -24,7 +24,7 @@ use verity_types::{SubnetId, ValidatorIndex};
 use verity_validator::LocalProduct;
 
 use crate::observe::{connection_failure, direction, disconnect_reason};
-use crate::sync::{BlockRequest, BlockRequestKind, PeerEvent};
+use crate::sync::{BlockRequest, BlockRequestKind, PeerEvent, SyncState};
 use crate::verification::{GossipPayload, PayloadOrigin};
 
 /// The subnet a validator publishes its vote on: `validator_index % committee_count`.
@@ -90,6 +90,7 @@ pub struct NetworkBridge {
     listening: watch::Sender<Vec<verity_p2p::Multiaddr>>,
     handle: NetworkHandle,
     view: watch::Receiver<Arc<ChainView>>,
+    sync_state: watch::Receiver<SyncState>,
     counters: Arc<BridgeCounters>,
     metrics: Arc<Metrics>,
 }
@@ -102,6 +103,7 @@ impl NetworkBridge {
         channels: BridgeChannels,
         handle: NetworkHandle,
         view: watch::Receiver<Arc<ChainView>>,
+        sync_state: watch::Receiver<SyncState>,
         counters: Arc<BridgeCounters>,
         metrics: Arc<Metrics>,
     ) -> Self {
@@ -113,6 +115,7 @@ impl NetworkBridge {
             listening: channels.listening,
             handle,
             view,
+            sync_state,
             counters,
             metrics,
         }
@@ -190,14 +193,13 @@ impl NetworkBridge {
     /// `try_send`, never an await: blocking here would put verification latency on the path
     /// that keeps the gossip mesh alive.
     fn forward(&self, kind: GossipKind, payload: Vec<u8>) {
-        let received = GossipPayload {
+        forward_gossip(
+            &self.inbound,
+            *self.sync_state.borrow(),
+            &self.counters,
             kind,
             payload,
-            origin: PayloadOrigin::Gossip,
-        };
-        if self.inbound.try_send(received).is_err() {
-            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
-        }
+        );
     }
 
     /// Sends one inbound request to whoever owns the data it asks for.
@@ -270,6 +272,27 @@ impl NetworkBridge {
             }
             Err(CommandError::ServiceStopped) => false,
         }
+    }
+}
+
+fn forward_gossip(
+    inbound: &mpsc::Sender<GossipPayload>,
+    state: SyncState,
+    counters: &BridgeCounters,
+    kind: GossipKind,
+    payload: Vec<u8>,
+) {
+    if !state.accepts_gossip() {
+        return;
+    }
+
+    let received = GossipPayload {
+        kind,
+        payload,
+        origin: PayloadOrigin::Gossip,
+    };
+    if inbound.try_send(received).is_err() {
+        counters.dropped.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -352,7 +375,47 @@ mod tests {
     use verity_types::{SignedAggregatedAttestation, SubnetId, ValidatorIndex};
     use verity_validator::LocalProduct;
 
-    use super::{ProductRelay, attestation_subnet, subscribed_subnets};
+    use super::{
+        BridgeCounters, ProductRelay, attestation_subnet, forward_gossip, subscribed_subnets,
+    };
+    use crate::sync::SyncState;
+
+    fn gated_payload(state: SyncState) -> Option<crate::verification::GossipPayload> {
+        let (inbound, mut received) = mpsc::channel(1);
+        forward_gossip(
+            &inbound,
+            state,
+            &BridgeCounters::default(),
+            GossipKind::Block,
+            vec![1, 2, 3],
+        );
+        received.try_recv().ok()
+    }
+
+    #[test]
+    fn should_ignore_gossip_during_the_idle_startup_window() {
+        assert!(gated_payload(SyncState::Idle).is_none());
+    }
+
+    #[test]
+    fn should_forward_gossip_while_syncing() {
+        assert_eq!(
+            gated_payload(SyncState::Syncing)
+                .expect("forwarded gossip")
+                .payload,
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn should_forward_gossip_while_synced() {
+        assert_eq!(
+            gated_payload(SyncState::Synced)
+                .expect("forwarded gossip")
+                .payload,
+            vec![1, 2, 3]
+        );
+    }
 
     #[test]
     fn should_place_a_validator_on_index_modulo_the_committee_count() {
