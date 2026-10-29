@@ -19,6 +19,13 @@ pub const MAX_REQUEST_BLOCKS: usize = 1024;
 /// chunks (10 MiB).
 pub const MAX_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
 
+/// Maximum total uncompressed bytes in one blocks response (256 MiB).
+///
+/// Production-scheme aggregate blocks measure at most about 236 KiB in the pinned fixtures,
+/// so this holds a full 1,024-block response with headroom while preventing a peer from
+/// combining the per-chunk cap into a multi-gigabyte allocation.
+pub const MAX_BLOCKS_RESPONSE_SIZE: usize = 256 * 1024 * 1024;
+
 /// Maximum byte length of the UTF-8 message carried by an error response.
 pub const MAX_ERROR_MESSAGE_SIZE: usize = 256;
 
