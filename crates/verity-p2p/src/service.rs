@@ -3,8 +3,9 @@
 //! This is the "network task" of `docs/design/concurrency.md` Decision 2. Its inbound
 //! contract is deliberately minimal — topic check and deduplication only, then `try_send`
 //! of raw bytes — so that network liveness (mesh maintenance, keep-alives) never waits on
-//! anything downstream. The event channel is the single drop point of the inbound
-//! pipeline: when it is full, raw gossip is dropped and counted, never awaited.
+//! anything downstream. The bounded lossy queue is the single drop point of the inbound
+//! pipeline: when it is full, raw gossip is dropped and counted, while listener and peer
+//! lifecycle events continue through a separate reliable queue.
 //!
 //! Shutdown follows the lifecycle rule that channel closure is the only signal: dropping
 //! every [`NetworkHandle`] (and the command senders inside pending requests) closes the
@@ -171,10 +172,10 @@ pub enum NetworkCommand {
 
 /// Events out of the network task.
 ///
-/// The receiver returned by [`spawn`] must be drained continuously — typically by a
-/// dedicated task looping on `recv()`. Gossip, inbound requests, and connection changes
-/// all arrive here; a consumer that stops receiving stops answering peers, and a full
-/// event channel sheds gossip (by design) and then other events (counted).
+/// The stream returned by [`spawn`] must be drained continuously — typically by a dedicated
+/// task looping on `recv()`. Gossip and inbound requests use a bounded lossy queue. Listen
+/// addresses and peer lifecycle changes use a separate reliable queue so saturation cannot
+/// leave downstream state stale.
 #[derive(Debug)]
 pub enum NetworkEvent {
     /// The swarm bound a listen address. With port 0 in the configuration, this is where
@@ -225,6 +226,37 @@ pub enum NetworkEvent {
     },
 }
 
+/// Merged event stream returned by [`spawn`].
+///
+/// Lifecycle events are read before lossy traffic whenever both are ready. The separate
+/// queues keep gossip bounded while preserving listener and peer state under saturation.
+pub struct NetworkEvents {
+    control: mpsc::UnboundedReceiver<NetworkEvent>,
+    lossy: mpsc::Receiver<NetworkEvent>,
+    control_closed: bool,
+    lossy_closed: bool,
+}
+
+impl NetworkEvents {
+    /// Receives the next event, prioritizing lifecycle control events.
+    pub async fn recv(&mut self) -> Option<NetworkEvent> {
+        loop {
+            tokio::select! {
+                biased;
+                event = self.control.recv(), if !self.control_closed => match event {
+                    Some(event) => return Some(event),
+                    None => self.control_closed = true,
+                },
+                event = self.lossy.recv(), if !self.lossy_closed => match event {
+                    Some(event) => return Some(event),
+                    None => self.lossy_closed = true,
+                },
+                else => return None,
+            }
+        }
+    }
+}
+
 /// Drop and failure counters, and the sampled mesh size, shared between the task and its
 /// handle. The node reads them into `verity-metrics`; the task itself records no metric.
 #[derive(Debug, Default)]
@@ -255,7 +287,7 @@ impl NetworkCounters {
         self.gossip_invalid.load(Ordering::Relaxed)
     }
 
-    /// Non-gossip events dropped on a full event channel.
+    /// Inbound requests and connection failures dropped on a full lossy event channel.
     pub fn events_dropped(&self) -> u64 {
         self.events_dropped.load(Ordering::Relaxed)
     }
@@ -359,9 +391,7 @@ impl NetworkHandle {
 
 /// Builds the swarm, subscribes the configured topics, dials the bootnodes, and spawns
 /// the network task. Returns the handle and the event stream.
-pub fn spawn(
-    config: NetworkConfig,
-) -> Result<(NetworkHandle, mpsc::Receiver<NetworkEvent>), BuildError> {
+pub fn spawn(config: NetworkConfig) -> Result<(NetworkHandle, NetworkEvents), BuildError> {
     validate_channel_capacities(&config)?;
     let mut swarm = build_swarm(&config)?;
     let local_peer_id = *swarm.local_peer_id();
@@ -377,13 +407,14 @@ pub fn spawn(
     }
 
     let (command_tx, command_rx) = mpsc::channel(config.command_buffer);
-    let (event_tx, event_rx) = mpsc::channel(config.event_buffer);
+    let (event_tx, control_tx, event_rx) = event_channels(config.event_buffer);
     let counters = Arc::new(NetworkCounters::default());
 
     let service = Service {
         swarm,
         commands: command_rx,
         events: event_tx,
+        control_events: control_tx,
         pending: HashMap::new(),
         network_name: config.network_name,
         counters: Arc::clone(&counters),
@@ -398,6 +429,27 @@ pub fn spawn(
         },
         event_rx,
     ))
+}
+
+fn event_channels(
+    capacity: usize,
+) -> (
+    mpsc::Sender<NetworkEvent>,
+    mpsc::UnboundedSender<NetworkEvent>,
+    NetworkEvents,
+) {
+    let (lossy_tx, lossy) = mpsc::channel(capacity);
+    let (control_tx, control) = mpsc::unbounded_channel();
+    (
+        lossy_tx,
+        control_tx,
+        NetworkEvents {
+            control,
+            lossy,
+            control_closed: false,
+            lossy_closed: false,
+        },
+    )
 }
 
 fn validate_channel_capacities(config: &NetworkConfig) -> Result<(), BuildError> {
@@ -459,6 +511,7 @@ struct Service {
     swarm: Swarm<Behaviour>,
     commands: mpsc::Receiver<NetworkCommand>,
     events: mpsc::Sender<NetworkEvent>,
+    control_events: mpsc::UnboundedSender<NetworkEvent>,
     /// Outbound requests awaiting a response. Keyed by protocol as well as ID because
     /// each per-protocol behaviour numbers its requests independently.
     pending:
@@ -565,7 +618,7 @@ impl Service {
     fn handle_swarm_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
-                self.emit(NetworkEvent::NewListenAddr(address));
+                self.emit_control(NetworkEvent::NewListenAddr(address));
             }
             SwarmEvent::ConnectionEstablished {
                 peer_id,
@@ -573,7 +626,7 @@ impl Service {
                 num_established,
                 ..
             } if num_established.get() == 1 => {
-                self.emit(NetworkEvent::PeerConnected {
+                self.emit_control(NetworkEvent::PeerConnected {
                     peer: peer_id,
                     direction: Direction::of(&endpoint),
                 });
@@ -585,7 +638,7 @@ impl Service {
                 cause,
                 ..
             } => {
-                self.emit(NetworkEvent::PeerDisconnected {
+                self.emit_control(NetworkEvent::PeerDisconnected {
                     peer: peer_id,
                     direction: Direction::of(&endpoint),
                     reason: DisconnectReason::of(cause.as_ref()),
@@ -711,12 +764,19 @@ impl Service {
             self.counters.events_dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    fn emit_control(&self, event: NetworkEvent) {
+        let _ = self.control_events.send(event);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{spawn, validate_channel_capacities};
-    use crate::{BuildError, NetworkConfig, identity};
+    use super::{
+        Direction, DisconnectReason, NetworkEvent, event_channels, spawn,
+        validate_channel_capacities,
+    };
+    use crate::{BuildError, GossipKind, NetworkConfig, identity};
 
     fn config(command_buffer: usize, event_buffer: usize) -> NetworkConfig {
         let mut config = NetworkConfig::new(
@@ -729,6 +789,65 @@ mod tests {
         config.command_buffer = command_buffer;
         config.event_buffer = event_buffer;
         config
+    }
+
+    #[tokio::test]
+    async fn should_preserve_lifecycle_events_when_the_lossy_queue_is_full() {
+        let (lossy, control, mut events) = event_channels(1);
+        lossy
+            .try_send(NetworkEvent::Gossip {
+                kind: GossipKind::Block,
+                payload: vec![1],
+            })
+            .expect("first gossip fills the queue");
+        assert!(
+            lossy
+                .try_send(NetworkEvent::Gossip {
+                    kind: GossipKind::Block,
+                    payload: vec![2],
+                })
+                .is_err()
+        );
+
+        let address: libp2p::Multiaddr = "/ip4/127.0.0.1/udp/9000/quic-v1"
+            .parse()
+            .expect("valid listen address");
+        let peer = identity::Keypair::generate_secp256k1()
+            .public()
+            .to_peer_id();
+        control
+            .send(NetworkEvent::NewListenAddr(address.clone()))
+            .expect("control receiver is open");
+        control
+            .send(NetworkEvent::PeerConnected {
+                peer,
+                direction: Direction::Inbound,
+            })
+            .expect("control receiver is open");
+        control
+            .send(NetworkEvent::PeerDisconnected {
+                peer,
+                direction: Direction::Inbound,
+                reason: DisconnectReason::RemoteClose,
+            })
+            .expect("control receiver is open");
+
+        assert!(matches!(
+            events.recv().await,
+            Some(NetworkEvent::NewListenAddr(actual)) if actual == address
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(NetworkEvent::PeerConnected { peer: actual, .. }) if actual == peer
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(NetworkEvent::PeerDisconnected { peer: actual, .. }) if actual == peer
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(NetworkEvent::Gossip { payload, .. }) if payload == vec![1]
+        ));
     }
 
     #[test]

@@ -117,7 +117,7 @@ pub use reqresp::messages::{
 };
 pub use service::{
     ConnectFailure, Direction, DisconnectReason, NetworkCommand, NetworkCounters, NetworkEvent,
-    NetworkHandle, ResponseChannel, spawn,
+    NetworkEvents, NetworkHandle, ResponseChannel, spawn,
 };
 
 // Re-exported so consumers can name addresses and peers without depending on libp2p

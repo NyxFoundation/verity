@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use verity_p2p::{
     BlocksByRangeRequest, BlocksByRootRequest, CommandError, ErrorCode, GossipKind, Multiaddr,
-    NetworkConfig, NetworkEvent, NetworkHandle, PublishError, Request, RequestError, Response,
-    Status, identity,
+    NetworkConfig, NetworkEvent, NetworkEvents, NetworkHandle, PublishError, Request, RequestError,
+    Response, Status, identity,
 };
 use verity_types::{Checkpoint, SignedBlock, Slot};
 
@@ -33,7 +33,7 @@ fn node_config() -> NetworkConfig {
 
 /// Reads events until `select` yields, discarding everything else.
 async fn wait_for<T>(
-    events: &mut mpsc::Receiver<NetworkEvent>,
+    events: &mut NetworkEvents,
     mut select: impl FnMut(NetworkEvent) -> Option<T>,
 ) -> T {
     timeout(STAGE_TIMEOUT, async {
@@ -65,7 +65,7 @@ fn sample_status() -> Status {
 /// body to assert on.
 fn run_responder(
     handle: NetworkHandle,
-    mut events: mpsc::Receiver<NetworkEvent>,
+    mut events: NetworkEvents,
     gossip: mpsc::Sender<(GossipKind, Vec<u8>)>,
     served_blocks: Vec<Vec<u8>>,
 ) {
@@ -96,9 +96,9 @@ fn run_responder(
 
 async fn connected_nodes() -> (
     NetworkHandle,
-    mpsc::Receiver<NetworkEvent>,
+    NetworkEvents,
     NetworkHandle,
-    mpsc::Receiver<NetworkEvent>,
+    NetworkEvents,
     verity_p2p::PeerId,
 ) {
     let (handle_a, mut events_a) = verity_p2p::spawn(node_config()).expect("spawn node A");
