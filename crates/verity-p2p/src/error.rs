@@ -123,6 +123,10 @@ impl std::error::Error for CommandError {}
 /// Why the network service could not be built at all.
 #[derive(Debug)]
 pub enum BuildError {
+    /// The command channel cannot be constructed with the configured capacity.
+    InvalidCommandCapacity(usize),
+    /// The event channel cannot be constructed with the configured capacity.
+    InvalidEventCapacity(usize),
     /// Assembling the behaviour failed.
     Behaviour(String),
     /// Binding the listen address failed.
@@ -134,6 +138,15 @@ pub enum BuildError {
 impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidCommandCapacity(capacity) => {
+                write!(
+                    f,
+                    "command channel capacity must be positive, got {capacity}"
+                )
+            }
+            Self::InvalidEventCapacity(capacity) => {
+                write!(f, "event channel capacity must be positive, got {capacity}")
+            }
             Self::Behaviour(e) => write!(f, "building the behaviour failed: {e}"),
             Self::Listen(e) => write!(f, "binding the listen address failed: {e}"),
             Self::Bootnode(e) => write!(f, "dialing a bootnode failed: {e}"),
@@ -192,6 +205,8 @@ mod tests {
             assert!(!failure.to_string().is_empty());
         }
         for failure in [
+            BuildError::InvalidCommandCapacity(0),
+            BuildError::InvalidEventCapacity(0),
             BuildError::Behaviour("config".to_string()),
             BuildError::Listen("bind".to_string()),
             BuildError::Bootnode("address".to_string()),

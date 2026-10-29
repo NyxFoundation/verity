@@ -20,6 +20,12 @@ ignore = [
     # exists to emulate atomics on targets that lack them, which Verity's do not. There is no
     # vulnerability and no safe upgrade. Revisit when `heapless` drops it.
     "RUSTSEC-2023-0089",
+    # `crypto-bigint` 0.5 is reached through both current secp256k1 stacks:
+    # libp2p-identity and ENR -> k256 0.13 -> elliptic-curve 0.13. The advisory has no fixed
+    # 0.5 release (the fix begins at 0.7.6), and neither upstream accepts that breaking major
+    # yet. Verity uses these stacks for node identity and ENR handling, so removal is not an
+    # option. Revisit when libp2p and enr move to a k256 release backed by crypto-bigint >=0.7.6.
+    "RUSTSEC-2026-0387",
 ]
 
 [licenses]

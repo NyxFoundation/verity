@@ -362,6 +362,7 @@ impl NetworkHandle {
 pub fn spawn(
     config: NetworkConfig,
 ) -> Result<(NetworkHandle, mpsc::Receiver<NetworkEvent>), BuildError> {
+    validate_channel_capacities(&config)?;
     let mut swarm = build_swarm(&config)?;
     let local_peer_id = *swarm.local_peer_id();
 
@@ -397,6 +398,16 @@ pub fn spawn(
         },
         event_rx,
     ))
+}
+
+fn validate_channel_capacities(config: &NetworkConfig) -> Result<(), BuildError> {
+    if config.command_buffer == 0 {
+        return Err(BuildError::InvalidCommandCapacity(config.command_buffer));
+    }
+    if config.event_buffer == 0 {
+        return Err(BuildError::InvalidEventCapacity(config.event_buffer));
+    }
+    Ok(())
 }
 
 /// Builds the QUIC swarm. Transport security and multiplexing come from QUIC itself —
@@ -699,5 +710,45 @@ impl Service {
         if self.events.try_send(event).is_err() {
             self.counters.events_dropped.fetch_add(1, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{spawn, validate_channel_capacities};
+    use crate::{BuildError, NetworkConfig, identity};
+
+    fn config(command_buffer: usize, event_buffer: usize) -> NetworkConfig {
+        let mut config = NetworkConfig::new(
+            identity::Keypair::generate_secp256k1(),
+            "/ip4/127.0.0.1/udp/0/quic-v1"
+                .parse()
+                .expect("valid listen address"),
+            "12345678".to_string(),
+        );
+        config.command_buffer = command_buffer;
+        config.event_buffer = event_buffer;
+        config
+    }
+
+    #[test]
+    fn should_reject_a_zero_command_capacity() {
+        assert!(matches!(
+            spawn(config(0, 1)),
+            Err(BuildError::InvalidCommandCapacity(0))
+        ));
+    }
+
+    #[test]
+    fn should_reject_a_zero_event_capacity() {
+        assert!(matches!(
+            spawn(config(1, 0)),
+            Err(BuildError::InvalidEventCapacity(0))
+        ));
+    }
+
+    #[test]
+    fn should_accept_the_minimum_channel_capacities() {
+        assert!(validate_channel_capacities(&config(1, 1)).is_ok());
     }
 }
