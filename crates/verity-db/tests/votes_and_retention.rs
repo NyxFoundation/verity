@@ -78,6 +78,7 @@ fn should_merge_pending_votes_into_the_counted_map_at_the_tick() {
     repository
         .commit_tick(&TickCommit {
             head: links[0].root,
+            safe_target: None,
             latest_justified: Checkpoint::default(),
             latest_finalized: Checkpoint::default(),
             interval: Interval(4),
@@ -132,6 +133,7 @@ fn should_discard_votes_the_fork_choice_can_no_longer_be_moved_by() {
     repository
         .commit_tick(&TickCommit {
             head: links[1].root,
+            safe_target: None,
             latest_justified: finalized,
             latest_finalized: finalized,
             interval: Interval(9),
@@ -172,6 +174,7 @@ fn should_reject_a_parent_cycle_while_pruning_votes() {
     repository
         .commit_tick(&TickCommit {
             head: links[1].root,
+            safe_target: None,
             latest_justified: finalized,
             latest_finalized: finalized,
             interval: Interval(9),
@@ -222,6 +225,7 @@ fn should_prune_only_proofs_below_the_cutoff() {
     repository
         .commit_tick(&TickCommit {
             head: links[1].root,
+            safe_target: None,
             latest_justified: finalized,
             latest_finalized: finalized,
             interval: Interval(45_004),

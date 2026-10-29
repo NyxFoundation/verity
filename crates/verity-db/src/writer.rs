@@ -1,8 +1,8 @@
 //! The only path by which anything becomes durable.
 //!
-//! There are four commits, and each one is a single cross-table batch that applies whole or
-//! not at all: the anchor a chain starts from, a processed block, an interval-3 safe target,
-//! and the interval tick that moves the head. Nothing else writes.
+//! There are three commits, and each one is a single cross-table batch that applies whole or
+//! not at all: the anchor a chain starts from, a processed block, and the interval tick that
+//! moves the complete canonical view. Nothing else writes.
 //!
 //! Every commit checks its own internal consistency **before** the batch is handed to the
 //! backend, so an inconsistent commit is refused rather than made durable and repaired later.
@@ -112,6 +112,8 @@ struct CanonicalSwitch {
 pub struct TickCommit {
     /// The recomputed head block root.
     pub head: Bytes32,
+    /// The safe target when this interval updates it. `None` leaves the stored value intact.
+    pub safe_target: Option<Bytes32>,
     /// The head-derived justified checkpoint.
     pub latest_justified: Checkpoint,
     /// The head-derived finalized checkpoint.
@@ -129,6 +131,16 @@ const fn tick_durability(stored: Option<Checkpoint>, next: Checkpoint) -> Durabi
         return Durability::Buffered;
     }
     Durability::Synced
+}
+
+fn queue_tick_metadata(batch: &mut WriteBatch, tick: &TickCommit) {
+    put_metadata(batch, MetadataKey::Head, &tick.head);
+    if let Some(safe_target) = tick.safe_target {
+        put_metadata(batch, MetadataKey::SafeTarget, &safe_target);
+    }
+    put_metadata(batch, MetadataKey::LatestJustified, &tick.latest_justified);
+    put_metadata(batch, MetadataKey::LatestFinalized, &tick.latest_finalized);
+    put_metadata(batch, MetadataKey::LastProcessedInterval, &tick.interval.0);
 }
 
 fn queue_switch_edits(batch: &mut WriteBatch, switch: CanonicalSwitch) {
@@ -332,23 +344,8 @@ impl<B: StorageBackend> Repository<B> {
         self.commit(batch, Durability::Buffered)
     }
 
-    /// Commits the interval-3 safe target.
-    ///
-    /// # Errors
-    ///
-    /// [`StorageError::Backend`] when the engine fails.
-    pub fn commit_safe_target(
-        &mut self,
-        root: Bytes32,
-        interval: Interval,
-    ) -> Result<(), StorageError> {
-        let mut batch = WriteBatch::new();
-        put_metadata(&mut batch, MetadataKey::SafeTarget, &root);
-        put_metadata(&mut batch, MetadataKey::LastProcessedInterval, &interval.0);
-        self.commit(batch, Durability::Buffered)
-    }
-
-    /// Commits an interval tick: the head, the canonical index it implies, and — at interval
+    /// Commits an interval tick: the complete canonical view, the canonical index it implies,
+    /// and — at interval
     /// 4 — the vote merge.
     ///
     /// Fsynced when finalization advances. That is the one commit whose loss would let the
@@ -374,22 +371,7 @@ impl<B: StorageBackend> Repository<B> {
             self.queue_vote_merge(&mut batch)?;
         }
 
-        put_metadata(&mut batch, MetadataKey::Head, &tick.head);
-        put_metadata(
-            &mut batch,
-            MetadataKey::LatestJustified,
-            &tick.latest_justified,
-        );
-        put_metadata(
-            &mut batch,
-            MetadataKey::LatestFinalized,
-            &tick.latest_finalized,
-        );
-        put_metadata(
-            &mut batch,
-            MetadataKey::LastProcessedInterval,
-            &tick.interval.0,
-        );
+        queue_tick_metadata(&mut batch, tick);
 
         let durability = tick_durability(self.latest_finalized()?, tick.latest_finalized);
         self.commit(batch, durability)
@@ -548,66 +530,51 @@ fn check_block(commit: &BlockCommit<'_>, header: &BlockHeader) -> Result<(), Sto
 
 #[cfg(kani)]
 mod harnesses {
+    use super::TickCommit;
     use libssz::SszEncode;
     use verity_types::{Checkpoint, Interval, Slot};
 
-    use crate::backend::harness_support::RecordingBackend;
     use crate::backend::{Durability, Op, WriteBatch};
     use crate::metadata::MetadataKey;
-    use crate::repository::Repository;
-    use crate::schema::Identity;
-
-    fn repository(backend: RecordingBackend) -> Repository<RecordingBackend> {
-        Repository::from_backend_for_harness(
-            backend,
-            Identity {
-                chain_fingerprint: [0; 32],
-                fork_version: 0,
-            },
-        )
-    }
 
     #[allow(dead_code)]
     fn put_metadata_stub<T: SszEncode>(batch: &mut WriteBatch, key: MetadataKey, _value: &T) {
         batch.queue_put(crate::ColumnFamily::Metadata, key.as_bytes(), Vec::new());
     }
 
-    /// A safe-target update is one atomic, buffered batch containing both view mutations.
-    #[kani::proof]
-    #[kani::unwind(25)]
-    #[kani::stub(crate::repository::put_metadata, put_metadata_stub)]
-    fn a_safe_target_update_is_one_atomic_batch() {
-        let mut repository = repository(RecordingBackend::default());
-        let interval = Interval(kani::any());
-        repository
-            .commit_safe_target([7; 32], interval)
-            .expect("the recording backend cannot fail");
-
-        let writes = &repository.backend().writes;
-        assert!(writes.len() == 1);
-        let (batch, durability) = &writes[0];
-        assert!(*durability == Durability::Buffered);
-        assert!(batch.len() == 2);
-        match (&batch.ops()[0], &batch.ops()[1]) {
-            (
-                Op::Put {
-                    table: first_table,
-                    key: first_key,
-                    ..
-                },
-                Op::Put {
-                    table: second_table,
-                    key: second_key,
-                    ..
-                },
-            ) => {
-                assert!(*first_table == crate::ColumnFamily::Metadata);
-                assert!(*second_table == crate::ColumnFamily::Metadata);
-                assert!(*first_key == MetadataKey::SafeTarget.as_bytes());
-                assert!(*second_key == MetadataKey::LastProcessedInterval.as_bytes());
+    fn metadata_put_key(op: &Op) -> &[u8] {
+        match op {
+            Op::Put { table, key, .. } => {
+                assert!(*table == crate::ColumnFamily::Metadata);
+                key
             }
-            _ => unreachable!("both safe-target fields are metadata puts"),
+            _ => unreachable!("tick metadata only contains puts"),
         }
+    }
+
+    /// Interval 3 queues the safe target and every other canonical-view field in one batch.
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::stub(crate::repository::put_metadata, put_metadata_stub)]
+    fn a_safe_target_update_is_part_of_the_tick_batch() {
+        let tick = TickCommit {
+            head: [1; 32],
+            safe_target: Some([2; 32]),
+            latest_justified: Checkpoint::default(),
+            latest_finalized: Checkpoint::default(),
+            interval: Interval(kani::any()),
+            merge_pending_votes: false,
+        };
+        let mut batch = WriteBatch::new();
+        super::queue_tick_metadata(&mut batch, &tick);
+
+        assert!(batch.len() == 5);
+        let ops = batch.ops();
+        assert!(metadata_put_key(&ops[0]) == MetadataKey::Head.as_bytes());
+        assert!(metadata_put_key(&ops[1]) == MetadataKey::SafeTarget.as_bytes());
+        assert!(metadata_put_key(&ops[2]) == MetadataKey::LatestJustified.as_bytes());
+        assert!(metadata_put_key(&ops[3]) == MetadataKey::LatestFinalized.as_bytes());
+        assert!(metadata_put_key(&ops[4]) == MetadataKey::LastProcessedInterval.as_bytes());
     }
 
     /// A reorg deletes the old slot before inserting the new root at that same slot.

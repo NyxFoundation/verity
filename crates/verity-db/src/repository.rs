@@ -39,12 +39,6 @@ pub struct Repository<B> {
 }
 
 impl<B: StorageReader> Repository<B> {
-    /// Builds a closed repository model without exercising identity decoding.
-    #[cfg(kani)]
-    pub(crate) const fn from_backend_for_harness(backend: B, identity: Identity) -> Self {
-        Self { backend, identity }
-    }
-
     /// Opens `backend` as the repository of the chain described by `identity`.
     ///
     /// A truly empty database opens and waits for an anchor commit. A database carrying any
