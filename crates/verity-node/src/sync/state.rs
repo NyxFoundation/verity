@@ -58,17 +58,6 @@ impl SyncMachine {
         Self { state: None }
     }
 
-    /// A machine starting with the complete genesis state.
-    ///
-    /// Genesis validators can process gossip immediately without waiting for a peer status
-    /// exchange, matching leanSpec's `genesis_start` behavior.
-    #[must_use]
-    pub const fn at_genesis() -> Self {
-        Self {
-            state: Some(SyncState::Syncing),
-        }
-    }
-
     /// The current state.
     #[must_use]
     pub fn state(&self) -> SyncState {
@@ -171,14 +160,6 @@ mod tests {
         let mut machine = SyncMachine::new();
         assert_eq!(machine.observe(Slot(0), None), SyncState::Idle);
         assert!(!machine.state().is_caught_up());
-    }
-
-    #[test]
-    fn should_accept_gossip_immediately_when_starting_from_genesis() {
-        let machine = SyncMachine::at_genesis();
-
-        assert_eq!(machine.state(), SyncState::Syncing);
-        assert!(machine.state().accepts_gossip());
     }
 
     #[test]
